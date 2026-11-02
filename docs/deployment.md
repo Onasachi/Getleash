@@ -125,38 +125,41 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
    runs. It replies that the payment needs your OK because the supplier's details changed recently.
    Open the link, click the button and approve in your wallet → "Paid" on the dashboard and in Telegram.
 
-## Run the services on Render
+## Host the services and the dashboard
 
-Instead of step 6 on your own machine, the services can run on Render, defined in
-[render.yaml](../render.yaml). Nothing that signs as the owner goes to Render: steps 1–4 stay on your
-machine, and the worker holds only the agent's and the executor's function-call keys.
+Instead of step 6 on your own machine: the executor and the bot run as one Render background worker
+([render.yaml](../render.yaml)), and the dashboard runs on Vercel. Nothing that signs as the owner goes to
+either host: steps 1–4 stay on your machine, and the worker holds only the agent's and the executor's
+function-call keys.
 
-| Service | Render type | Runs |
+| What | Where | Notes |
 |---|---|---|
-| `getleash-services` | background worker, Starter plan (workers have no free plan), 1 GB disk at `/var/data` | the executor and the bot together (`scripts/src/services.ts` starts either one again if it stops); the disk keeps the executor's journal, the bot's update log, the encrypted invoices and the record that sends each owner notice once |
-| `getleash-dashboard` | web service, free plan (sleeps when idle; the first visit after a quiet spell takes about a minute) or Starter to keep it awake | the dashboard, at a public `onrender.com` address, so the links in Telegram open on a phone |
+| Executor and bot | Render background worker `getleash-services`, Starter plan (workers have no free plan), 1 GB disk at `/var/data` | `scripts/src/services.ts` runs both and starts either again if it stops; the disk keeps the executor's journal, the bot's update log, the encrypted invoices and the record that sends each owner notice once |
+| Dashboard | Vercel project, root directory `web` | a public address, so the links in Telegram open on a phone; it reads the chain in the visitor's browser |
 
 1. Do steps 1–4 from your machine, and stop any GetLeash bot running elsewhere: one bot token serves one
    process.
 2. Gather the values to paste:
    ```bash
-   pnpm render:env --network mainnet
+   pnpm deploy:env --network mainnet
    ```
-   → `.env.render-worker` and `.env.render-dashboard` (mode 0600, git-ignored). They hold secrets: paste
-   them into Render only, then delete them (`rm .env.render-*`). Only variable names are printed.
-3. In Render: New → Blueprint → connect the repository → Render reads `render.yaml` and lists the two
-   services and their plans. Fill in the values it asks for from the two files, or add them afterwards on
-   each service's Environment page with "Add from .env" (paste the whole file).
-4. On both services: Environment → Secret Files → add `directory.json` with the contents of
-   `.data/mainnet/directory.json`. It holds the supplier names the agent matches invoices against.
-5. Once the dashboard is live, set the worker's `DASHBOARD_URL` to its address
-   (`https://getleash-dashboard….onrender.com`); saving redeploys the worker.
+   → `.env.render` and `.env.vercel` (mode 0600, git-ignored). They hold secrets, so paste them into the
+   two hosts only and then delete them (`rm .env.render .env.vercel`). Only variable names are printed.
+   Both carry the supplier names as `GETLEASH_DIRECTORY_BASE64`, because neither host has your files.
+3. **Render:** New → Blueprint → connect the repository → Render reads `render.yaml` and shows the
+   `getleash-services` worker and its plan. Paste `.env.render` (`pbcopy < .env.render` copies it without
+   showing it) on its Environment page with "Add from .env", or fill in the values the Blueprint asks for.
+4. **Vercel:** Add New → Project → import the repository → set the root directory to `web` (Vercel
+   detects Next.js and the pnpm workspace) → in Environment Variables, paste `.env.vercel` → Deploy.
+5. Set the worker's `DASHBOARD_URL` on Render to the dashboard's address (`https://….vercel.app`, or your
+   own domain); saving redeploys the worker.
 6. The worker's logs show `executor executor-1.you.near → getleash.you.near on mainnet` and
    `@<your bot> is listening`. Then send the first test invoice (step 8).
 
-After `pnpm seed` adds a supplier, update the `directory.json` secret file on both services. The
-dashboard's private view shows supplier names but not invoice records, which stay on the worker's disk.
-`NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new deploy.
+After `pnpm seed` adds a supplier, run `pnpm deploy:env` again and update `GETLEASH_DIRECTORY_BASE64` on
+both hosts. The dashboard's private view shows supplier names, not invoice records: those stay encrypted
+on the worker's disk. `NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new
+Vercel deployment.
 
 ## Day to day
 

@@ -19,7 +19,7 @@ import {
   DeliveredNotices,
   directoryPath,
   keyFilePath,
-  loadDirectory,
+  loadServiceDirectory,
   ownerNoticesPath,
   signingAccount,
 } from "@getleash/shared/node";
@@ -91,7 +91,7 @@ const executor = new Executor(
     // Names from the owner's directory on this machine (written by `pnpm seed`), for notices.
     names: (supplierId) => {
       try {
-        return loadDirectory(directoryPath(network)).suppliers.find((s) => s.supplier_id === supplierId)?.name ?? null;
+        return loadServiceDirectory(directoryPath(network)).suppliers.find((s) => s.supplier_id === supplierId)?.name ?? null;
       } catch {
         return null;
       }

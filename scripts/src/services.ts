@@ -1,6 +1,6 @@
 /**
  * Runs the executor and the Telegram bot side by side, for one always-on host (a Render background
- * worker with one disk; docs/deployment.md, "Run the services on Render"). They share
+ * worker with one disk; docs/deployment.md, "Host the services and the dashboard"). They share
  * GETLEASH_DATA_DIR, so each owner notice is sent once (DeliveredNotices) and the executor's journal,
  * the bot's update log and the encrypted invoice store survive restarts. A service that exits is
  * started again, after a pause that grows to a minute while it keeps failing; SIGTERM stops both.

@@ -127,6 +127,16 @@ export function loadDirectory(path: string): Directory {
   return Directory.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
+/**
+ * The directory as a service reads it: from GETLEASH_DIRECTORY_BASE64 (the directory JSON, base64) when
+ * set, for hosts that do not have the owner's files (Render, Vercel); otherwise from the file at `path`.
+ */
+export function loadServiceDirectory(path: string): Directory {
+  const encoded = process.env.GETLEASH_DIRECTORY_BASE64;
+  if (!encoded) return loadDirectory(path);
+  return Directory.parse(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")));
+}
+
 export function saveDirectory(path: string, directory: Directory): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${JSON.stringify(Directory.parse(directory), null, 2)}\n`, { mode: 0o600 });
