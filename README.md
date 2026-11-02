@@ -18,7 +18,7 @@ wallet would fix the speed and make the fraud worse: one prompt injection and th
 
 ## How GetLeash works
 
-- The **policy contract** (NEAR, Rust, 86 KB of wasm) holds the business's USDC and decides every
+- The **policy contract** (NEAR, Rust, 84 KB of wasm) holds the business's USDC and decides every
   payment. It pays only suppliers the owner allowlisted, within the agent's approval threshold, its
   daily autonomous budget and an overall daily cap; after a supplier's address changes, every
   payment to it waits for the owner, who can approve at most a small test payment until the
@@ -70,12 +70,12 @@ Settlement trust that remains: during a cross-chain swap, funds sit briefly with
 
 | Part | State |
 |---|---|
-| Policy contract v2 (`contract/`) | **Implemented.** Rewritten lean to fit a ~1.5 NEAR mainnet deployment (docs/decisions.md D-28): 85,809 B of wasm instead of 370,399 B. 47 Rust tests (unit tests named after PLAN §9 rows, property tests including random walks over the whole contract, a fuzzed JSON parser, golden Borsh vectors) plus a real-node test. v1, with full on-chain accounting, is tagged `v1-full-contract`. |
+| Policy contract v2 (`contract/`) | **Implemented.** Rewritten lean to fit a ~1.5 NEAR mainnet deployment (docs/decisions.md D-28): the release wasm is 83,900 B instead of 370,399 B. 47 Rust tests (unit tests named after PLAN §9 rows, property tests including random walks over the whole contract, a fuzzed JSON parser, golden Borsh vectors) plus a real-node test. v1, with full on-chain accounting, is tagged `v1-full-contract`. |
 | Setup and owner scripts (`scripts/`, `shared/`) | **Implemented.** Keyless policy account in one owner transaction; role accounts with function-call keys only; top-up, seeding, status, rotation. Tested on a local node. |
 | Executor + mock 1Click (`executor/`, `mock-1click/`) | **Implemented.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes. Tested on a local node. |
 | Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands. Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram is exercised with fakes only. |
 | Dashboard (`web/`) | **Implemented.** Overview, intent page (approve, reject, retry, sign a 1Click deposit after a browser-side check), pause, NEP-413 private view. Checked against a local node; wallet signing not yet tried on testnet/mainnet. |
-| Mainnet deployment, `demo-getleash` panel | Not yet. Expected cost: about 1.5 NEAR (1.1 for the contract account, of which 0.86 covers its code, plus 0.15 and 0.2 for the agent and executor accounts). |
+| Mainnet deployment, `demo-getleash` panel | Not yet. Expected cost: about 1.4 NEAR (1.05 for the contract account, of which 0.84 covers its code, plus 0.15 and 0.2 for the agent and executor accounts, which pay their own gas). |
 
 ## Try it
 
@@ -149,12 +149,23 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```
    → `target/near/getleash_policy.wasm` (about 86 KB) and `target/near/getleash_policy_abi.json`.
 
+7. **Reproduce the release wasm** (needs Docker).
+   ```bash
+   git checkout b11e68a && cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm
+   ```
+   → 83,900 bytes, sha256 `8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d`
+   (NEAR shows it as code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2`). The wasm records
+   its source commit and build image (NEP-330); a deployed contract returns them from the
+   `contract_source_metadata` view. Rebuilding at any other commit gives a different hash, because
+   the commit is part of that record. The 13 integration tests and the offline demo pass with this
+   exact file.
+
 ### Running it for real (owner's machine)
 
 ```bash
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
 pnpm keygen --network mainnet --account executor-1.<you>.near
-pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 <published hash> --policy deploy/mainnet-policy.json
+pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d --policy deploy/mainnet-policy.json
 pnpm topup --network mainnet --owner <you>.near --amount 20
 pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>
 pnpm executor        # and in another terminal: pnpm bot
