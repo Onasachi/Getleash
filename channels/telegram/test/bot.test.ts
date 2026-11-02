@@ -33,7 +33,8 @@ function setup(overrides: { download?: (p: string) => Promise<Uint8Array>; fileS
         key: input.key,
         status: "rejected_onchain",
         decision: { action: "propose", supplierId: 1, supplierName: "Acme", amountOut: 18_000_000n, invoiceNumber: "1001", reviewFlag: null, flags: [], notes: [] },
-        result: { accepted: false, intent_id: null, status: null, route: null, intent_hash: null, reason: "OBLIGATION_OPEN_OR_PAID" },
+        result: { accepted: false, intent_id: null, status: null, route: null, reason: "OBLIGATION_OPEN_OR_PAID" },
+        intentStatus: null,
         obligationId: "00".repeat(32),
         badge: "Verification unavailable",
         model: "offline-text-reader",
@@ -43,7 +44,8 @@ function setup(overrides: { download?: (p: string) => Promise<Uint8Array>; fileS
     },
   } as unknown as InvoiceAgent;
   const view = {
-    openWork: async () => [],
+    state: async () => ({ token_decimals: 6, policy: { cooldown_ns: "0" } }),
+    recentIntents: async () => [],
     suppliers: async () => [],
   } as unknown as PolicyView;
   const channel = new TelegramChannel({

@@ -5,7 +5,7 @@
  *   pnpm keygen --network mainnet --account executor-2.yourbusiness.near   (on the service machine)
  *   pnpm rotate --network mainnet --owner yourbusiness.near --role executor --n 2 --public-key ed25519:…
  */
-import { near, OwnerClient } from "@getleash/shared";
+import { near, OwnerClient, PolicyView } from "@getleash/shared";
 
 import { confirm, fail, ok, ownerAccount, parse, required } from "./lib/cli.ts";
 import { AGENT_METHODS, createRoleAccount, defaultRoleIds, EXECUTOR_METHODS } from "@getleash/shared";
@@ -17,8 +17,8 @@ const { values, common } = parse(
     role: { type: "string" },
     n: { type: "string" },
     "public-key": { type: "string" },
-    near: { type: "string", default: "0.5" },
-    allowance: { type: "string", default: "0.25" },
+    near: { type: "string", default: "0.2" },
+    allowance: { type: "string", default: "1" },
   },
   "Usage: pnpm rotate --network <net> --owner <you.near> --role <agent|executor> --n <N> --public-key <ed25519:…>",
 );
@@ -32,7 +32,7 @@ const publicKey = required(values["public-key"], "public-key");
 await confirm(
   common,
   `Create ${accountId} with function-call key ${publicKey} and make it the ${role} of ${ids.policyId}.` +
-    (role === "executor" ? "\nUnfunded attempts authorised under the old executor's trust budget are voided (D-19)." : ""),
+    (role === "executor" ? "\nThe executor epoch moves on: attempts the old executor created can no longer be funded from the trust budget (D-19)." : ""),
 );
 const owner = ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined);
 await createRoleAccount(
@@ -42,5 +42,7 @@ await createRoleAccount(
   role === "agent" ? AGENT_METHODS : EXECUTOR_METHODS,
 );
 const client = new OwnerClient(owner, ids.policyId);
-const out = role === "agent" ? await client.rotateAgent(accountId) : await client.rotateExecutor(accountId);
+const state = await new PolicyView(common.rpc, ids.policyId).state();
+const out =
+  role === "agent" ? await client.setRoles(accountId, state.executor_id) : await client.setRoles(state.agent_id, accountId);
 ok(`${role} is now ${accountId} (tx ${common.preset.explorerTx(out.txHash)})`);

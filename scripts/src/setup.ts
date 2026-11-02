@@ -9,7 +9,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 
-import { near, Policy, type NetworkId } from "@getleash/shared";
+import { DEFAULT_POLICY, fromUnits, near, Policy, type NetworkId } from "@getleash/shared";
 import { keyFilePath, readKeyFile } from "@getleash/shared/node";
 
 import { confirm, fail, ok, ownerAccount, parse, required, step } from "./lib/cli.ts";
@@ -40,12 +40,13 @@ const { values, common } = parse(
     wasm: { type: "string" },
     "wasm-sha256": { type: "string" },
     policy: { type: "string" },
-    hosted: { type: "boolean", default: false },
     "policy-near": { type: "string" },
-    "agent-near": { type: "string", default: "0.5" },
-    "executor-near": { type: "string", default: "1" },
-    "agent-allowance": { type: "string", default: "0.25" },
-    "executor-allowance": { type: "string", default: "0.5" },
+    // NEAR checks a signer's balance against attached gas at a worst-case price, so a role
+    // account needs ~0.07–0.08 NEAR spendable per call; these leave room for many calls.
+    "agent-near": { type: "string", default: "0.15" },
+    "executor-near": { type: "string", default: "0.2" },
+    "agent-allowance": { type: "string", default: "0.5" },
+    "executor-allowance": { type: "string", default: "1" },
   },
   `
 Usage: pnpm setup --network <mainnet|testnet> --owner <you.near> [options]
@@ -57,8 +58,9 @@ Usage: pnpm setup --network <mainnet|testnet> --owner <you.near> [options]
   --token <account>           treasury token (default: Circle USDC for the network)
   --wasm <path>               contract wasm (default contract/target/near/getleash_policy.wasm)
   --wasm-sha256 <hex>         required on mainnet: the published hash the wasm must match
-  --policy <file.json>        full Policy JSON (default: the contract's conservative defaults)
-  --hosted                    hosted mode: executor-trust budget forced to 0 by the contract
+  --policy <file.json>        full Policy JSON (default: deploy/mainnet-policy.json's values)
+  --policy-near <NEAR>        NEAR for the policy account (default: code storage + 0.2)
+  --agent-near, --executor-near   NEAR for the role accounts (default 0.15 and 0.2)
   --yes                       do not ask for confirmation`,
 );
 
@@ -90,7 +92,7 @@ if (expectedSha && expectedSha.toLowerCase() !== wasmSha) fail(`wasm sha256 is $
 const token = (values.token as string | undefined) ?? common.preset.usdc;
 if (!token) fail("--token is required on this network");
 
-let policy: Policy | null = null;
+let policy: Policy = DEFAULT_POLICY;
 if (values.policy) {
   const parsed = Policy.safeParse(JSON.parse(readFileSync(values.policy as string, "utf8")));
   if (!parsed.success) fail(`${values.policy} is not a valid Policy: ${parsed.error.message}`);
@@ -114,7 +116,6 @@ const plan: SetupPlan = {
   },
   treasuryToken: token,
   treasuryDecimals: Number(values.decimals),
-  hostedMode: Boolean(values.hosted),
   policy,
   wasm,
   policyBalance: values["policy-near"] ? near(values["policy-near"] as string) : suggestedPolicyBalance(wasm.length),
@@ -127,6 +128,8 @@ const exists = {
   policy: await accountExists(common.rpc, plan.policyId),
 };
 const fmt = (yocto: bigint) => `${Number(yocto / 10n ** 21n) / 1000} NEAR`;
+const usdc = (units: string) => fromUnits(units, plan.treasuryDecimals);
+const total = plan.policyBalance + plan.agent.balance + plan.executor.balance;
 
 await confirm(
   common,
@@ -140,9 +143,12 @@ GetLeash setup on ${common.network} (${common.rpcUrl}), signed by ${ownerId}:
   ${exists.policy ? "✓ exists " : "+ create "} ${plan.policyId}  (${fmt(plan.policyBalance)}, NO access key)
                one batch: CreateAccount + Transfer + DeployContract + new(...)
                wasm sha256 ${wasmSha} (${wasm.length} bytes)
-               treasury ${token} (${plan.treasuryDecimals} decimals), hosted_mode=${plan.hostedMode}
-               policy: ${policy ? values.policy : "contract defaults (Policy::defaults)"}
-  + register ${plan.policyId} on ${token} (0.00125 NEAR) if needed`,
+               treasury ${token} (${plan.treasuryDecimals} decimals)
+               policy ${values.policy ?? "(defaults)"}: autonomous ${usdc(policy.autonomous_daily_budget)}/day,
+                 approval above ${usdc(policy.approval_threshold)}, daily cap ${usdc(policy.daily_cap)},
+                 executor trust ${usdc(policy.executor_trust_daily_budget)}/day, cooldown max ${usdc(policy.cooldown_max)}
+  + register ${plan.policyId} on ${token} (0.00125 NEAR) if needed
+  ≈ ${fmt(total)} in all, plus gas`,
 );
 
 if (!exists.agent) {

@@ -1,12 +1,12 @@
 /**
- * Owner top-up through `ft_transfer_call`, the only way the contract credits funds by itself.
+ * Owner top-up: a plain `ft_transfer` of USDC to the policy contract (v2 keeps no ledger, D-28:
+ * the token balance is the treasury).
  *
  *   pnpm topup --network mainnet --owner yourbusiness.near --amount 20
  */
-import { fromUnits, PolicyView, toUnits } from "@getleash/shared";
+import { defaultRoleIds, fromUnits, PolicyView, toUnits, topUp } from "@getleash/shared";
 
 import { confirm, ok, ownerAccount, parse, required } from "./lib/cli.ts";
-import { defaultRoleIds, topUp } from "@getleash/shared";
 
 const { values, common } = parse(
   { owner: { type: "string" }, "owner-key-file": { type: "string" }, policy: { type: "string" }, amount: { type: "string" } },
@@ -15,11 +15,10 @@ const { values, common } = parse(
 const ownerId = required(values.owner, "owner");
 const policyId = (values.policy as string | undefined) ?? defaultRoleIds(ownerId).policyId;
 const view = new PolicyView(common.rpc, policyId);
-const config = await view.config();
-const amount = toUnits(required(values.amount, "amount"), config.treasury_decimals);
+const state = await view.state();
+const amount = toUnits(required(values.amount, "amount"), state.token_decimals);
 
-await confirm(common, `Top up ${policyId} with ${fromUnits(amount, config.treasury_decimals)} from ${ownerId} (ft_transfer_call on ${config.treasury_token}).`);
-const out = await topUp(ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined), { treasuryToken: config.treasury_token, policyId }, amount);
-const ledger = await view.ledger();
+await confirm(common, `Top up ${policyId} with ${fromUnits(amount, state.token_decimals)} USDC from ${ownerId} (ft_transfer on ${state.token_id}).`);
+const out = await topUp(ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined), { treasuryToken: state.token_id, policyId }, amount);
 ok(`tx ${common.preset.explorerTx(out.txHash)}`);
-ok(`cash ${fromUnits(ledger.cash, config.treasury_decimals)}, reserved ${fromUnits(ledger.reserved, config.treasury_decimals)}`);
+ok(`treasury balance ${fromUnits(await view.treasuryBalance(state.token_id), state.token_decimals)} USDC`);

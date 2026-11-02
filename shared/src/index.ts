@@ -1,6 +1,7 @@
 export * from "./types.ts";
 export * from "./units.ts";
 export * from "./outcome.ts";
+export * from "./address.ts";
 export * from "./bytes.ts";
 export * from "./client.ts";
 export * from "./networks.ts";

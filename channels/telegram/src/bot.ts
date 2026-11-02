@@ -17,7 +17,7 @@ import type { Update } from "grammy/types";
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import type { Channel, Notice, Received } from "@getleash/channel-core";
 import { checkFile, type InvoiceFile, LIMITS, LimitError, Semaphore, type UpdateLog } from "@getleash/ingestion";
-import { type Directory, fromUnits, type PolicyView, routeReason } from "@getleash/shared";
+import { type Directory, fromUnits, type PolicyView } from "@getleash/shared";
 
 /** The subset of the Bot API the channel uses (grammY's `bot.api` provides it; tests fake it). */
 export interface BotApi {
@@ -151,18 +151,28 @@ export class TelegramChannel implements Channel<Update> {
     const decision = outcome.decision;
     const who = decision && decision.action === "propose" ? (decision.supplierName ?? `supplier ${decision.supplierId}`) : null;
     const amount = decision && decision.action === "propose" ? fromUnits(decision.amountOut, 6) : null;
+    const link = r?.intent_id != null ? this.link(`/intent/${r.intent_id}`) : null;
     const lines: string[] = [];
     switch (outcome.status) {
       case "proposed": {
-        const reason = r?.route ? routeReason(r.route) : null;
-        lines.push(
-          r?.status === "APPROVED"
-            ? `✅ ${amount} to ${who}: intent ${r.intent_id} approved within the autonomous budget. The executor pays it now.`
-            : `⏳ ${amount} to ${who}: intent ${r?.intent_id} needs your approval (${reason}).`,
-        );
-        if (r?.status !== "APPROVED" && r?.intent_id != null) {
-          const link = this.link(`/approve/${r.intent_id}`);
-          if (link) lines.push(link);
+        const id = r?.intent_id;
+        switch (outcome.intentStatus) {
+          case "PAID":
+            lines.push(`✅ Paid ${amount} to ${who} within the autonomous budget (intent ${id}).`);
+            break;
+          case "PAYING":
+            lines.push(`✅ ${amount} to ${who}: intent ${id} approved; the payment is being sent.`);
+            break;
+          case "APPROVED":
+            lines.push(`✅ ${amount} to ${who}: intent ${id} approved within the autonomous budget. The executor pays it cross-chain.`);
+            break;
+          case "FAILED":
+            lines.push(`⚠️ ${amount} to ${who}: intent ${id} was approved, but the token refused the transfer, so nothing left the treasury. Retry it from the dashboard.`);
+            if (link) lines.push(link);
+            break;
+          default:
+            lines.push(`⏳ ${amount} to ${who}: intent ${id} needs your approval (${r?.route}).`);
+            if (link) lines.push(link);
         }
         if (decision?.action === "propose" && decision.flags.length) lines.push(`Flags: ${decision.flags.join(", ")}. ${decision.notes.join("; ")}`);
         break;
@@ -195,43 +205,49 @@ export class TelegramChannel implements Channel<Update> {
           "/pause: link to pause all payments (signed in your wallet)",
         ].join("\n");
       case "status": {
-        const [config, ledger, budgets] = await Promise.all([view.config(), view.ledger(), view.budgetsToday()]);
-        const d = config.treasury_decimals;
+        const state = await view.state();
+        const balance = await view.treasuryBalance(state.token_id);
+        const d = state.token_decimals;
+        const b = state.budgets;
+        const p = state.policy;
         return [
-          `${config.paused ? "⏸ PAUSED\n" : ""}Treasury: ${fromUnits(ledger.cash, d)} (reserved ${fromUnits(ledger.reserved, d)}, in flight ${fromUnits(ledger.in_flight, d)})`,
-          `Autonomous today: ${fromUnits(budgets.autonomous.used, d)} of ${fromUnits(budgets.autonomous.limit, d)}`,
-          `Daily cap: ${fromUnits(budgets.daily.used, d)} of ${fromUnits(budgets.daily.limit, d)}`,
-          `Executor trust today: ${fromUnits(budgets.executor_trust.used, d)} of ${fromUnits(budgets.executor_trust.limit, d)}`,
+          `${state.paused ? "⏸ PAUSED\n" : ""}Treasury: ${fromUnits(balance, d)} USDC`,
+          `Autonomous today: ${fromUnits(b.autonomous, d)} of ${fromUnits(p.autonomous_daily_budget, d)}`,
+          `Sent today: ${fromUnits(b.outflow, d)} of ${fromUnits(p.daily_cap, d)}`,
+          `Executor trust today: ${fromUnits(b.trust, d)} of ${fromUnits(p.executor_trust_daily_budget, d)}`,
+          `Payments in flight: ${state.paying}`,
         ].join("\n");
       }
       case "pending": {
-        const work = await view.openWork();
+        const [state, intents] = await Promise.all([view.state(), view.recentIntents(50)]);
         const names = new Map(this.deps.directory().suppliers.map((s) => [s.supplier_id, s.name]));
-        const lines = work
-          .filter(({ intent, attempt }) => intent.status === "PENDING" || attempt?.status === "AWAITING_OWNER" || attempt?.status === "NEEDS_RECONCILIATION")
-          .map(({ intent, attempt }) => {
-            const who = names.get(intent.terms.supplier_id) ?? `supplier ${intent.terms.supplier_id}`;
-            if (intent.status === "PENDING") {
-              return `• intent ${intent.terms.id}: ${intent.terms.amount_out} to ${who} (${routeReason(intent.terms.route)}) ${this.link(`/approve/${intent.terms.id}`) ?? ""}`;
-            }
-            return `• attempt ${attempt!.terms.id} (${attempt!.status}) for intent ${intent.terms.id} ${this.link(`/attempt/${attempt!.terms.id}`) ?? ""}`;
+        const lines = intents
+          .filter((i) => i.status === "PENDING" || i.status === "FAILED" || (i.status === "APPROVED" && i.attempt !== null && !i.attempt.authorized))
+          .map((i) => {
+            const who = names.get(i.supplier_id) ?? `supplier ${i.supplier_id}`;
+            const what =
+              i.status === "PENDING" ? `waits for your approval (${i.route})` : i.status === "FAILED" ? "transfer refused, retry?" : "deposit waiting for your signature, unless it fits the trust budget";
+            return `• intent ${i.id}: ${fromUnits(i.value, state.token_decimals)} to ${who}, ${what} ${this.link(`/intent/${i.id}`) ?? ""}`;
           });
         return lines.length ? lines.join("\n") : "Nothing is waiting for you.";
       }
       case "suppliers": {
-        const suppliers = await view.suppliers();
+        const [state, suppliers] = await Promise.all([view.state(), view.suppliers()]);
         const names = new Map(this.deps.directory().suppliers.map((s) => [s.supplier_id, s.name]));
+        const now = BigInt(Date.now()) * 1_000_000n;
         return (
           suppliers
-            .map(
-              (s) =>
-                `#${s.id} ${names.get(s.id) ?? "(no name on file)"}: ${s.chain} ${s.recipient}${s.verified ? " ✓ verified" : " (unverified)"}${s.active ? "" : " (inactive)"}`,
-            )
+            .map((s) => {
+              const cooldown = now < BigInt(s.changed_at) + BigInt(state.policy.cooldown_ns) ? " (new address: cooldown)" : "";
+              return `#${s.id} ${names.get(s.id) ?? "(no name on file)"}: ${s.chain} ${s.recipient}${cooldown}${s.active ? "" : " (inactive)"}`;
+            })
             .join("\n") || "No suppliers yet."
         );
       }
       case "pause":
-        return this.link("/pause") ? `Pause every payment by signing in your wallet: ${this.link("/pause")}` : "Pause from your wallet: call pause() on the contract with 1 yoctoNEAR.";
+        return this.link("/pause")
+          ? `Pause every payment by signing in your wallet: ${this.link("/pause")}`
+          : 'Pause from your wallet: call set_paused {"paused": true} on the contract with 1 yoctoNEAR.';
       default:
         return "Unknown command. /help lists them.";
     }

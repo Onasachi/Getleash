@@ -39,9 +39,9 @@ const account = signingAccount(rpc, agentId, {
   keyFile: existsSync(keyFile) ? keyFile : undefined,
 });
 const view = new PolicyView(rpc, policyId);
-const config = await view.config();
-if (config.agent_id !== agentId) {
-  console.error(`✗ ${policyId} expects agent ${config.agent_id}, not ${agentId}`);
+const state = await view.state();
+if (state.agent_id !== agentId) {
+  console.error(`✗ ${policyId} expects agent ${state.agent_id}, not ${agentId}`);
   process.exit(1);
 }
 

@@ -1,33 +1,48 @@
 /**
- * Adds destination assets and suppliers from a JSON file, and records their names in the private
- * off-chain directory. New suppliers start unverified and in cooldown (test payments only).
+ * Adds suppliers from a JSON file and records their names in the private off-chain directory.
+ * New suppliers start in cooldown: until it ends, every payment to them waits for the owner, who
+ * can approve at most `cooldown_max` (a test payment). Native NEAR suppliers are registered on the
+ * treasury token here (paid by the owner), because the contract pays only registered accounts.
  *
- *   pnpm seed --network mainnet --owner yourbusiness.near --file fixtures/seed.example.json
+ *   pnpm seed --network mainnet --owner yourbusiness.near --file suppliers.json
+ *
+ * suppliers.json:
+ *   { "suppliers": [
+ *       { "name": "Acme Packaging Ltd", "chain": "NEAR", "recipient": "acme.near",
+ *         "typical_amount": "18", "currency": "USD" },
+ *       { "name": "Shenzhen Parts Co.", "chain": "TRON", "recipient": "T…",
+ *         "asset_id": "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near",
+ *         "typical_amount": "2", "currency": "USDT" } ] }
+ * `asset_id` defaults to the treasury token (native) for NEAR; `decimals` defaults to 6.
  */
 import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { Chain, InvoiceCurrency, OwnerClient, PolicyView, toUnits } from "@getleash/shared";
+import {
+  CHAINS,
+  defaultRoleIds,
+  InvoiceCurrency,
+  isNative,
+  isTronAddress,
+  OwnerClient,
+  PolicyView,
+  registerOnToken,
+} from "@getleash/shared";
 import { directoryPath, loadDirectory, saveDirectory } from "@getleash/shared/node";
 
 import { confirm, fail, ok, ownerAccount, parse, required, step } from "./lib/cli.ts";
-import { defaultRoleIds } from "@getleash/shared";
 
 const Decimal = z.string().regex(/^\d+(\.\d+)?$/);
 const SeedFile = z.object({
-  assets: z
-    .array(z.object({ asset_id: z.string(), chain: Chain, decimals: z.number().int(), max_fixed_fee: Decimal }))
-    .default([]),
   suppliers: z.array(
     z.object({
       name: z.string(),
       aliases: z.array(z.string()).default([]),
-      chain: Chain,
-      asset_id: z.string(),
+      chain: z.enum(CHAINS),
+      asset_id: z.string().optional(),
       recipient: z.string(),
-      per_payment_cap: Decimal,
-      monthly_cap: Decimal,
+      decimals: z.number().int().min(0).max(24).default(6),
       contact: z.string().optional(),
       typical_amount: Decimal.optional(),
       currency: InvoiceCurrency,
@@ -37,57 +52,46 @@ const SeedFile = z.object({
 
 const { values, common } = parse(
   { owner: { type: "string" }, "owner-key-file": { type: "string" }, policy: { type: "string" }, file: { type: "string" } },
-  "Usage: pnpm seed --network <net> --owner <you.near> --file <seed.json> [--policy <contract>]",
+  "Usage: pnpm seed --network <net> --owner <you.near> --file <suppliers.json> [--policy <contract>]",
 );
 const ownerId = required(values.owner, "owner");
 const policyId = (values.policy as string | undefined) ?? defaultRoleIds(ownerId).policyId;
 const parsed = SeedFile.safeParse(JSON.parse(readFileSync(required(values.file, "file"), "utf8")));
 if (!parsed.success) fail(parsed.error.message);
-const seed = parsed.data;
 
 const view = new PolicyView(common.rpc, policyId);
-const config = await view.config();
-const assets = new Map(await view.assets());
+const state = await view.state();
+const treasuryAsset = `nep141:${state.token_id}`;
+const wanted = parsed.data.suppliers.map((s) => ({ ...s, asset_id: s.asset_id ?? (s.chain === "NEAR" ? treasuryAsset : "") }));
+for (const s of wanted) {
+  if (!s.asset_id) fail(`${s.name}: asset_id is required for ${s.chain}`);
+  if (s.chain === "TRON" && !isTronAddress(s.recipient)) fail(`${s.name}: ${s.recipient} is not a valid Tron address (checksum)`);
+  if (isNative(s, state.token_id) && s.decimals !== state.token_decimals) fail(`${s.name}: native suppliers use the token's ${state.token_decimals} decimals`);
+}
 const existing = await view.suppliers();
-const newAssets = seed.assets.filter((a) => !assets.has(a.asset_id));
-const newSuppliers = seed.suppliers.filter(
-  (s) => !existing.some((e) => e.chain === s.chain && e.asset_id === s.asset_id && e.recipient === s.recipient),
-);
+const fresh = wanted.filter((s) => !existing.some((e) => e.chain === s.chain && e.asset_id === s.asset_id && e.recipient === s.recipient));
+const hours = Number(BigInt(state.policy.cooldown_ns) / 3_600_000_000_000n);
 
 await confirm(
   common,
-  `Seeding ${policyId}:\n` +
-    newAssets.map((a) => `  + asset ${a.asset_id} (${a.chain}, fixed fee ≤ ${a.max_fixed_fee})`).join("\n") +
-    "\n" +
-    newSuppliers.map((s) => `  + supplier "${s.name}" → ${s.chain} ${s.recipient} (cap ${s.per_payment_cap}/payment, ${s.monthly_cap}/month)`).join("\n"),
+  `Seeding ${policyId} (each new supplier starts a ${hours} h cooldown):\n` +
+    fresh.map((s) => `  + "${s.name}" → ${s.chain} ${s.recipient}${isNative(s, state.token_id) ? " (native USDC; registered on the token if needed)" : ` (${s.asset_id})`}`).join("\n"),
 );
 
-const owner = new OwnerClient(ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined), policyId);
-for (const a of newAssets) {
-  step(`adding asset ${a.asset_id}`);
-  await owner.addAsset({
-    assetId: a.asset_id,
-    chain: a.chain,
-    decimals: a.decimals,
-    maxFixedFee: toUnits(a.max_fixed_fee, config.treasury_decimals),
-  });
-}
-const allAssets = new Map(await view.assets());
+const account = ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined);
+const owner = new OwnerClient(account, policyId);
 const path = directoryPath(common.network);
 const directory = loadDirectory(path);
-for (const s of newSuppliers) {
-  const asset = allAssets.get(s.asset_id);
-  if (!asset) fail(`asset ${s.asset_id} is not on the contract`);
+for (const s of fresh) {
+  if (isNative(s, state.token_id)) {
+    const registered = await common.rpc.callFunction({ contractId: state.token_id, method: "storage_balance_of", args: { account_id: s.recipient } });
+    if (registered == null) {
+      step(`registering ${s.recipient} on ${state.token_id} (0.00125 NEAR)`);
+      await registerOnToken(account, state.token_id, s.recipient);
+    }
+  }
   step(`adding supplier ${s.name}`);
-  const id = (
-    await owner.addSupplier({
-      chain: s.chain,
-      assetId: s.asset_id,
-      recipient: s.recipient,
-      perPaymentCap: toUnits(s.per_payment_cap, asset.decimals),
-      monthlyCap: toUnits(s.monthly_cap, asset.decimals),
-    })
-  ).value;
+  const id = (await owner.addSupplier({ chain: s.chain, asset_id: s.asset_id, recipient: s.recipient, decimals: s.decimals })).value;
   directory.suppliers = directory.suppliers.filter((d) => d.supplier_id !== id);
   directory.suppliers.push({
     supplier_id: id,

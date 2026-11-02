@@ -99,6 +99,13 @@ export class PolicyView {
     const { next_intent_id } = await this.state();
     return this.intentsSince(Math.max(1, next_intent_id - count), next_intent_id);
   }
+
+  /** The treasury's balance in the token's base units (v2 keeps no ledger: this is the truth). */
+  async treasuryBalance(tokenId?: string): Promise<bigint> {
+    const token = tokenId ?? (await this.state()).token_id;
+    const balance = await this.provider.callFunction<string>({ contractId: token, method: "ft_balance_of", args: { account_id: this.contractId } });
+    return BigInt(balance ?? "0");
+  }
 }
 
 // ── Calls ────────────────────────────────────────────────────────────────────────────────────

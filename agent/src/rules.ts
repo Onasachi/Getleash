@@ -4,7 +4,7 @@
  * and the on-chain supplier records. The model never picks a supplier id, an address or an id.
  */
 import { compactForm, normaliseInvoiceNumber } from "@getleash/ingestion";
-import { type AssetInfo, type DirectoryEntry, type ReviewFlag, type Supplier, toUnits } from "@getleash/shared";
+import { type DirectoryEntry, type ReviewFlag, type Supplier, toUnits } from "@getleash/shared";
 
 import type { ExtractResult } from "./extract.ts";
 
@@ -113,7 +113,6 @@ export function matchSupplier(
 export type RuleContext = {
   directory: DirectoryEntry[];
   suppliers: Supplier[];
-  assets: Map<string, AssetInfo>;
   /** Flag invoices above this multiple of the supplier's typical amount. */
   unusualMultiple?: number;
 };
@@ -195,7 +194,7 @@ export function decide(result: ExtractResult, ctx: RuleContext): Decision {
   }
 
   // Amounts are in the supplier's destination asset units (USD-pegged assets only).
-  const decimals = onChain ? (ctx.assets.get(onChain.asset_id)?.decimals ?? 6) : 6;
+  const decimals = onChain?.decimals ?? 6;
   const ordered = FLAG_ORDER.filter((f) => flags.has(f));
   return {
     action: "propose",

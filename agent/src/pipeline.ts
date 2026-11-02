@@ -1,19 +1,20 @@
 /**
  * The agent pipeline (PLAN §4.3): InvoiceInput → extraction (model, untrusted) → deterministic
- * checks → obligation id (ingestion HMAC) → `propose_payment` → stored record and owner notice.
+ * checks → obligation id (ingestion HMAC) → `propose` → stored record and owner notice.
  *
  * What reaches the chain: the obligation id (keyed HMAC), the supplier id (directory match), the
  * amount (cross-checked total, in the supplier's asset units) and at most one enum review flag.
- * The contract then decides; a refusal is a normal, recorded outcome.
+ * The contract then decides; a refusal is a normal, recorded outcome. Within the agent's limits a
+ * native payment is sent in that same call (D-28), so the outcome reports whether it was paid.
  */
 import { obligationId, type InvoiceInput, pdfText } from "@getleash/ingestion";
 import {
   type AgentClient,
   ContractCallError,
   type Directory,
+  type IntentStatus,
   type PolicyView,
   type ProposeResult,
-  routeReason,
 } from "@getleash/shared";
 
 import { BADGE_LABEL, type Extractor, type ExtractResult } from "./extract.ts";
@@ -27,6 +28,8 @@ export type AgentOutcome = {
   status: "proposed" | "rejected_onchain" | "needs_owner" | "ignored" | "failed";
   decision: Decision | null;
   result: ProposeResult | null;
+  /** The intent's status after the call (a native payment within limits is PAID already). */
+  intentStatus: IntentStatus | null;
   obligationId: string | null;
   badge: string;
   model: string | null;
@@ -58,12 +61,8 @@ export class InvoiceAgent {
     let outcome: AgentOutcome;
     try {
       extracted = await this.extract(input);
-      const [suppliers, assets] = await Promise.all([this.deps.view.suppliers(), this.deps.view.assets()]);
-      decision = decide(extracted, {
-        directory: this.deps.directory().suppliers,
-        suppliers,
-        assets: new Map(assets),
-      });
+      const suppliers = await this.deps.view.suppliers();
+      decision = decide(extracted, { directory: this.deps.directory().suppliers, suppliers });
       outcome = await this.act(input, extracted, decision);
     } catch (error) {
       const code = error instanceof ContractCallError ? error.code : (error as Error).message;
@@ -72,6 +71,7 @@ export class InvoiceAgent {
         status: "failed",
         decision,
         result: null,
+        intentStatus: null,
         obligationId: null,
         badge: extracted ? BADGE_LABEL[extracted.verification.badge] : BADGE_LABEL.VERIFICATION_UNAVAILABLE,
         model: extracted?.model ?? null,
@@ -87,7 +87,7 @@ export class InvoiceAgent {
       badge: outcome.badge,
       extraction: extracted?.extraction ?? null,
       decision: decision ? JSON.parse(JSON.stringify(decision, (_k, v) => (typeof v === "bigint" ? v.toString() : v))) : null,
-      outcome: { status: outcome.status, result: outcome.result, obligationId: outcome.obligationId, summary: outcome.summary },
+      outcome: { status: outcome.status, result: outcome.result, intentStatus: outcome.intentStatus, obligationId: outcome.obligationId, summary: outcome.summary },
       verification: extracted?.verification ?? null,
       files: input.files.map((f) => ({ kind: f.kind, name: f.name, base64: Buffer.from(f.bytes).toString("base64") })),
       text: input.text ?? null,
@@ -113,6 +113,7 @@ export class InvoiceAgent {
   private async act(input: InvoiceInput, extracted: ExtractResult, decision: Decision): Promise<AgentOutcome> {
     const base = {
       key: input.key,
+      intentStatus: null as IntentStatus | null,
       decision,
       badge: BADGE_LABEL[extracted.verification.badge],
       model: extracted.model,
@@ -168,15 +169,24 @@ export class InvoiceAgent {
         ],
       };
     }
-    const reason = result.route ? routeReason(result.route) : null;
+    // A native payment within the limits was sent in the same call: report how it ended.
+    const intentStatus =
+      result.status === "PAYING" ? ((await this.deps.view.intent(result.intent_id!))?.status ?? "PAYING") : result.status;
     const summary =
-      result.status === "APPROVED"
-        ? `intent ${result.intent_id} approved automatically (within the autonomous budget)`
-        : `intent ${result.intent_id} waits for the owner (${reason})`;
+      intentStatus === "PAID"
+        ? `intent ${result.intent_id} paid automatically (within the autonomous budget)`
+        : intentStatus === "FAILED"
+          ? `intent ${result.intent_id} approved, but the token refused the transfer; the owner can retry it`
+          : intentStatus === "PAYING"
+            ? `intent ${result.intent_id} approved; the payment is being sent`
+            : intentStatus === "APPROVED"
+              ? `intent ${result.intent_id} approved automatically; the executor pays it cross-chain`
+              : `intent ${result.intent_id} waits for the owner (${result.route})`;
     return {
       ...base,
       status: "proposed",
       result,
+      intentStatus,
       obligationId: id,
       summary,
       notices:
@@ -185,7 +195,7 @@ export class InvoiceAgent {
               {
                 key: `flags-${input.key}`,
                 text: `Intent ${result.intent_id} raised ${decision.flags.join(", ")}.${notes}`,
-                link: this.link(`/approve/${result.intent_id}`),
+                link: this.link(`/intent/${result.intent_id}`),
               },
             ]
           : [],
