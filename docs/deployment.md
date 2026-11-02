@@ -147,7 +147,7 @@ function-call keys.
    two hosts only and then delete them (`rm .env.render .env.vercel`). Only variable names are printed.
    Both carry the supplier names as `GETLEASH_DIRECTORY_BASE64`, because neither host has your files.
 3. **Render:** New → Web Service → connect the repository → branch `feature/getleash-core`, language
-   Node, build command `corepack enable && pnpm install --frozen-lockfile`, start command
+   Node, build command `npm install -g pnpm@10.33.0 && pnpm install --frozen-lockfile`, start command
    `node --import tsx scripts/src/services.ts`, health check path `/healthz`, instance type Starter. Add a
    disk (mount path `/var/data`, 1 GB) and the variable `GETLEASH_DATA_DIR=/var/data`. Paste `.env.render`
    (`pbcopy < .env.render` copies it without showing it) under Environment → "Add from .env".
