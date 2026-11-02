@@ -14,7 +14,10 @@ type Connector = import("@hot-labs/near-connect").NearConnector;
 
 type WalletState = {
   accountId: string | null;
-  connect: () => Promise<void>;
+  /** The near-connect wallet in use, e.g. "near-cli" or "meteor-wallet". */
+  walletId: string | null;
+  /** Opens the wallet picker; resolves to the connected account (null if the owner closed it). */
+  connect: () => Promise<string | null>;
   disconnect: () => Promise<void>;
   /** Signs an owner call with 1 yoctoNEAR attached. */
   ownerCall: (method: string, args: Record<string, unknown>, tgas?: number) => Promise<TxOutcome>;
@@ -26,6 +29,7 @@ const WalletContext = createContext<WalletState | null>(null);
 export function WalletProvider({ children }: { children: ReactNode }) {
   const connector = useRef<Connector | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
+  const [walletId, setWalletId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,12 +38,21 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       const c = new NearConnector({ network: NETWORK, features: { signAndSendTransaction: true } });
       connector.current = c;
-      c.on("wallet:signIn", (event: { accounts: Array<{ accountId: string }> }) => setAccountId(event.accounts[0]?.accountId ?? null));
-      c.on("wallet:signOut", () => setAccountId(null));
+      c.on("wallet:signIn", (event: { accounts: Array<{ accountId: string }> }) => {
+        setAccountId(event.accounts[0]?.accountId ?? null);
+        void c.wallet().then((w) => setWalletId(w.manifest.id), () => undefined);
+      });
+      c.on("wallet:signOut", () => {
+        setAccountId(null);
+        setWalletId(null);
+      });
       try {
         const wallet = await c.wallet();
         const accounts = await wallet.getAccounts();
-        if (!cancelled) setAccountId(accounts[0]?.accountId ?? null);
+        if (!cancelled) {
+          setAccountId(accounts[0]?.accountId ?? null);
+          setWalletId(wallet.manifest.id);
+        }
       } catch {
         // not signed in
       }
@@ -52,12 +65,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(async () => {
     const wallet = await connector.current?.connect();
     const accounts = (await wallet?.getAccounts()) ?? [];
-    setAccountId(accounts[0]?.accountId ?? null);
+    const account = accounts[0]?.accountId ?? null;
+    setAccountId(account);
+    setWalletId(wallet?.manifest.id ?? null);
+    return account;
   }, []);
 
   const disconnect = useCallback(async () => {
     await connector.current?.disconnect();
     setAccountId(null);
+    setWalletId(null);
   }, []);
 
   const ownerCall = useCallback(async (method: string, args: Record<string, unknown>, tgas = 30) => {
@@ -76,7 +93,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return wallet.signMessage({ message, recipient, nonce });
   }, []);
 
-  return <WalletContext.Provider value={{ accountId, connect, disconnect, ownerCall, signMessage }}>{children}</WalletContext.Provider>;
+  return <WalletContext.Provider value={{ accountId, walletId, connect, disconnect, ownerCall, signMessage }}>{children}</WalletContext.Provider>;
 }
 
 export function useWallet(): WalletState {

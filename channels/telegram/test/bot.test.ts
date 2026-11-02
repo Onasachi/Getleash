@@ -27,6 +27,7 @@ const REFUSED = {
   result: { accepted: false, intent_id: null, status: null, route: null, reason: "OBLIGATION_OPEN_OR_PAID" },
   intentStatus: null,
   intentSince: null,
+  supplier: null,
   summary: "refused by the contract: OBLIGATION_OPEN_OR_PAID",
 } satisfies Partial<AgentOutcome>;
 
@@ -129,10 +130,10 @@ describe("Telegram channel", () => {
     expect(sent.at(-1)!.text).toContain("https://getleash.example/pause");
   });
 
-  it("reply to an invoice carries the enum code and the badge, not model text", async () => {
+  it("reply to an invoice says why in plain words, with the enum code and the badge, not model text", async () => {
     const { channel, sent } = setup();
     await channel.handle(message(508, { text: "INVOICE\nFrom: Acme\nInvoice No: 1001\nTotal: USD 18" }));
-    expect(sent.at(-1)!.text).toContain("OBLIGATION_OPEN_OR_PAID");
+    expect(sent.at(-1)!.text).toContain("⛔ Not paid: this invoice was already paid, or is already waiting for you (OBLIGATION_OPEN_OR_PAID).");
     expect(sent.at(-1)!.text).toContain("Inference: Verification unavailable");
   });
 
@@ -140,7 +141,8 @@ describe("Telegram channel", () => {
     const pending = { status: "proposed", intentStatus: "PENDING", result: { accepted: true, intent_id: 2, status: "PENDING", route: "ABOVE_THRESHOLD", reason: null } } as const;
     const inOwnerChat = setup({ outcome: pending, ownerChatId: String(CHAT) });
     await inOwnerChat.channel.handle(message(509, { text: "INVOICE\nTotal: USD 3" }));
-    expect(inOwnerChat.sent.at(-1)!.text).toContain("intent 2 needs your approval (ABOVE_THRESHOLD)");
+    expect(inOwnerChat.sent.at(-1)!.text).toContain("Acme asks for 18.00. It needs your OK because it is above what the agent may pay on its own (payment #2).");
+    expect(inOwnerChat.sent.at(-1)!.text).toContain("Review and approve: https://getleash.example/intent/2");
     expect(inOwnerChat.delivered).toEqual(["approval:2"]);
 
     // Invoices from any other approved chat leave the owner's notices to the executor.
@@ -157,6 +159,7 @@ describe("Telegram channel", () => {
       result: { accepted: true, intent_id: 1, status: intentStatus === "APPROVED" ? "APPROVED" : "PAYING", route: "AUTONOMOUS", reason: null },
       intentStatus,
       intentSince,
+      supplier: null,
       obligationId: null,
       badge: "",
       model: null,

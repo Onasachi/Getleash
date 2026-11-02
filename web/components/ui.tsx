@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import type { TxOutcome } from "@getleash/shared";
+import type { Tone, TxOutcome } from "@getleash/shared";
 
 import { EXPLORER, NETWORK, POLICY_ID } from "@/lib/config";
 import { useWallet } from "@/lib/wallet";
@@ -17,16 +17,14 @@ export function Shell({ children }: { children: ReactNode }) {
           GetLeash
         </Link>
         <nav>
-          <Link href="/">Overview</Link>
+          <Link href="/">Payments</Link>
+          <Link href="/private">Suppliers &amp; invoices</Link>
           <Link href="/pause">Pause</Link>
-          <Link href="/private">Private</Link>
         </nav>
         <span className="spacer" />
-        <span className="muted mono small">
-          {POLICY_ID || "no contract configured"} · {NETWORK}
-        </span>
+        {NETWORK !== "mainnet" && <span className="net">{NETWORK}</span>}
         {accountId ? (
-          <button className="ghost" onClick={() => void disconnect()}>
+          <button className="ghost" title="Disconnect" onClick={() => void disconnect()}>
             {accountId} ✕
           </button>
         ) : (
@@ -35,12 +33,26 @@ export function Shell({ children }: { children: ReactNode }) {
       </header>
       <main>{children}</main>
       <footer className="muted small">
-        Data is read from the chain in your browser. Every owner action is signed in your wallet with 1 yoctoNEAR.
+        Everything here is read straight from the NEAR blockchain in your browser. Money moves only within the rules of the contract{" "}
+        {POLICY_ID ? (
+          <a href={EXPLORER.explorerAccount(POLICY_ID)} target="_blank" rel="noreferrer" className="mono">
+            {POLICY_ID}
+          </a>
+        ) : (
+          "(not configured)"
+        )}
+        , and anything you approve is signed in your own wallet.
       </footer>
     </>
   );
 }
 
+/** A status in plain words ("Needs your OK", "Paid"), coloured by how it is going. */
+export function StatusChip({ label, tone }: { label: string; tone: Tone }) {
+  return <span className={`chip ${tone}`}>{label}</span>;
+}
+
+/** Raw enum codes (1Click statuses, the private view's records). */
 export function Pill({ value }: { value: string }) {
   const tone = /PAID|SUCCESS|APPROVED|OK/.test(value)
     ? "good"
@@ -50,6 +62,31 @@ export function Pill({ value }: { value: string }) {
         ? "warn"
         : "plain";
   return <span className={`pill ${tone}`}>{value}</span>;
+}
+
+export type Step = { label: string; state: "done" | "current" | "todo" | "bad" };
+
+/** Where a payment is on its way, left to right. */
+export function Steps({ steps }: { steps: Step[] }) {
+  return (
+    <ol className="steps">
+      {steps.map((s) => (
+        <li key={s.label} className={s.state}>
+          {s.label}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** A section that starts folded ("Show"), for details most people never need. */
+export function Fold({ summary, open, children }: { summary: ReactNode; open?: boolean; children: ReactNode }) {
+  return (
+    <details className="fold" open={open}>
+      <summary>{summary}</summary>
+      <div className="fold-body">{children}</div>
+    </details>
+  );
 }
 
 export function Check({ ok, label, detail }: { ok: boolean; label: string; detail?: ReactNode }) {
@@ -74,13 +111,16 @@ export function Row({ k, v }: { k: string; v: ReactNode }) {
 export function TxNote({ result, error }: { result: TxOutcome | null; error: string | null }) {
   if (error) return <p className="error">{error}</p>;
   if (!result) return null;
-  const failed = !result.ok;
-  return (
-    <p className={failed ? "error" : "success"}>
-      {failed ? `Transaction failed: ${result.failures.map((f) => f.panic ?? f.message).join("; ")}` : "Done."}{" "}
-      <a href={EXPLORER.explorerTx(result.txHash)} target="_blank" rel="noreferrer" className="mono small">
-        {result.txHash}
-      </a>
+  const link = (
+    <a href={EXPLORER.explorerTx(result.txHash)} target="_blank" rel="noreferrer">
+      View the transaction ↗
+    </a>
+  );
+  return result.ok ? (
+    <p className="success">✓ Done. {link}</p>
+  ) : (
+    <p className="error">
+      The transaction failed, so nothing changed: {result.failures.map((f) => f.panic ?? f.message).join("; ")}. {link}
     </p>
   );
 }

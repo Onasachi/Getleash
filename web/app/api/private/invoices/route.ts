@@ -4,16 +4,14 @@
  * Available only where the services' data directory is (self-hosted). Every request checks the
  * session.
  */
-import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { InvoiceStore, parseStoreKey } from "@getleash/agent/store";
-import { Directory } from "@getleash/shared";
 
-import { NETWORK } from "@/lib/config";
+import { dataBase, readDirectory } from "@/lib/private-data";
 import { SESSION_COOKIE, unseal } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -22,9 +20,8 @@ export async function GET() {
   const session = unseal<{ accountId: string; exp: number }>((await cookies()).get(SESSION_COOKIE)?.value);
   if (!session) return NextResponse.json({ error: "sign in first" }, { status: 401 });
   // The services' data directory on this (self-hosted) machine; read at request time only.
-  const base = resolve(/*turbopackIgnore: true*/ process.env.GETLEASH_DATA_DIR ?? resolve(process.cwd(), "..", ".data"), NETWORK);
-  const directoryFile = process.env.GETLEASH_DIRECTORY ?? resolve(/*turbopackIgnore: true*/ base, "directory.json");
-  const directory = existsSync(directoryFile) ? Directory.parse(JSON.parse(readFileSync(directoryFile, "utf8"))) : { suppliers: [] };
+  const base = dataBase();
+  const directory = readDirectory();
   let invoices: unknown[] = [];
   if (process.env.INVOICE_STORE_KEY) {
     try {

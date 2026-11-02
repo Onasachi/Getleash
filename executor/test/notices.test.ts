@@ -33,7 +33,7 @@ function intent(id: number, status: Intent["status"], sinceMs: number): Intent {
   };
 }
 
-function setup(intents: Intent[], delivered: ReadonlySet<string> | null) {
+function setup(intents: Intent[], delivered: ReadonlySet<string> | null, names?: Record<number, string>) {
   let now = NOW_MS;
   const state = {
     token_id: TOKEN,
@@ -41,7 +41,14 @@ function setup(intents: Intent[], delivered: ReadonlySet<string> | null) {
     paused: false,
     executor_epoch: 0,
     next_intent_id: 100,
-    policy: { callback_grace_ns: ns(3_600_000), retention_ns: ns(7 * 86_400_000), intent_ttl_ns: ns(3 * 86_400_000) },
+    policy: {
+      approval_threshold: "2500000",
+      autonomous_daily_budget: "5000000",
+      daily_cap: "20000000",
+      callback_grace_ns: ns(3_600_000),
+      retention_ns: ns(7 * 86_400_000),
+      intent_ttl_ns: ns(3 * 86_400_000),
+    },
     budgets: { trust: "0" },
   } as unknown as StateView;
   const supplier: Supplier = { id: 1, chain: "NEAR", asset_id: `nep141:${TOKEN}`, recipient: "bob.testnet", decimals: 6, active: true, revision: 1, changed_at: "0" };
@@ -57,6 +64,7 @@ function setup(intents: Intent[], delivered: ReadonlySet<string> | null) {
       notifier,
       journal,
       delivered: delivered && { has: (key: string) => delivered.has(key) },
+      names: names ? (id: number) => names[id] ?? null : null,
       nowMs: () => now,
     },
   );
@@ -86,13 +94,18 @@ describe("owner notices shared with the bot", () => {
     advance(20_000);
     await executor.tick();
     expect(notifier.kinds()).toEqual(["approval_needed", "payout_failed"]);
+    // Plain words, with the owner's own limit; without a directory the supplier is named by its address.
+    expect(notifier.notices[0]!.text).toBe(
+      "👋 bob.testnet asks for 3.00 USDC. It needs your OK because it is above the 2.50 USDC the agent may pay on its own (payment #3). Review and approve:",
+    );
     await executor.tick();
     expect(notifier.notices).toHaveLength(2);
   });
 
-  it("without a shared record, notices go out at once", async () => {
-    const { executor, notifier } = setup([intent(5, "PENDING", NOW_MS)], null);
+  it("without a shared record, notices go out at once, naming the supplier from the directory", async () => {
+    const { executor, notifier } = setup([intent(5, "PENDING", NOW_MS)], null, { 1: "Acme Packaging Ltd" });
     await executor.tick();
     expect(notifier.kinds()).toEqual(["approval_needed"]);
+    expect(notifier.notices[0]!.text).toMatch(/^👋 Acme Packaging Ltd asks for 3\.00 USDC\./);
   });
 });

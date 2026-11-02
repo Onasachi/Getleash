@@ -23,14 +23,18 @@
  * The executor never chooses an amount or an address at funding time; the contract enforces both.
  */
 import {
+  assetName,
   checkExecutionQuote,
   ContractCallError,
-  fromUnits,
+  durationText,
   isExpired,
   isNative,
   isoToNanos,
+  money,
   OneClickError,
+  shortAddress,
   TERMINAL_STATUSES,
+  waitReason,
   type ExecutorClient,
   type Intent,
   type OneClickClient,
@@ -85,6 +89,8 @@ export type ExecutorDeps = {
   journal: Journal;
   /** Notices another service already gave the owner (the bot, replying in the owner's chat). */
   delivered?: Pick<DeliveredNotices, "has"> | null;
+  /** Supplier names from the owner's off-chain directory, for notices; without it, the address on file. */
+  names?: ((supplierId: number) => string | null) | null;
   nowMs?: () => number;
   log?: (line: string) => void;
 };
@@ -116,6 +122,16 @@ export class Executor {
 
   private log(line: string) {
     this.deps.log?.(`[executor] ${line}`);
+  }
+
+  /** The supplier as the owner knows them: the name on file, else the payment address. */
+  private who(supplier: Supplier): string {
+    return this.deps.names?.(supplier.id) ?? shortAddress(supplier.recipient);
+  }
+
+  /** What the supplier gets, e.g. "3.00 USDC" or "1.00 USDT on Tron". */
+  private amount(intent: Intent, supplier: Supplier, state: StateView): string {
+    return `${money(intent.amount_out, supplier.decimals)} ${assetName(supplier, state.token_id)}`;
   }
 
   private link(path: string): string | undefined {
@@ -173,7 +189,7 @@ export class Executor {
     if (oldest !== this.deps.journal.scanFrom()) this.deps.journal.record("scan_from", { id: oldest });
     report.items = intents.length;
     if (state.paused) {
-      await this.notifyOnce({ key: `paused:${state.next_intent_id}`, kind: "paused", text: "The policy contract is paused: no payouts until you unpause it." });
+      await this.notifyOnce({ key: `paused:${state.next_intent_id}`, kind: "paused", text: "⏸ Payments are paused. Nothing will be paid until you unpause them.", link: this.link("/pause") });
     }
     for (const intent of intents) {
       const supplier = suppliers.get(intent.supplier_id);
@@ -201,7 +217,7 @@ export class Executor {
         await this.notifyOnce({
           key: noticeKey.approval(id),
           kind: "approval_needed",
-          text: `Intent ${id} needs your approval (${intent.route}): ${fromUnits(intent.value, d)} to supplier ${intent.supplier_id}${native ? "" : `, up to ${fromUnits(intent.max_in, d)} from the treasury`}.`,
+          text: `👋 ${this.who(supplier)} asks for ${this.amount(intent, supplier, state)}. It needs your OK because ${waitReason(intent.route, state.policy, d)} (payment #${id}).${native ? "" : ` Sending it costs at most ${money(intent.max_in, d)} USDC, fees included.`} Review and approve:`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -214,7 +230,7 @@ export class Executor {
           await this.notifyOnce({
             key: `overdue:${id}:${intent.since}`,
             kind: "callback_overdue",
-            text: `Intent ${id}: the transfer's callback has not come back. Check the transfer on the explorer, then mark the payment paid or failed.`,
+            text: `⚠️ Payment #${id} to ${this.who(supplier)} has not confirmed after ${durationText(state.policy.callback_grace_ns)}. Check the transfer, then mark it paid or failed:`,
             link: this.link(`/intent/${id}`),
             intentId: id,
           });
@@ -226,7 +242,7 @@ export class Executor {
           await this.notifyOnce({
             key: noticeKey.paid(id, intent.since),
             kind: "paid",
-            text: `Paid ${fromUnits(intent.value, d)} to ${supplier.recipient} (intent ${id}).`,
+            text: `✅ Paid ${this.who(supplier)} ${this.amount(intent, supplier, state)} (payment #${id}).`,
             intentId: id,
           });
         } else {
@@ -238,7 +254,7 @@ export class Executor {
         await this.notifyOnce({
           key: noticeKey.failed(id, intent.since),
           kind: "payout_failed",
-          text: `Intent ${id}: the treasury token refused the transfer, so nothing left the treasury. Fix the cause (e.g. register the payee on USDC), then retry.`,
+          text: `⚠️ Payment #${id} to ${this.who(supplier)} didn't go through: the USDC token refused the transfer, so nothing left your treasury. Fix the cause (for example, register the payee on USDC), then retry:`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -261,7 +277,7 @@ export class Executor {
         await this.notifyOnce({
           key: `stuck:${id}:${this.deps.journal.failuresFor(id)}`,
           kind: "funding_failed",
-          text: `Intent ${id}: quoting or funding failed ${this.deps.journal.failuresFor(id)} times; the executor stopped retrying it.`,
+          text: `⚠️ Payment #${id} to ${this.who(supplier)}: getting a quote or sending failed ${this.deps.journal.failuresFor(id)} times, so the executor stopped trying. Retry or reject it:`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -281,7 +297,7 @@ export class Executor {
     await this.notifyOnce({
       key: `authorize:${id}:${attempt.deposit}`,
       kind: "authorization_needed",
-      text: `Intent ${id} needs your signature: ${fromUnits(attempt.amount_in, state.token_decimals)} USDC to the 1Click deposit ${attempt.deposit} for ${intent.amount_out} of ${supplier.asset_id} to ${supplier.recipient}.`,
+      text: `✍️ Ready to send ${this.amount(intent, supplier, state)} to ${this.who(supplier)} (payment #${id}). It costs ${money(attempt.amount_in, state.token_decimals)} USDC from your treasury${BigInt(attempt.amount_in) > BigInt(intent.value) ? `, ${money(BigInt(attempt.amount_in) - BigInt(intent.value), state.token_decimals)} of it in fees` : ""}. Confirm the transfer:`,
       link: this.link(`/intent/${id}`),
       intentId: id,
     });
@@ -321,7 +337,7 @@ export class Executor {
       await this.notifyOnce({
         key: `quote:${id}:${problems.join("|")}`,
         kind: "quote_rejected",
-        text: `Intent ${id}: the 1Click quote was not used (${problems.join("; ")}).`,
+        text: `⚠️ Payment #${id} to ${this.who(supplier)}: the quote from 1Click did not match what the contract allows, so it was not used (${problems.join("; ")}).`,
         link: this.link(`/intent/${id}`),
         intentId: id,
       });
@@ -386,7 +402,7 @@ export class Executor {
         await this.notifyOnce({
           key: `delivered:${payout}`,
           kind: "delivered",
-          text: `Delivered ${delivered} of ${supplier.asset_id} to ${supplier.recipient} (intent ${intent.id}, tx ${destTx})${returned > 0n ? `; ${fromUnits(returned, d)} USDC change came back to the treasury` : ""}.`,
+          text: `📦 Delivered: ${this.who(supplier)} received ${money(delivered, supplier.decimals)} ${assetName(supplier, state.token_id)} (payment #${intent.id}, tx ${destTx})${returned > 0n ? `; ${money(returned, d)} USDC change came back to the treasury` : ""}.`,
           intentId: intent.id,
         });
       } else {
@@ -394,7 +410,7 @@ export class Executor {
         await this.notifyOnce({
           key: `swap:${payout}`,
           kind: "swap_failed",
-          text: `Intent ${intent.id}: the swap ended ${status.status}${details.refundReason ? ` (${details.refundReason})` : ""}; ${fromUnits(returned, d)} USDC came back to the treasury. Budgets are not given back; retry the intent to pay it again.`,
+          text: `↩️ Payment #${intent.id} to ${this.who(supplier)} was not delivered (1Click: ${status.status}${details.refundReason ? `, ${details.refundReason}` : ""}); ${money(returned, d)} USDC came back to your treasury. Today's budgets are not given back. Retry it to pay again:`,
           link: this.link(`/intent/${intent.id}`),
           intentId: intent.id,
         });
@@ -406,7 +422,7 @@ export class Executor {
       await this.notifyOnce({
         key: `swap_timeout:${payout}`,
         kind: "swap_failed",
-        text: `Intent ${intent.id}: no result from 1Click after the timeout (${status ? `last status ${status.status}` : "unreachable"}). Check the deposit ${attempt.deposit}.`,
+        text: `⚠️ Payment #${intent.id} to ${this.who(supplier)}: no result from 1Click after ${durationText(BigInt(this.cfg.statusTimeoutMs) * 1_000_000n)} (${status ? `last status ${status.status}` : "unreachable"}). Check the deposit ${attempt.deposit}:`,
         link: this.link(`/intent/${intent.id}`),
         intentId: intent.id,
       });

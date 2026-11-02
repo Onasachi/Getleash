@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+  // A second `next dev` (say, against `pnpm devnet` while another dashboard runs) needs its own build folder.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // Workspace packages are TypeScript sources.
   transpilePackages: ["@getleash/shared", "@getleash/agent", "@getleash/ingestion"],
   // The private view reads local files (.data/) only on a self-hosted server.

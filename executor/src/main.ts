@@ -14,7 +14,15 @@ import { parseArgs } from "node:util";
 
 import { TelegramNotifier } from "@getleash/channel-telegram/notifier";
 import { ExecutorClient, NETWORKS, networkId, OneClickClient, PolicyView, provider } from "@getleash/shared";
-import { dataDir, DeliveredNotices, keyFilePath, ownerNoticesPath, signingAccount } from "@getleash/shared/node";
+import {
+  dataDir,
+  DeliveredNotices,
+  directoryPath,
+  keyFilePath,
+  loadDirectory,
+  ownerNoticesPath,
+  signingAccount,
+} from "@getleash/shared/node";
 
 import { Executor } from "./executor.ts";
 import { Journal } from "./journal.ts";
@@ -80,6 +88,14 @@ const executor = new Executor(
     notifier,
     journal: new Journal(process.env.EXECUTOR_JOURNAL ?? join(dataDir(network), "executor-journal.jsonl")),
     delivered: telegram ? new DeliveredNotices(ownerNoticesPath(network)) : null,
+    // Names from the owner's directory on this machine (written by `pnpm seed`), for notices.
+    names: (supplierId) => {
+      try {
+        return loadDirectory(directoryPath(network)).suppliers.find((s) => s.supplier_id === supplierId)?.name ?? null;
+      } catch {
+        return null;
+      }
+    },
     log: (line) => console.log(line),
   },
 );

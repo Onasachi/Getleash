@@ -1,153 +1,192 @@
 "use client";
 
 /**
- * Overview (PLAN §4.5; v2, docs/decisions.md D-28): read from the chain in this browser. v2 keeps
- * no ledger on-chain: the treasury is the token balance, and today's counters only go up.
+ * The owner's overview (PLAN §4.5; v2, docs/decisions.md D-28): the treasury, what needs the owner,
+ * and recent payments, in plain words. Read from the chain in this browser. v2 keeps no ledger
+ * on-chain: the treasury is the token balance, and today's counters only go up. How the money is
+ * protected (the contract's limits, roles and keys) is one click away.
  */
 import Link from "next/link";
 
-import { durationText, isOpen } from "@getleash/shared";
+import {
+  assetName,
+  durationText,
+  type ExecutionStatus,
+  type Intent,
+  isExpired,
+  isNative,
+  money,
+  moneyRounded,
+  paymentState,
+  shortAddress,
+  type Supplier,
+  TERMINAL_STATUSES,
+  waitReason,
+} from "@getleash/shared";
 
-import { Loading, Pill } from "@/components/ui";
-import { accessKeyCount, policy } from "@/lib/chain";
+import { Fold, Loading, StatusChip } from "@/components/ui";
+import { accessKeyCount, oneclick, policy } from "@/lib/chain";
 import { EXPLORER, POLICY_ID } from "@/lib/config";
-import { usdc } from "@/lib/format";
+import { whenText } from "@/lib/format";
+import { useSupplierNames } from "@/lib/names";
 import { useChain } from "@/lib/use-chain";
 
-function Budget({ name, used, limit }: { name: string; used: string; limit: string }) {
-  const u = BigInt(used);
-  const l = BigInt(limit);
-  const pct = l === 0n ? 0 : Number((u * 100n) / l);
-  return (
-    <div className="card">
-      <div className="label">{name}</div>
-      <div className="value">
-        {usdc(used)} <span className="muted small">of {usdc(limit)}</span>
-      </div>
-      <div className="bar">
-        <span style={{ width: `${Math.min(100, pct)}%` }} />
-      </div>
-    </div>
+async function load() {
+  const state = await policy.state();
+  const [balance, intents, suppliers, keys] = await Promise.all([
+    policy.treasuryBalance(state.token_id),
+    policy.recentIntents(50),
+    policy.suppliers(),
+    accessKeyCount(POLICY_ID),
+  ]);
+  // 1Click's word on recent cross-chain payouts: delivered, refunded, or still on its way.
+  const swaps = new Map<number, string>();
+  await Promise.all(
+    intents
+      .filter((i) => i.status === "PAID" && i.attempt)
+      .slice(-10)
+      .map(async (i) => {
+        try {
+          swaps.set(i.id, (await oneclick.status(i.attempt!.deposit)).status);
+        } catch {
+          // Unreachable: shown as "On its way" until the payment page can check.
+        }
+      }),
   );
+  return { state, balance, intents, suppliers, keys, swaps };
 }
 
+type Task = { intent: Intent; line: string; cta: string };
+
 export default function Overview() {
-  const { data, error } = useChain(async () => {
-    const state = await policy.state();
-    const [balance, intents, suppliers, keys] = await Promise.all([
-      policy.treasuryBalance(state.token_id),
-      policy.recentIntents(50),
-      policy.suppliers(),
-      accessKeyCount(POLICY_ID),
-    ]);
-    return { state, balance, intents, suppliers, keys };
-  });
+  const { names, available } = useSupplierNames();
+  const { data, error } = useChain(load);
 
   if (!POLICY_ID) return <p className="error">Set NEXT_PUBLIC_POLICY_CONTRACT_ID to the policy contract.</p>;
   if (!data) return <Loading error={error} />;
-  const { state, balance, intents, suppliers, keys } = data;
+  const { state, balance, intents, suppliers, keys, swaps } = data;
   const d = state.token_decimals;
   const p = state.policy;
   const b = state.budgets;
-  const open = intents.filter((i) => isOpen(i) || i.status === "FAILED");
-  const recent = intents.filter((i) => !open.includes(i)).slice(-10).reverse();
-  const supplier = new Map(suppliers.map((s) => [s.id, s]));
-
-  const row = (i: (typeof intents)[number]) => {
-    const s = supplier.get(i.supplier_id);
-    return (
-      <tr key={i.id}>
-        <td>
-          <Link href={`/intent/${i.id}`}>#{i.id}</Link>
-        </td>
-        <td>
-          #{i.supplier_id} <span className="muted small">{s ? `${s.chain} ${s.recipient.slice(0, 18)}${s.recipient.length > 18 ? "…" : ""}` : ""}</span>
-        </td>
-        <td>{usdc(i.value, d)}</td>
-        <td>
-          <Pill value={i.status} /> {i.route !== "AUTONOMOUS" && <span className="muted small">{i.route}</span>}
-        </td>
-        <td className="small">{i.attempt ? `${usdc(i.attempt.amount_in, d)} → ${i.attempt.deposit.slice(0, 8)}…${i.attempt.authorized ? " (signed)" : ""}` : "—"}</td>
-      </tr>
-    );
+  const nowNs = BigInt(Date.now()) * 1_000_000n;
+  const byId = new Map(suppliers.map((s) => [s.id, s]));
+  const who = (i: Intent) => names.get(i.supplier_id) ?? (byId.get(i.supplier_id) ? shortAddress(byId.get(i.supplier_id)!.recipient) : `supplier #${i.supplier_id}`);
+  const amount = (i: Intent, s: Supplier | undefined) => (s ? `${money(i.amount_out, s.decimals)} ${assetName(s, state.token_id)}` : `${money(i.value, d)}`);
+  const refunded = (i: Intent) => {
+    const swap = swaps.get(i.id);
+    return !!swap && swap !== "SUCCESS" && TERMINAL_STATUSES.has(swap as ExecutionStatus);
   };
+
+  const tasks: Task[] = [];
+  for (const i of intents) {
+    const pastGrace = i.status === "PAYING" && nowNs >= BigInt(i.since) + BigInt(p.callback_grace_ns);
+    if (i.status === "PENDING" && !isExpired(i, p, nowNs)) tasks.push({ intent: i, line: `Needs your OK: ${waitReason(i.route, p, d)}.`, cta: "Review" });
+    else if (i.status === "APPROVED" && i.attempt && !i.attempt.authorized)
+      tasks.push({ intent: i, line: `Ready to send: confirm ${money(i.attempt.amount_in, d)} USDC from your treasury.`, cta: "Confirm" });
+    else if (i.status === "FAILED") tasks.push({ intent: i, line: "Didn't go through: nothing left your treasury.", cta: "Try again" });
+    else if (refunded(i)) tasks.push({ intent: i, line: "Not delivered: the USDC came back to your treasury.", cta: "Try again" });
+    else if (pastGrace) tasks.push({ intent: i, line: "The transfer has not confirmed: please check it.", cta: "Check" });
+  }
+  const taskIds = new Set(tasks.map((t) => t.intent.id));
+  const recent = intents
+    .filter((i) => !taskIds.has(i.id))
+    .slice(-12)
+    .reverse();
 
   return (
     <>
-      <h1>Treasury {state.paused && <Pill value="PAUSED" />}</h1>
-      <p className="muted small">
-        Contract{" "}
-        <a href={EXPLORER.explorerAccount(POLICY_ID)} target="_blank" rel="noreferrer" className="mono">
-          {POLICY_ID}
-        </a>{" "}
-        · owner {state.owner_id} · agent {state.agent_id} · executor {state.executor_id} ·{" "}
-        <span className={keys === 0 ? "success" : "error"}>{keys === 0 ? "no access keys on the contract ✓" : `${keys} access keys on the contract ✗`}</span>
-      </p>
-
-      <div className="grid">
-        <div className="card">
-          <div className="label">Treasury (USDC held by the contract)</div>
-          <div className="value">{usdc(balance, d)}</div>
+      <section className="hero">
+        <div className="label">Treasury</div>
+        <div className="amount" title={`${money(balance, d)} USDC exactly`}>
+          {moneyRounded(balance, d)} USDC
         </div>
-        <div className="card">
-          <div className="label">Payouts in flight</div>
-          <div className="value">{state.paying}</div>
-        </div>
-        <div className="card">
-          <div className="label">Stored intents</div>
-          <div className="value">
-            {state.stored_intents} <span className="muted small">of 50</span>
-          </div>
-        </div>
-      </div>
+        <p className="lead small">
+          Sent today: {moneyRounded(b.outflow, d)} of {moneyRounded(p.daily_cap, d)} USDC · paid by the agent on its own: {moneyRounded(b.autonomous, d)} of{" "}
+          {moneyRounded(p.autonomous_daily_budget, d)} USDC · anything above {money(p.approval_threshold, d)} USDC waits for you
+        </p>
+        {state.paused && (
+          <p className="notice">
+            ⏸ Payments are paused. <Link href="/pause">Unpause</Link>
+          </p>
+        )}
+      </section>
 
-      <h2>Today (UTC): counters only go up</h2>
-      <div className="grid">
-        <Budget name="Approved by the agent alone" used={b.autonomous} limit={p.autonomous_daily_budget} />
-        <Budget name="Sent (daily cap)" used={b.outflow} limit={p.daily_cap} />
-        <Budget name="Executor trust (cross-chain)" used={b.trust} limit={p.executor_trust_daily_budget} />
-      </div>
-      <p className="muted small">
-        Payments above {usdc(p.approval_threshold, d)} wait for you. After an address change, every payment to that supplier waits for you for{" "}
-        {durationText(p.cooldown_ns)}, and you can approve at most {usdc(p.cooldown_max, d)} until it ends.
-      </p>
-
-      <h2>Needs someone ({open.length})</h2>
-      {open.length === 0 ? (
-        <p className="muted">Nothing open.</p>
+      <h2>Needs you{tasks.length > 0 && ` (${tasks.length})`}</h2>
+      {tasks.length === 0 ? (
+        <div className="card calm">✓ Nothing needs you right now.</div>
       ) : (
-        <table className="list">
-          <thead>
-            <tr>
-              <th>Intent</th>
-              <th>Supplier</th>
-              <th>Value</th>
-              <th>Status</th>
-              <th>1Click deposit</th>
-            </tr>
-          </thead>
-          <tbody>{open.map(row)}</tbody>
-        </table>
+        tasks.map(({ intent: i, line, cta }) => (
+          <Link key={i.id} href={`/intent/${i.id}`} className="task">
+            <div>
+              <div>
+                <strong>{who(i)}</strong> · {amount(i, byId.get(i.supplier_id))}
+              </div>
+              <div className="muted small">{line}</div>
+            </div>
+            <span className="go">{cta} →</span>
+          </Link>
+        ))
       )}
 
-      <h2>Recent</h2>
+      <h2>Recent payments</h2>
       {recent.length === 0 ? (
-        <p className="muted">None yet.</p>
+        <p className="muted">None yet. Send an invoice to the bot to start.</p>
       ) : (
-        <table className="list">
-          <thead>
-            <tr>
-              <th>Intent</th>
-              <th>Supplier</th>
-              <th>Value</th>
-              <th>Status</th>
-              <th>1Click deposit</th>
-            </tr>
-          </thead>
-          <tbody>{recent.map(row)}</tbody>
-        </table>
+        <ul className="payments">
+          {recent.map((i) => {
+            const s = byId.get(i.supplier_id);
+            return (
+              <li key={i.id}>
+                <Link href={`/intent/${i.id}`}>
+                  <StatusChip {...paymentState(i, !!s && isNative(s, state.token_id), swaps.get(i.id))} />
+                  <span className="who">
+                    {who(i)}
+                    {i.route === "AUTONOMOUS" && <span className="muted small"> · paid by the agent</span>}
+                  </span>
+                  <span className="amt">{amount(i, s)}</span>
+                  <span className="when">{whenText(i.since)}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
       )}
-      <p className="muted small">Refused proposals store nothing on-chain; they are returned to the agent and logged as events in its transactions.</p>
+      {!available && (
+        <p className="muted small">
+          Supplier names are private: <Link href="/private">sign in</Link> to see them instead of addresses.
+        </p>
+      )}
+
+      <Fold summary="How your money is protected">
+        <ul className="rules">
+          <li>
+            {keys === 0 ? "✓" : "✗"} The treasury is held by a contract with <strong>{keys === 0 ? "no keys" : `${keys} access keys`}</strong>: only its rules move
+            money, and only you can change them.
+          </li>
+          <li>
+            The agent can pay on its own up to {money(p.approval_threshold, d)} USDC per payment and {money(p.autonomous_daily_budget, d)} USDC per day. Everything
+            else waits for you.
+          </li>
+          <li>At most {money(p.daily_cap, d)} USDC can leave per day, whoever approves it.</li>
+          <li>
+            Only suppliers on your list can be paid, and only to the address on file. When an address changes, payments to that supplier wait for you for{" "}
+            {durationText(p.cooldown_ns)}, and you can approve at most {money(p.cooldown_max, d)} USDC until then.
+          </li>
+          <li>
+            {BigInt(p.executor_trust_daily_budget) === 0n
+              ? "You confirm every cross-chain transfer yourself."
+              : `The executor may send up to ${money(p.executor_trust_daily_budget, d)} USDC of cross-chain transfers per day on its own; you confirm the rest.`}
+          </li>
+        </ul>
+        <p className="muted small">
+          Contract{" "}
+          <a href={EXPLORER.explorerAccount(POLICY_ID)} target="_blank" rel="noreferrer" className="mono">
+            {POLICY_ID}
+          </a>{" "}
+          · owner {state.owner_id} · agent {state.agent_id} · executor {state.executor_id} · {state.paying} payment(s) in flight ·{" "}
+          {state.stored_intents} of 50 payment slots in use
+        </p>
+      </Fold>
     </>
   );
 }

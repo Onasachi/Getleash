@@ -15,6 +15,7 @@ import {
   type IntentStatus,
   type PolicyView,
   type ProposeResult,
+  type Supplier,
 } from "@getleash/shared";
 
 import { BADGE_LABEL, type Extractor, type ExtractResult } from "./extract.ts";
@@ -32,6 +33,8 @@ export type AgentOutcome = {
   intentStatus: IntentStatus | null;
   /** The intent's `since` when it was read back after the call (native payments), else null. */
   intentSince: string | null;
+  /** The on-chain record of the supplier the invoice was matched to (for wording replies), else null. */
+  supplier: Supplier | null;
   obligationId: string | null;
   badge: string;
   model: string | null;
@@ -65,7 +68,8 @@ export class InvoiceAgent {
       extracted = await this.extract(input);
       const suppliers = await this.deps.view.suppliers();
       decision = decide(extracted, { directory: this.deps.directory().suppliers, suppliers });
-      outcome = await this.act(input, extracted, decision);
+      const matched = decision.action === "propose" ? decision.supplierId : null;
+      outcome = await this.act(input, extracted, decision, suppliers.find((s) => s.id === matched) ?? null);
     } catch (error) {
       const code = error instanceof ContractCallError ? error.code : (error as Error).message;
       outcome = {
@@ -75,6 +79,7 @@ export class InvoiceAgent {
         result: null,
         intentStatus: null,
         intentSince: null,
+        supplier: null,
         obligationId: null,
         badge: extracted ? BADGE_LABEL[extracted.verification.badge] : BADGE_LABEL.VERIFICATION_UNAVAILABLE,
         model: extracted?.model ?? null,
@@ -113,11 +118,12 @@ export class InvoiceAgent {
     return this.deps.extractor.extract({ text: text && text.trim() ? text : null, images });
   }
 
-  private async act(input: InvoiceInput, extracted: ExtractResult, decision: Decision): Promise<AgentOutcome> {
+  private async act(input: InvoiceInput, extracted: ExtractResult, decision: Decision, supplier: Supplier | null): Promise<AgentOutcome> {
     const base = {
       key: input.key,
       intentStatus: null as IntentStatus | null,
       intentSince: null as string | null,
+      supplier,
       decision,
       badge: BADGE_LABEL[extracted.verification.badge],
       model: extracted.model,

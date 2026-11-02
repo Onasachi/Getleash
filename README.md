@@ -74,7 +74,7 @@ Settlement trust that remains: during a cross-chain swap, funds sit briefly with
 | Setup and owner scripts (`scripts/`, `shared/`) | **Implemented.** Keyless policy account in one owner transaction; role accounts with function-call keys only; top-up, seeding, status, rotation. Tested on a local node. |
 | Executor + mock 1Click (`executor/`, `mock-1click/`) | **Implemented.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes. Tested on a local node. |
 | Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands. Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram: unit tests with a fake Bot API, and the live bot on testnet (next rows). |
-| Dashboard (`web/`) | **Implemented.** Overview, intent page (approve, reject, retry, sign a 1Click deposit after a browser-side check), pause, NEP-413 private view. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs). |
+| Dashboard (`web/`) | **Implemented.** In plain words: the treasury, "Needs you" with one button per payment, and a payment page that says who gets what and why it needs you (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record), with the checks and raw terms one click away; pause; NEP-413 private view with supplier names. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs). |
 | Testnet rehearsal | **Done 2 Nov** with the release wasm at `getleash.getleash-owner.testnet` and Circle's testnet USDC. Four invoices sent to the live bot, read by NEAR AI Cloud: 1.80 paid inside the agent's call; the same invoice re-sent as a reworded reminder, refused on-chain (`OBLIGATION_OPEN_OR_PAID`); 3.00 held (`ABOVE_THRESHOLD`) and paid when the owner approved it from the dashboard; 1.00 USDT to a Tron address, quoted by mock-1click (`pnpm mock:1click`; nothing reaches Tron), its deposit authorized by the owner and funded by the executor, with the contract registering the deposit account on USDC and paying it in one receipt. Gas and NEAR per step: `docs/verified-facts.md`. |
 | Mainnet deployment, `demo-getleash` panel | Not yet. Expected cost: about 1.4 NEAR (1.05 for the contract account, of which 0.84 covers its code, plus 0.15 and 0.2 for the agent and executor accounts, which pay their own gas). |
 
@@ -98,11 +98,12 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 55 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
+   → `Tests 61 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
    parsing, 1Click quote checks (against the shape of a live quote), obligation ids, input limits,
-   the Telegram channel (replayed update processed once, allowlist, size limits), owner notices
-   sent once between the bot and the executor, near-cli-rs key files, and the TEE verification
-   policy (stale, invalid or missing evidence never earns a "verified" badge).
+   the Telegram channel (replayed update processed once, allowlist, size limits, replies in plain
+   words with the enum code kept), owner notices sent once between the bot and the executor,
+   near-cli-rs key files, the plain-language wording shared by the dashboard and Telegram, and the
+   TEE verification policy (stale, invalid or missing evidence never earns a "verified" badge).
 
 3. **Integration tests on a local NEAR node** (builds the wasm with cargo-near if needed,
    downloads `near-sandbox` once):
@@ -140,10 +141,12 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    pnpm devnet          # terminal 1: node + contract + executor + mock 1Click, prints the env for terminal 2
    NEXT_PUBLIC_NEAR_NETWORK=testnet NEXT_PUBLIC_NEAR_RPC_URL=… NEXT_PUBLIC_POLICY_CONTRACT_ID=getleash.biz.near NEXT_PUBLIC_ONECLICK_URL=… pnpm dashboard
    ```
-   → open http://localhost:3000 (use `localhost`, not `127.0.0.1`, in dev mode). `/intent/5` shows
-   an 8 USDT payment on Tron above the trust budget: the browser fetches 1Click's record of its
-   deposit address and checks 12 committed terms before offering the signature. Wallet buttons
-   cannot sign on a local node.
+   → open http://localhost:3000 (use `localhost`, not `127.0.0.1`, in dev mode). "Needs you"
+   lists three payments. `/intent/5` reads "Confirm the transfer": 8.00 USDT on Tron, its cost from
+   the treasury and its fee, and one button. Before the button works, the browser fetches 1Click's
+   record of the deposit address and checks it against the 12 terms the contract committed, plus
+   that no other payment uses the address ("Safety checks" → Show). Wallet buttons cannot sign on a
+   local node.
 
 6. **Build the contract.**
    ```bash

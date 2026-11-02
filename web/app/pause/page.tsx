@@ -1,49 +1,47 @@
 "use client";
 
-import { useState } from "react";
-
-import type { TxOutcome } from "@getleash/shared";
-
-import { Loading, Pill, TxNote } from "@/components/ui";
+/** Pause (PLAN §4.5): one owner signature stops every new payment; the same to resume. */
+import { Fold, Loading, StatusChip, TxNote } from "@/components/ui";
 import { policy } from "@/lib/chain";
+import { useOwnerAction } from "@/lib/owner-action";
 import { useChain } from "@/lib/use-chain";
-import { useWallet } from "@/lib/wallet";
 
 export default function PausePage() {
-  const wallet = useWallet();
-  const [result, setResult] = useState<TxOutcome | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const { data, error: loadError, reload } = useChain(() => policy.state());
+  const { busy, result, error, run, wallet } = useOwnerAction(data?.owner_id, reload);
   if (!data) return <Loading error={loadError} />;
-  const isOwner = wallet.accountId === data.owner_id;
-
-  async function act(paused: boolean) {
-    setError(null);
-    try {
-      setResult(await wallet.ownerCall("set_paused", { paused }));
-      await reload();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
+  const set = (paused: boolean) => void run(paused ? "pause" : "unpause", "set_paused", { paused });
 
   return (
     <>
-      <h1>Pause {data.paused ? <Pill value="PAUSED" /> : <Pill value="OK" />}</h1>
-      <p className="muted">
-        Pausing stops new proposals, approvals, retries, cross-chain attempts and funding at once. Transfer callbacks, rejections, settling a stuck
-        payment and withdrawals keep working. Funds already in settlement with NEAR Intents cannot be recalled.
-      </p>
-      <div className="actions">
-        <button className="danger" disabled={!isOwner || data.paused} onClick={() => void act(true)}>
-          Pause everything
-        </button>
-        <button className="ghost" disabled={!isOwner || !data.paused} onClick={() => void act(false)}>
-          Unpause
-        </button>
-      </div>
-      {!isOwner && <p className="muted small">Connect the owner wallet ({data.owner_id}) to act.</p>}
-      <TxNote result={result} error={error} />
+      <section className="hero">
+        <StatusChip label={data.paused ? "Paused" : "Payments running"} tone={data.paused ? "bad" : "good"} />
+        <h1>{data.paused ? "All payments are paused" : "Pause all payments"}</h1>
+        <p className="lead">
+          {data.paused
+            ? "Nothing new is paid until you unpause: no proposals, approvals, retries or transfers."
+            : "One signature in your wallet stops every new payment at once. Use it if something looks wrong; unpausing works the same way."}
+        </p>
+        <div className="actions">
+          {data.paused ? (
+            <button className="primary" disabled={!!busy} onClick={() => set(false)}>
+              {busy ? "Waiting for your wallet…" : "Unpause payments"}
+            </button>
+          ) : (
+            <button className="primary danger" disabled={!!busy} onClick={() => set(true)}>
+              {busy ? "Waiting for your wallet…" : "Pause all payments"}
+            </button>
+          )}
+        </div>
+        {!wallet.accountId && <p className="hint">You&apos;ll sign in your wallet, as {data.owner_id}.</p>}
+        <TxNote result={result} error={error} />
+      </section>
+      <Fold summary="What keeps working while paused">
+        <p className="small">
+          Pausing stops new proposals, approvals, retries, cross-chain quotes and funding at once. Confirmations of transfers already sent, rejections, settling a
+          stuck payment and withdrawals keep working. Money already handed to NEAR Intents for delivery cannot be recalled.
+        </p>
+      </Fold>
     </>
   );
 }
