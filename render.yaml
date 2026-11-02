@@ -6,16 +6,19 @@
 # (propose; create_attempt, fund, forget). Values marked `sync: false` are secrets or belong to one
 # deployment: `pnpm deploy:env --network mainnet` writes them to .env.render, to paste into Render.
 services:
-  # Both services in one always-on process group (scripts/src/services.ts starts either again if it
-  # stops), sharing one disk: the executor's journal, the bot's update log, the encrypted invoice store
-  # and the record that sends each owner notice once. Background workers have no free plan.
-  - type: worker
+  # Both services in one process group (scripts/src/services.ts starts either again if it stops), as a
+  # web service: it answers GET /healthz on $PORT. On Starter it stays awake and keeps one disk: the
+  # executor's journal, the bot's update log, the encrypted invoice store and the record that sends each
+  # owner notice once. The free plan sleeps after 15 minutes without requests (the bot then stops
+  # answering) and has no disk, so its records start over at each restart (the executor starts quietly).
+  - type: web
     name: getleash-services
     runtime: node
     plan: starter
     branch: feature/getleash-core
     buildCommand: corepack enable && pnpm install --frozen-lockfile
     startCommand: node --import tsx scripts/src/services.ts
+    healthCheckPath: /healthz
     disk:
       name: getleash-data
       mountPath: /var/data

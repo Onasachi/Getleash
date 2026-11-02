@@ -134,7 +134,7 @@ function-call keys.
 
 | What | Where | Notes |
 |---|---|---|
-| Executor and bot | Render background worker `getleash-services`, Starter plan (workers have no free plan), 1 GB disk at `/var/data` | `scripts/src/services.ts` runs both and starts either again if it stops; the disk keeps the executor's journal, the bot's update log, the encrypted invoices and the record that sends each owner notice once |
+| Executor and bot | Render web service `getleash-services`, Starter plan, 1 GB disk at `/var/data` | `scripts/src/services.ts` runs both, starts either again if it stops, and answers `GET /healthz` on `$PORT`; the disk keeps the executor's journal, the bot's update log, the encrypted invoices and the record that sends each owner notice once |
 | Dashboard | Vercel project, root directory `web` | a public address, so the links in Telegram open on a phone; it reads the chain in the visitor's browser |
 
 1. Do steps 1–4 from your machine, and stop any GetLeash bot running elsewhere: one bot token serves one
@@ -146,9 +146,15 @@ function-call keys.
    → `.env.render` and `.env.vercel` (mode 0600, git-ignored). They hold secrets, so paste them into the
    two hosts only and then delete them (`rm .env.render .env.vercel`). Only variable names are printed.
    Both carry the supplier names as `GETLEASH_DIRECTORY_BASE64`, because neither host has your files.
-3. **Render:** New → Blueprint → connect the repository → Render reads `render.yaml` and shows the
-   `getleash-services` worker and its plan. Paste `.env.render` (`pbcopy < .env.render` copies it without
-   showing it) on its Environment page with "Add from .env", or fill in the values the Blueprint asks for.
+3. **Render:** New → Web Service → connect the repository → branch `feature/getleash-core`, language
+   Node, build command `corepack enable && pnpm install --frozen-lockfile`, start command
+   `node --import tsx scripts/src/services.ts`, health check path `/healthz`, instance type Starter. Add a
+   disk (mount path `/var/data`, 1 GB) and the variable `GETLEASH_DATA_DIR=/var/data`. Paste `.env.render`
+   (`pbcopy < .env.render` copies it without showing it) under Environment → "Add from .env".
+   New → Blueprint does the same from `render.yaml`. On the free instance type there is no disk (leave
+   `GETLEASH_DATA_DIR` unset): the service sleeps after 15 minutes without requests, which stops the bot,
+   unless an uptime check calls `/healthz` every few minutes, and the executor starts over its journal at
+   each restart (it records what is already true instead of repeating notices).
 4. **Vercel:** Add New → Project → import the repository → set the root directory to `web` (Vercel
    detects Next.js and the pnpm workspace) → in Environment Variables, paste `.env.vercel` → Deploy.
 5. Set the worker's `DASHBOARD_URL` on Render to the dashboard's address (`https://….vercel.app`, or your

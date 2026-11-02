@@ -75,9 +75,15 @@ const ownerChat = process.env.TELEGRAM_OWNER_CHAT_ID;
 const telegram = Boolean(botToken && ownerChat);
 const notifier: Notifier = botToken && ownerChat ? new TelegramNotifier(botToken, ownerChat) : new ConsoleNotifier();
 
+// Without its journal (a first start, or a host without a disk), the executor would repeat every notice
+// for the intents still stored; it starts quietly instead.
+const journalPath = process.env.EXECUTOR_JOURNAL ?? join(dataDir(network), "executor-journal.jsonl");
+const quietStart = !existsSync(journalPath);
+
 const executor = new Executor(
   {
     policyId,
+    quietStart,
     originAsset: `nep141:${state.token_id}`,
     dashboardUrl: process.env.DASHBOARD_URL ?? null,
   },
@@ -86,7 +92,7 @@ const executor = new Executor(
     calls: new ExecutorClient(account, policyId),
     oneclick,
     notifier,
-    journal: new Journal(process.env.EXECUTOR_JOURNAL ?? join(dataDir(network), "executor-journal.jsonl")),
+    journal: new Journal(journalPath),
     delivered: telegram ? new DeliveredNotices(ownerNoticesPath(network)) : null,
     // Names from the owner's directory on this machine (written by `pnpm seed`), for notices.
     names: (supplierId) => {
@@ -101,6 +107,7 @@ const executor = new Executor(
 );
 
 console.log(`executor ${executorId} → ${policyId} on ${network}${values.mock ? " (mock 1Click)" : ""}`);
+if (quietStart) console.log("no journal yet: the first pass records what is already true without notifying");
 if (values.once) {
   const report = await executor.tick();
   console.log(JSON.stringify(report, null, 2));

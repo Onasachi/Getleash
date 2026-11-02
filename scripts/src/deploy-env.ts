@@ -47,6 +47,8 @@ const directory = Buffer.from(JSON.stringify(loadDirectory(directoryFile))).toSt
 const dashboardUrl = env.DASHBOARD_URL && !/localhost|127\.0\.0\.1/.test(env.DASHBOARD_URL) ? env.DASHBOARD_URL : undefined;
 
 const services: Array<[string, string | undefined]> = [
+  // The Node.js version the repository is tested with (Render reads NODE_VERSION).
+  ["NODE_VERSION", process.versions.node],
   ["NEAR_NETWORK", network],
   ["OWNER_ACCOUNT_ID", need("OWNER_ACCOUNT_ID")],
   ["POLICY_CONTRACT_ID", need("POLICY_CONTRACT_ID")],

@@ -33,7 +33,7 @@ function intent(id: number, status: Intent["status"], sinceMs: number): Intent {
   };
 }
 
-function setup(intents: Intent[], delivered: ReadonlySet<string> | null, names?: Record<number, string>) {
+function setup(intents: Intent[], delivered: ReadonlySet<string> | null, names?: Record<number, string>, quietStart = false) {
   let now = NOW_MS;
   const state = {
     token_id: TOKEN,
@@ -56,7 +56,7 @@ function setup(intents: Intent[], delivered: ReadonlySet<string> | null, names?:
   const notifier = new MemoryNotifier();
   const journal = new Journal(null);
   const executor = new Executor(
-    { policyId: "policy.testnet", originAsset: `nep141:${TOKEN}`, forgetEveryMs: Number.MAX_SAFE_INTEGER },
+    { policyId: "policy.testnet", originAsset: `nep141:${TOKEN}`, forgetEveryMs: Number.MAX_SAFE_INTEGER, quietStart },
     {
       view,
       calls: {} as ExecutorClient,
@@ -107,5 +107,17 @@ describe("owner notices shared with the bot", () => {
     await executor.tick();
     expect(notifier.kinds()).toEqual(["approval_needed"]);
     expect(notifier.notices[0]!.text).toMatch(/^👋 Acme Packaging Ltd asks for 3\.00 USDC\./);
+  });
+
+  it("a fresh journal starts quietly: what is already true is recorded, later changes are sent", async () => {
+    const paid = intent(1, "PAID", NOW_MS - 3_600_000);
+    const intents = [paid, intent(2, "PENDING", NOW_MS - 3_600_000)];
+    const { executor, notifier, journal } = setup(intents, null, undefined, true);
+    await executor.tick();
+    expect(notifier.notices).toEqual([]);
+    expect(journal.entries.filter((e) => e.by === "quiet_start").map((e) => e.key)).toEqual([`paid:1:${paid.since}`, "approval:2"]);
+    intents.push(intent(3, "PENDING", NOW_MS));
+    await executor.tick();
+    expect(notifier.notices.map((n) => n.key)).toEqual(["approval:3"]);
   });
 });
