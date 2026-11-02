@@ -1,0 +1,4 @@
+INVOICE
+From: Acme Packaging Ltd
+Thanks for the order! Please settle the balance below.
+Total: USD 12.00
