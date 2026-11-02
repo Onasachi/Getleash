@@ -51,7 +51,11 @@ Sources: OpenAPI https://1click.chaindefuser.com/docs/v0/openapi.yaml (info.vers
 **Auth:** partner JWT sent as `X-API-Key: <jwt>` (recommended) or `Authorization: Bearer <jwt>` (legacy, still accepted). Get it from the Partner Dashboard https://partners.near-intents.org/ (WorkOS sign-in).
 
 **Fees:**
-- Unauthenticated: an extra **0.25% (25 bps)** on every non-`ANY_INPUT` quote.
+- Unauthenticated: an extra **0.25% (25 bps)** on every non-`ANY_INPUT` quote, per the docs. **Observed
+  2026-11-02 10:35Z:** a dry `EXACT_OUTPUT` quote for 2 USDT (Tron) came back identical with and without our
+  partner key sent as `X-API-Key`: `amountIn` 2215489, `withdrawFee` 206302, and the same echoed
+  `appFees: [{recipient: "5880ad2b…47dd", fee: 1}]` (1 bp). The documented 0.25% did not appear on this route.
+  1Click also answers without a key, so an HTTP 200 alone does not show the key was recognised.
 - Authenticated: partner schedule, "typically 20 bps, or **1 bp on stablecoin** and same-asset multichain routes". USDC→USDT is a stablecoin pair, so the JWT matters for small payments.
 - Destination withdrawal fees are separate and can dominate small payments (see the Tron quote below).
 
@@ -127,7 +131,7 @@ Sources: https://docs.near.ai/cloud/* (quickstart, models, verification/*, api-r
 - Base URL `https://cloud-api.near.ai/v1`, `Authorization: Bearer <key>`, OpenAI-SDK compatible (override `base_url`). `GET /v1/models` needs no key.
 - Model ids change: several ids in the docs are **not** in the live catalog (e.g. `zai-org/GLM-5.1-FP8`). **Resolve model ids at runtime from `/v1/models`.**
 - Private-TEE models with image input and `structured_outputs` (candidates for invoice extraction): `z-ai/glm-5.3-flash`, `Qwen/Qwen3.8-27B`; also `Qwen/Qwen3-VL-30B-A3B-Instruct`. Do **not** use `*-abliterated` models.
-- `response_format` is not named in the docs (the catalog flag is `structured_outputs`) → **UNVERIFIED** wire shape. PDF input is not documented → render PDF pages to images.
+- `response_format` is not named in the docs (the catalog flag is `structured_outputs`); the OpenAI shape `{type: "json_schema", json_schema: {name, strict: true, schema}}` works live (2026-11-02, below). PDF input is not documented → render PDF pages to images.
 - Attestation: `GET /v1/attestation/report?signing_algo=ecdsa|ed25519&nonce=<64 hex>&model=<id>&provider=near&include_tls_fingerprint=false`, header `x-no-aliasing: true` for model evidence. Response: `gateway_attestation` (always) and `model_attestations[]` (only with `model=` and `provider=near`). Pass `signing_algo` explicitly (defaults differ).
 - report_data (64 bytes): first 32 = signing identity zero-padded (ECDSA address is 20 bytes; Ed25519 key is 32), last 32 = client nonce. Read it from the **verified quote**, not the echoed JSON.
 - Model checks: Intel TDX quote via `dcap-qvl` (`@phala/dcap-qvl` for Node), reject debug TDs, replay `event_log` (imr 3) into RTMR3 with SHA-384, MRCONFIGID = `01 ‖ sha256(info.tcb_info.app_compose raw string) ‖ 15 zero bytes`, GPU evidence via NRAS `POST https://nras.attestation.nvidia.com/v3/attest/gpu` (require JWT claim `x-nvidia-overall-att-result == true`). The docs publish **no accepted measurement list**; that is our policy to define.
@@ -145,6 +149,34 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   `z-ai/glm-5.3-flash` (reasoning, also `json_mode`). `*-abliterated` variants exist and are excluded.
 - Entries also carry `input_modalities`, `supported_features`, `is_ready` (sometimes `null`),
   `context_length`, `pricing`.
+
+## NEAR AI Cloud, live run (checked 2026-11-02)
+
+- Without credits, `POST /v1/chat/completions` answers HTTP 402 with `type: "no_limit_configured"`
+  ("No spending limit configured. Please contact support to set up credits."). `GET /v1/models`
+  needs no key.
+- `Qwen/Qwen3-VL-30B-A3B-Instruct` was listed `is_ready: true` but did not answer a one-word
+  completion within 150 s (two tries, ~12:00Z). `Qwen/Qwen3.8-27B`, `z-ai/glm-5.3-flash` and
+  `Qwen/Qwen3.6-35B-A3B-FP8` answered in about 1 s. A catalog entry does not prove a model is
+  serving, so the extractor falls back to the next model (D-24).
+- `chat_template_kwargs: {"enable_thinking": false}` (used in NEAR AI's verification docs) is
+  honoured by `Qwen/Qwen3.8-27B` and `z-ai/glm-5.3-flash` (`reasoning_tokens: 0`). With reasoning on,
+  one invoice took 45 s on Qwen3.8-27B and its signature was still "not found" after 5 lookups over
+  ~5 s; with it off, the completion takes ~3 s and the signature is found on the first lookup. GLM
+  with reasoning off still writes prose into `content` unless a JSON schema constrains it.
+- `response_format: {type: "json_schema", json_schema: {name, strict: true, schema}}` is honoured.
+- Completions carry `id` (32 hex) and the headers `x-serving-provider: near` and `inference-id`.
+  `GET /v1/signature/{id}?model=…&signing_algo=ecdsa` returned `provider_tee` signatures whose
+  text equals `model:sha256(request):sha256(response)` of the exact bytes sent and received.
+- End to end, all 13 fixture invoices earned "Model response verified": the EIP-191 signer is the
+  attested signing address, TDX report_data = signer ‖ our nonce, debug off, the quote verifies
+  against Intel PCS with TCB `UpToDate` (FMSPC `90C06F000000`), and NVIDIA NRAS reports an overall
+  pass with our nonce. One extraction took 9–24 s, of which the model ~3 s; Intel PCS collateral
+  and NRAS are the slow calls.
+- The extracted fields equal the offline reader's on 11 of 13 fixtures. On 05 and 06 the model
+  labelled the Tron address `other` instead of `tron_address`; the value is the same, and the
+  checks in `agent/src/rules.ts` use only the value.
+- Catalog pricing for `Qwen/Qwen3.8-27B`: $0.04 per million input tokens, $1.35 per million output.
 
 ## Browser access (checked 2026-11-02)
 

@@ -55,7 +55,7 @@ Settlement trust that remains: during a cross-chain swap, funds sit briefly with
 | Policy contract (`contract/`) | **Implemented.** 65 Rust tests (unit, PLAN §9 adversarial rows, property tests with token conservation) plus a real-node test. |
 | Setup and owner scripts (`scripts/`, `shared/`) | **Implemented.** Keyless policy account in one owner transaction; role accounts with function-call keys only; top-up, seeding, status, rotation. Tested on a local node. |
 | Executor + mock 1Click (`executor/`, `mock-1click/`) | **Implemented.** Native and cross-chain payouts, trust budget vs owner-signed attempts, change and refunds, outages, restart recovery. Tested on a local node. |
-| Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands. NEAR AI and Telegram are exercised with fakes; not yet run against the live services. |
+| Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands. Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram is exercised with fakes only. |
 | Dashboard (`web/`) | **Implemented.** Public view, approve, attempt, reconcile, pause, NEP-413 private view. Checked against a local node; wallet signing not yet tried on testnet/mainnet. |
 | Mainnet deployment, `demo-getleash` panel | Not yet. |
 

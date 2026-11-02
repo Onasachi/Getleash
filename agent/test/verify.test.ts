@@ -32,17 +32,33 @@ function fakeQuote(reportData: Uint8Array, debug = false): string {
   return bytesToHex(quote);
 }
 
-type Fake = { tamperText?: boolean; wrongNonce?: boolean; debug?: boolean; kind?: "provider_tee" | "gateway"; signatureDown?: boolean; otherSigner?: boolean };
+type Fake = {
+  tamperText?: boolean;
+  wrongNonce?: boolean;
+  debug?: boolean;
+  kind?: "provider_tee" | "gateway";
+  signatureDown?: boolean;
+  otherSigner?: boolean;
+  /** Signature lookups answered "not found or expired" first (another TEE node served them). */
+  signatureMisses?: number;
+};
 
-function fakeCloud(requestBody: () => string, responseBody: string, opts: Fake = {}): typeof fetch {
+function fakeCloud(requestBody: () => string, responseBody: string | (() => string), opts: Fake = {}): typeof fetch {
+  let misses = opts.signatureMisses ?? 0;
   return (async (url: string) => {
     const u = String(url);
     if (u.includes("/signature/")) {
       if (opts.signatureDown) return new Response("down", { status: 500 });
+      if (misses > 0) {
+        misses--;
+        return Response.json({ error: { message: "Chat id not found or expired" } }, { status: 404 });
+      }
       const kind = opts.kind ?? "provider_tee";
+      const model = new URL(u).searchParams.get("model") ?? MODEL;
+      const body = typeof responseBody === "string" ? responseBody : responseBody();
       const req = sha256Hex(requestBody());
-      const resp = sha256Hex(opts.tamperText ? `${responseBody} ` : responseBody);
-      const text = kind === "provider_tee" ? `${MODEL}:${req}:${resp}` : `${req}:${resp}`;
+      const resp = sha256Hex(opts.tamperText ? `${body} ` : body);
+      const text = kind === "provider_tee" ? `${model}:${req}:${resp}` : `${req}:${resp}`;
       return Response.json({ text, signature: personalSign(text), signing_address: address, signing_algo: "ecdsa", signature_kind: kind });
     }
     if (u.includes("/attestation/report")) {
@@ -112,6 +128,10 @@ describe("TEE verification policy (§9 row: attestation stale, invalid or missin
     expect((await run({}, { ...allGood, gpu: async () => ({ ok: false, detail: "nonce differs" }) })).badge).toBe("VERIFICATION_FAILED");
   });
 
+  it("retries a signature cached on another TEE node (404 not found or expired)", async () => {
+    expect((await run({ signatureMisses: 1 })).badge).toBe("MODEL_RESPONSE_VERIFIED");
+  });
+
   it("missing evidence or unreachable verifiers → unavailable, never verified", async () => {
     expect((await run({ signatureDown: true })).badge).toBe("VERIFICATION_UNAVAILABLE");
     expect((await run({}, { ...allGood, tdxQuote: async () => null })).badge).toBe("VERIFICATION_UNAVAILABLE");
@@ -176,5 +196,93 @@ describe("NearAiExtractor", () => {
     const { fetch: f } = cloud({ ...extraction, pay_to: "TZ9zq2woxvP5z4apo6jmbjG9pyqFsnKc74" });
     const extractor = new NearAiExtractor({ apiKey: "k", baseUrl: "https://cloud.test/v1", verifiers: allGood, fetch: f });
     await expect(extractor.extract({ text: "x", images: [] })).rejects.toThrow(/schema/);
+  });
+});
+
+describe("NearAiExtractor model fallback (a catalog entry can say ready while the model hangs)", () => {
+  const QWEN = "Qwen/Qwen3.8-27B";
+  const GLM = "z-ai/glm-5.3-flash";
+  const catalog = {
+    data: [
+      { id: MODEL, owned_by: "nearai", input_modalities: ["text", "image"], supported_features: ["structured_outputs"], is_ready: true },
+      { id: GLM, owned_by: "nearai", input_modalities: ["text", "image"], supported_features: ["structured_outputs", "reasoning"], is_ready: true },
+      { id: QWEN, owned_by: "nearai", input_modalities: ["text", "image"], supported_features: ["structured_outputs", "reasoning"], is_ready: true },
+    ],
+  };
+  const extraction = { is_invoice: true, supplier_name: "Acme", invoice_number: "1", currency: "USD", total_amount: "1", due_date: null, payment_details: [] };
+
+  /** Per model: answer, time out, or fail with an HTTP status. */
+  function flakyCloud(behaviour: Record<string, "timeout" | number> = {}) {
+    const tried: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    let lastRequest = "";
+    let lastResponse = "";
+    const attest = fakeCloud(
+      () => lastRequest,
+      () => lastResponse,
+    );
+    const f = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/models")) return Response.json(catalog);
+      if (u.endsWith("/chat/completions")) {
+        const body = JSON.parse(String(init?.body)) as { model: string };
+        tried.push(body.model);
+        bodies.push(body);
+        const b = behaviour[body.model];
+        if (b === "timeout") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        if (typeof b === "number") return new Response(`{"error":{"message":"status ${b}"}}`, { status: b });
+        lastRequest = String(init?.body);
+        lastResponse = JSON.stringify({ id: `chat-${tried.length}`, choices: [{ message: { content: JSON.stringify(extraction) } }] });
+        return new Response(lastResponse, { status: 200 });
+      }
+      return attest(url, init);
+    }) as typeof fetch;
+    return { fetch: f, tried, bodies };
+  }
+  const base = { apiKey: "k", baseUrl: "https://cloud.test/v1", verifiers: allGood };
+  const invoice = { text: "INVOICE …", images: [] };
+
+  it("prefers Qwen3.8-27B and switches its reasoning off; models without reasoning get no such flag", async () => {
+    const c = flakyCloud();
+    const result = await new NearAiExtractor({ ...base, fetch: c.fetch }).extract(invoice);
+    expect(result.model).toBe(QWEN);
+    expect(result.verification.badge).toBe("MODEL_RESPONSE_VERIFIED");
+    expect(c.bodies[0]!.chat_template_kwargs).toEqual({ enable_thinking: false });
+
+    const pinned = flakyCloud();
+    await new NearAiExtractor({ ...base, model: MODEL, fetch: pinned.fetch }).extract(invoice);
+    expect(pinned.bodies[0]!.chat_template_kwargs).toBeUndefined();
+  });
+
+  it("moves on from a model that does not answer, and skips it while it cools down", async () => {
+    let clock = 0;
+    const c = flakyCloud({ [QWEN]: "timeout" });
+    const extractor = new NearAiExtractor({ ...base, fetch: c.fetch, now: () => clock });
+    const first = await extractor.extract(invoice);
+    expect(first.model).toBe(GLM);
+    expect(first.verification.badge).toBe("MODEL_RESPONSE_VERIFIED");
+    await extractor.extract(invoice);
+    expect(c.tried).toEqual([QWEN, GLM, GLM]);
+    clock += 11 * 60_000;
+    await extractor.extract(invoice);
+    expect(c.tried.slice(3)).toEqual([QWEN, GLM]);
+  });
+
+  it("stops at account errors (402: no credits) instead of trying other models", async () => {
+    const c = flakyCloud({ [QWEN]: 402 });
+    await expect(new NearAiExtractor({ ...base, fetch: c.fetch }).extract(invoice)).rejects.toThrow(/HTTP 402/);
+    expect(c.tried).toEqual([QWEN]);
+  });
+
+  it("never swaps a pinned model", async () => {
+    const c = flakyCloud({ [QWEN]: 503 });
+    await expect(new NearAiExtractor({ ...base, model: QWEN, fetch: c.fetch }).extract(invoice)).rejects.toThrow(/HTTP 503/);
+    expect(c.tried).toEqual([QWEN]);
+  });
+
+  it("gives up after two models and says why each failed", async () => {
+    const c = flakyCloud({ [QWEN]: 503, [GLM]: "timeout" });
+    await expect(new NearAiExtractor({ ...base, fetch: c.fetch }).extract(invoice)).rejects.toThrow(/Qwen3\.8-27B: HTTP 503.*glm-5\.3-flash: no answer within 45 s/);
+    expect(c.tried).toEqual([QWEN, GLM]);
   });
 });

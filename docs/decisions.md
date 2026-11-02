@@ -153,8 +153,12 @@ never pay twice.
 
 **D-24 · Only NEAR-hosted models, and a precise badge policy.**
 The extractor uses models whose live catalog entry says `owned_by: "nearai"` and that support
-structured outputs (preferring `Qwen/Qwen3-VL-30B-A3B-Instruct`); proxied third-party models are
-refused even if configured. "Model response verified" requires: the TEE's EIP-191 signature over
+structured outputs, in the order `Qwen/Qwen3.8-27B`, `z-ai/glm-5.3-flash`,
+`Qwen/Qwen3-VL-30B-A3B-Instruct`, with reasoning switched off (`enable_thinking: false`). A model
+that times out, is unreachable or fails with a server error is skipped for 10 minutes and the next
+one is tried, at most two per invoice. Account errors (401/402/403) stop at once, and a pinned
+model (`NEAR_AI_MODEL`) is never swapped. Proxied third-party models are refused even if
+configured. "Model response verified" requires: the TEE's EIP-191 signature over
 `model:sha256(request):sha256(response)` of our exact bytes, a fresh attestation whose TDX
 report_data binds that signer and our nonce, a non-debug TD, the quote verified against Intel PCS,
 and NVIDIA NRAS passing with our nonce. Anything that cannot be checked gives "Verification

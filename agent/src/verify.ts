@@ -109,6 +109,8 @@ export type VerifyInput = {
   verifiers: Verifiers;
   fetch?: typeof fetch;
   nonceHex?: string;
+  /** Signature lookups before giving up (default 10). */
+  signatureAttempts?: number;
 };
 
 async function getJson<T>(f: typeof fetch, url: string, apiKey: string): Promise<{ status: number; body: T | null; text: string }> {
@@ -133,9 +135,10 @@ export async function verifyCompletion(input: VerifyInput): Promise<Verification
   const evidence: Record<string, unknown> = { model: input.model, chatId: input.chatId };
   const base = input.baseUrl.replace(/\/$/, "");
 
-  // 1. The signature over our exact request and response bytes.
+  // 1. The signature over our exact request and response bytes. It is cached only on the TEE node
+  //    that served the completion, so other nodes answer 404 "not found or expired": retry (~20 s).
   let sig: SignatureResponse | null = null;
-  for (let attempt = 0; attempt < 5 && !sig; attempt++) {
+  for (let attempt = 0; attempt < (input.signatureAttempts ?? 10) && !sig; attempt++) {
     try {
       const r = await getJson<SignatureResponse>(
         f,
@@ -147,7 +150,7 @@ export async function verifyCompletion(input: VerifyInput): Promise<Verification
     } catch {
       break;
     }
-    if (!sig) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    if (!sig) await new Promise((resolve) => setTimeout(resolve, Math.min(500 * (attempt + 1), 3000)));
   }
   if (!sig) {
     checks.push({ name: "response signature", ok: false, detail: "signature endpoint unavailable" });
