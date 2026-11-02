@@ -19,8 +19,10 @@
     "executor": "tsx executor/src/main.ts",
     "demo:mock": "tsx scripts/src/demo.ts",
     "bot": "tsx channels/telegram/src/main.ts",
+    "services": "tsx scripts/src/services.ts",
     "devnet": "tsx scripts/src/devnet.ts",
     "mock:1click": "tsx scripts/src/mock-1click.ts",
+    "render:env": "tsx scripts/src/render-env.ts",
     "dashboard": "pnpm --filter @getleash/web dev"
   },
   "devDependencies": {

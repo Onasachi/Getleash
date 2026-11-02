@@ -125,6 +125,39 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
    runs. It replies that the payment needs your OK because the supplier's details changed recently.
    Open the link, click the button and approve in your wallet → "Paid" on the dashboard and in Telegram.
 
+## Run the services on Render
+
+Instead of step 6 on your own machine, the services can run on Render, defined in
+[render.yaml](../render.yaml). Nothing that signs as the owner goes to Render: steps 1–4 stay on your
+machine, and the worker holds only the agent's and the executor's function-call keys.
+
+| Service | Render type | Runs |
+|---|---|---|
+| `getleash-services` | background worker, Starter plan (workers have no free plan), 1 GB disk at `/var/data` | the executor and the bot together (`scripts/src/services.ts` starts either one again if it stops); the disk keeps the executor's journal, the bot's update log, the encrypted invoices and the record that sends each owner notice once |
+| `getleash-dashboard` | web service, free plan (sleeps when idle; the first visit after a quiet spell takes about a minute) or Starter to keep it awake | the dashboard, at a public `onrender.com` address, so the links in Telegram open on a phone |
+
+1. Do steps 1–4 from your machine, and stop any GetLeash bot running elsewhere: one bot token serves one
+   process.
+2. Gather the values to paste:
+   ```bash
+   pnpm render:env --network mainnet
+   ```
+   → `.env.render-worker` and `.env.render-dashboard` (mode 0600, git-ignored). They hold secrets: paste
+   them into Render only, then delete them (`rm .env.render-*`). Only variable names are printed.
+3. In Render: New → Blueprint → connect the repository → Render reads `render.yaml` and lists the two
+   services and their plans. Fill in the values it asks for from the two files, or add them afterwards on
+   each service's Environment page with "Add from .env" (paste the whole file).
+4. On both services: Environment → Secret Files → add `directory.json` with the contents of
+   `.data/mainnet/directory.json`. It holds the supplier names the agent matches invoices against.
+5. Once the dashboard is live, set the worker's `DASHBOARD_URL` to its address
+   (`https://getleash-dashboard….onrender.com`); saving redeploys the worker.
+6. The worker's logs show `executor executor-1.you.near → getleash.you.near on mainnet` and
+   `@<your bot> is listening`. Then send the first test invoice (step 8).
+
+After `pnpm seed` adds a supplier, update the `directory.json` secret file on both services. The
+dashboard's private view shows supplier names but not invoice records, which stay on the worker's disk.
+`NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new deploy.
+
 ## Day to day
 
 - **Approve:** the Telegram link opens the payment with one button. A browser wallet (Meteor, HOT, Intear,
