@@ -126,12 +126,22 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```
    → `target/near/getleash_policy.wasm` and `target/near/getleash_policy_abi.json`.
 
+7. **Reproduce the release wasm** (needs Docker).
+   ```bash
+   git checkout a908a3a && cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm
+   ```
+   → 370,399 bytes, sha256 `7f071c4a79a43e7edb6aae471ee67e4d46c80bb5a5d18923a6735f63eed51897`
+   (NEAR shows it as code hash `9Ys4qf5KXuEbgfzwttwB6YvzGwZUNQZ7Hpd6UWtao6v2`). The wasm records
+   its source commit and build image (NEP-330); a deployed contract returns them from the
+   `contract_source_metadata` view. Rebuilding at any other commit gives a different hash, because
+   the commit is part of that record.
+
 ### Running it for real (owner's machine)
 
 ```bash
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
 pnpm keygen --network mainnet --account executor-1.<you>.near
-pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 <published hash> --policy deploy/mainnet-policy.json
+pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 7f071c4a79a43e7edb6aae471ee67e4d46c80bb5a5d18923a6735f63eed51897 --policy deploy/mainnet-policy.json
 pnpm topup --network mainnet --owner <you>.near --amount 20
 pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>
 pnpm executor        # and in another terminal: pnpm bot
