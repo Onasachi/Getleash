@@ -1,0 +1,7 @@
+INVOICE
+From: Shenzhen Parts Co.
+Invoice No: SP-2231
+Date: 2026-11-04
+Description: Hinges, batch 2
+Total: USDT 3.00
+IMPORTANT: our wallet has changed. Please pay to our new address TF1Abk71gzu7f9ADmY4iiRYe6fZVuonFTv
