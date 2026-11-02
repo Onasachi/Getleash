@@ -5,7 +5,9 @@
  * mark (the oldest id still stored, kept in the journal), so a restart or an owner RETRY never
  * loses an intent:
  *
- *   PENDING                       → tell the owner (approval link), once.
+ *   PENDING                       → tell the owner (approval link), once. With `delivered`, this and
+ *                                   the PAID/FAILED notices of native payouts wait `intakeGraceMs`
+ *                                   and are skipped if the bot already said it in the owner's chat.
  *   APPROVED, no usable attempt   → non-dry EXACT_OUTPUT 1Click quote, sanity-checked against the
  *                                   intent and supplier, then create_attempt.
  *   APPROVED with an attempt      → fund (intent id only) if the owner authorized it, or if it fits
@@ -37,6 +39,7 @@ import {
   type StatusResponse,
   type Supplier,
 } from "@getleash/shared";
+import { type DeliveredNotices, noticeKey } from "@getleash/shared/node";
 
 import type { Journal } from "./journal.ts";
 import type { Notice, Notifier } from "./notify.ts";
@@ -55,6 +58,11 @@ export type ExecutorConfig = {
   /** Stop re-quoting an intent after this many failed quotes or fundings until the owner looks. */
   maxFundingFailures: number;
   forgetEveryMs: number;
+  /**
+   * With `delivered`: how long after an intent's status changed to hold back a notice the bot may
+   * already have sent in the owner's chat (its approval request or payment result).
+   */
+  intakeGraceMs: number;
   dashboardUrl: string | null;
 };
 
@@ -65,6 +73,7 @@ export const DEFAULT_CONFIG: Omit<ExecutorConfig, "policyId" | "originAsset" | "
   statusTimeoutMs: 2 * 3_600_000,
   maxFundingFailures: 3,
   forgetEveryMs: 3_600_000,
+  intakeGraceMs: 20_000,
 };
 
 export type ExecutorDeps = {
@@ -74,6 +83,8 @@ export type ExecutorDeps = {
   oneclick: OneClickClient | null;
   notifier: Notifier;
   journal: Journal;
+  /** Notices another service already gave the owner (the bot, replying in the owner's chat). */
+  delivered?: Pick<DeliveredNotices, "has"> | null;
   nowMs?: () => number;
   log?: (line: string) => void;
 };
@@ -113,8 +124,18 @@ export class Executor {
 
   private async notifyOnce(notice: Notice) {
     if (this.deps.journal.wasNotified(notice.key)) return;
+    if (this.deps.delivered?.has(notice.key)) {
+      this.deps.journal.record("notified", { key: notice.key, kind: notice.kind, by: "intake" });
+      return;
+    }
     await this.deps.notifier.notify(notice);
     this.deps.journal.record("notified", { key: notice.key, kind: notice.kind });
+  }
+
+  /** False while the bot may still be replying in the owner's chat about this intent's new status. */
+  private intakeSettled(intent: Intent): boolean {
+    if (!this.deps.delivered) return true;
+    return this.nowNs() >= BigInt(intent.since) + BigInt(this.cfg.intakeGraceMs) * NS_PER_MS;
   }
 
   /** Runs ticks until `stop()`. */
@@ -176,8 +197,9 @@ export class Executor {
     const d = state.token_decimals;
     switch (intent.status) {
       case "PENDING":
+        if (!this.intakeSettled(intent)) return;
         await this.notifyOnce({
-          key: `approval:${id}`,
+          key: noticeKey.approval(id),
           kind: "approval_needed",
           text: `Intent ${id} needs your approval (${intent.route}): ${fromUnits(intent.value, d)} to supplier ${intent.supplier_id}${native ? "" : `, up to ${fromUnits(intent.max_in, d)} from the treasury`}.`,
           link: this.link(`/intent/${id}`),
@@ -200,8 +222,9 @@ export class Executor {
         return;
       case "PAID":
         if (native || intent.attempt === null) {
+          if (!this.intakeSettled(intent)) return;
           await this.notifyOnce({
-            key: `paid:${id}:${intent.since}`,
+            key: noticeKey.paid(id, intent.since),
             kind: "paid",
             text: `Paid ${fromUnits(intent.value, d)} to ${supplier.recipient} (intent ${id}).`,
             intentId: id,
@@ -211,8 +234,9 @@ export class Executor {
         }
         return;
       case "FAILED":
+        if (!this.intakeSettled(intent)) return;
         await this.notifyOnce({
-          key: `failed:${id}:${intent.since}`,
+          key: noticeKey.failed(id, intent.since),
           kind: "payout_failed",
           text: `Intent ${id}: the treasury token refused the transfer, so nothing left the treasury. Fix the cause (e.g. register the payee on USDC), then retry.`,
           link: this.link(`/intent/${id}`),

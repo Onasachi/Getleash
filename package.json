@@ -20,6 +20,7 @@
     "demo:mock": "tsx scripts/src/demo.ts",
     "bot": "tsx channels/telegram/src/main.ts",
     "devnet": "tsx scripts/src/devnet.ts",
+    "mock:1click": "tsx scripts/src/mock-1click.ts",
     "dashboard": "pnpm --filter @getleash/web dev"
   },
   "devDependencies": {

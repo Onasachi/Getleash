@@ -11,6 +11,7 @@
     "@getleash/devkit": "workspace:*",
     "@getleash/executor": "workspace:*",
     "@getleash/ingestion": "workspace:*",
+    "@getleash/mock-1click": "workspace:*",
     "@getleash/shared": "workspace:*",
     "near-api-js": "7.4.0",
     "zod": "4.6.7"

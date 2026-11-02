@@ -20,7 +20,13 @@ export const COMMON_OPTIONS = {
 export type Values = Record<string, string | boolean | undefined>;
 
 export function parse(options: NonNullable<ParseArgsConfig["options"]>, usage: string) {
-  const parsed = parseArgs({ options: { ...COMMON_OPTIONS, ...options }, allowPositionals: true });
+  let parsed: ReturnType<typeof parseArgs>;
+  try {
+    parsed = parseArgs({ options: { ...COMMON_OPTIONS, ...options }, allowPositionals: true });
+  } catch (error) {
+    console.error(`✗ ${(error as Error).message.split(". ")[0]}\n\n${usage.trim()}`);
+    process.exit(1);
+  }
   const values = parsed.values as Values;
   const positionals = parsed.positionals;
   if (values.help) {
@@ -54,7 +60,8 @@ export function ownerAccount(common: Common, ownerId: string, keyFile?: string):
     fail(
       `no key for ${ownerId} at ${path}.\n  Import your wallet with near-cli-rs and save it to the legacy keychain:\n` +
         `  near account import-account using-web-wallet network-config ${common.network}\n` +
-        `  or pass --owner-key-file <path to a {account_id, public_key, private_key} file>.`,
+        `  or pass --owner-key-file <path to a {account_id, public_key, private_key} file>\n` +
+        `  (near-cli-rs files without account_id work when named <account>.json or <account>/ed25519_<key>.json).`,
     );
   }
   return signingAccount(common.rpc, ownerId, { keyFile: path });

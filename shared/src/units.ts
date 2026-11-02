@@ -43,3 +43,12 @@ export function near(amount: string): bigint {
 export function tgas(n: number): bigint {
   return BigInt(n) * TGAS;
 }
+
+/** A nanosecond duration in the largest exact unit: "45 s", "10 min", "3 h", "1 day", "2 days". */
+export function durationText(ns: bigint | string): string {
+  const s = BigInt(ns) / 1_000_000_000n;
+  if (s > 0n && s % 86_400n === 0n) return `${s / 86_400n} day${s === 86_400n ? "" : "s"}`;
+  if (s > 0n && s % 3_600n === 0n) return `${s / 3_600n} h`;
+  if (s > 0n && s % 60n === 0n) return `${s / 60n} min`;
+  return `${s} s`;
+}

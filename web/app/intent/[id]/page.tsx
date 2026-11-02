@@ -104,7 +104,9 @@ export default function IntentPage({ params }: { params: Promise<{ id: string }>
         Intent #{intent.id} <Pill value={intent.status} />
       </h1>
       <p className="muted">
-        {intent.route === "AUTONOMOUS" ? "Approved by the agent within its limits" : `Waits for the owner: ${intent.route}`}
+        {intent.route === "AUTONOMOUS"
+          ? "Approved by the agent within its limits"
+          : `${intent.status === "PENDING" ? "Waits for" : "Needed"} the owner: ${intent.route}`}
         {intent.flag > 0 && <> · agent flag #{intent.flag}</>} · {native ? "direct USDC transfer" : "cross-chain via NEAR Intents 1Click"}
       </p>
 

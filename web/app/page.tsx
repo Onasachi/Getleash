@@ -6,7 +6,7 @@
  */
 import Link from "next/link";
 
-import { isOpen } from "@getleash/shared";
+import { durationText, isOpen } from "@getleash/shared";
 
 import { Loading, Pill } from "@/components/ui";
 import { accessKeyCount, policy } from "@/lib/chain";
@@ -109,7 +109,7 @@ export default function Overview() {
       </div>
       <p className="muted small">
         Payments above {usdc(p.approval_threshold, d)} wait for you. After an address change, every payment to that supplier waits for you for{" "}
-        {Number(BigInt(p.cooldown_ns) / 3_600_000_000_000n)} h, and you can approve at most {usdc(p.cooldown_max, d)} until it ends.
+        {durationText(p.cooldown_ns)}, and you can approve at most {usdc(p.cooldown_max, d)} until it ends.
       </p>
 
       <h2>Needs someone ({open.length})</h2>

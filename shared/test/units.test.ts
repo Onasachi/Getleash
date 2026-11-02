@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fromUnits, near, rescaleUp, toUnits } from "../src/units.ts";
+import { durationText, fromUnits, near, rescaleUp, toUnits } from "../src/units.ts";
 
 describe("units", () => {
   it("converts decimals exactly, without floating point", () => {
@@ -24,5 +24,16 @@ describe("units", () => {
     expect(rescaleUp(1_000_000_000_000n, 18, 6)).toBe(1n);
     expect(rescaleUp(1_000_000_000_001n, 18, 6)).toBe(2n);
     expect(rescaleUp(5n, 6, 8)).toBe(500n);
+  });
+
+  it("writes durations in the largest exact unit", () => {
+    expect(durationText("600000000000")).toBe("10 min");
+    expect(durationText("3600000000000")).toBe("1 h");
+    expect(durationText(5_400_000_000_000n)).toBe("90 min");
+    expect(durationText("86400000000000")).toBe("1 day");
+    expect(durationText("172800000000000")).toBe("2 days");
+    expect(durationText("259200000000000")).toBe("3 days");
+    expect(durationText("90000000000")).toBe("90 s");
+    expect(durationText("0")).toBe("0 s");
   });
 });

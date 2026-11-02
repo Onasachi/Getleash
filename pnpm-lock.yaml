@@ -146,6 +146,9 @@ importers:
       '@getleash/ingestion':
         specifier: workspace:*
         version: link:../ingestion
+      '@getleash/mock-1click':
+        specifier: workspace:*
+        version: link:../mock-1click
       '@getleash/shared':
         specifier: workspace:*
         version: link:../shared

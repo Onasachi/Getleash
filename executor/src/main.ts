@@ -14,7 +14,7 @@ import { parseArgs } from "node:util";
 
 import { TelegramNotifier } from "@getleash/channel-telegram/notifier";
 import { ExecutorClient, NETWORKS, networkId, OneClickClient, PolicyView, provider } from "@getleash/shared";
-import { dataDir, keyFilePath, signingAccount } from "@getleash/shared/node";
+import { dataDir, DeliveredNotices, keyFilePath, ownerNoticesPath, signingAccount } from "@getleash/shared/node";
 
 import { Executor } from "./executor.ts";
 import { Journal } from "./journal.ts";
@@ -60,11 +60,12 @@ const oneclick = new OneClickClient({
   jwt: values.mock ? undefined : process.env.ONECLICK_JWT,
 });
 
-// Owner notices go to Telegram when a bot token and the owner's chat id are configured.
-const notifier: Notifier =
-  process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_OWNER_CHAT_ID
-    ? new TelegramNotifier(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_OWNER_CHAT_ID)
-    : new ConsoleNotifier();
+// Owner notices go to Telegram when a bot token and the owner's chat id are configured. The bot
+// records what it already told the owner in their chat (same data directory), so it isn't repeated.
+const botToken = process.env.TELEGRAM_BOT_TOKEN;
+const ownerChat = process.env.TELEGRAM_OWNER_CHAT_ID;
+const telegram = Boolean(botToken && ownerChat);
+const notifier: Notifier = botToken && ownerChat ? new TelegramNotifier(botToken, ownerChat) : new ConsoleNotifier();
 
 const executor = new Executor(
   {
@@ -78,6 +79,7 @@ const executor = new Executor(
     oneclick,
     notifier,
     journal: new Journal(process.env.EXECUTOR_JOURNAL ?? join(dataDir(network), "executor-journal.jsonl")),
+    delivered: telegram ? new DeliveredNotices(ownerNoticesPath(network)) : null,
     log: (line) => console.log(line),
   },
 );

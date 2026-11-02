@@ -30,6 +30,8 @@ export type AgentOutcome = {
   result: ProposeResult | null;
   /** The intent's status after the call (a native payment within limits is PAID already). */
   intentStatus: IntentStatus | null;
+  /** The intent's `since` when it was read back after the call (native payments), else null. */
+  intentSince: string | null;
   obligationId: string | null;
   badge: string;
   model: string | null;
@@ -72,6 +74,7 @@ export class InvoiceAgent {
         decision,
         result: null,
         intentStatus: null,
+        intentSince: null,
         obligationId: null,
         badge: extracted ? BADGE_LABEL[extracted.verification.badge] : BADGE_LABEL.VERIFICATION_UNAVAILABLE,
         model: extracted?.model ?? null,
@@ -114,6 +117,7 @@ export class InvoiceAgent {
     const base = {
       key: input.key,
       intentStatus: null as IntentStatus | null,
+      intentSince: null as string | null,
       decision,
       badge: BADGE_LABEL[extracted.verification.badge],
       model: extracted.model,
@@ -170,8 +174,8 @@ export class InvoiceAgent {
       };
     }
     // A native payment within the limits was sent in the same call: report how it ended.
-    const intentStatus =
-      result.status === "PAYING" ? ((await this.deps.view.intent(result.intent_id!))?.status ?? "PAYING") : result.status;
+    const after = result.status === "PAYING" ? await this.deps.view.intent(result.intent_id!) : null;
+    const intentStatus = result.status === "PAYING" ? (after?.status ?? "PAYING") : result.status;
     const summary =
       intentStatus === "PAID"
         ? `intent ${result.intent_id} paid automatically (within the autonomous budget)`
@@ -187,6 +191,7 @@ export class InvoiceAgent {
       status: "proposed",
       result,
       intentStatus,
+      intentSince: after?.since ?? null,
       obligationId: id,
       summary,
       notices:

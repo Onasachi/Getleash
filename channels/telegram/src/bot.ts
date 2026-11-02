@@ -18,6 +18,7 @@ import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import type { Channel, Notice, Received } from "@getleash/channel-core";
 import { checkFile, type InvoiceFile, LIMITS, LimitError, Semaphore, type UpdateLog } from "@getleash/ingestion";
 import { type Directory, fromUnits, type PolicyView } from "@getleash/shared";
+import { type DeliveredNotices, noticeKey } from "@getleash/shared/node";
 
 /** The subset of the Bot API the channel uses (grammY's `bot.api` provides it; tests fake it). */
 export interface BotApi {
@@ -36,10 +37,31 @@ export type TelegramDeps = {
   view: PolicyView;
   directory: () => Directory;
   dashboardUrl: string | null;
+  /** The owner's chat (TELEGRAM_OWNER_CHAT_ID), where the executor sends its notices too. */
+  ownerChatId?: string | null;
+  /** Shared with the executor: replies in the owner's chat stand in for its notices of the same news. */
+  delivered?: Pick<DeliveredNotices, "add"> | null;
   log?: (line: string) => void;
 };
 
 type Message = NonNullable<Update["message"]>;
+
+/** The executor notices that a reply to this invoice already gives: its approval request or payment result. */
+export function coveredNotices(outcome: AgentOutcome): string[] {
+  const id = outcome.result?.intent_id;
+  if (outcome.status !== "proposed" || id == null) return [];
+  const since = outcome.intentSince;
+  switch (outcome.intentStatus) {
+    case "PENDING":
+      return [noticeKey.approval(id)];
+    case "PAID":
+      return since ? [noticeKey.paid(id, since)] : [];
+    case "FAILED":
+      return since ? [noticeKey.failed(id, since)] : [];
+    default:
+      return [];
+  }
+}
 
 export function parseIdList(value: string | undefined): Set<string> {
   return new Set(
@@ -143,6 +165,10 @@ export class TelegramChannel implements Channel<Update> {
     }
     const outcome = await this.jobs.run(() => this.deps.agent.process(received.input));
     await this.send(received.replyTo, { text: this.describe(outcome) });
+    // Recorded only after the reply went out: if it failed, the executor's notice still comes.
+    if (this.deps.delivered && received.replyTo === this.deps.ownerChatId) {
+      this.deps.delivered.add(coveredNotices(outcome), "telegram");
+    }
     return `invoice:${outcome.status}`;
   }
 

@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   CHAINS,
   defaultRoleIds,
+  durationText,
   InvoiceCurrency,
   isNative,
   isTronAddress,
@@ -70,11 +71,10 @@ for (const s of wanted) {
 }
 const existing = await view.suppliers();
 const fresh = wanted.filter((s) => !existing.some((e) => e.chain === s.chain && e.asset_id === s.asset_id && e.recipient === s.recipient));
-const hours = Number(BigInt(state.policy.cooldown_ns) / 3_600_000_000_000n);
 
 await confirm(
   common,
-  `Seeding ${policyId} (each new supplier starts a ${hours} h cooldown):\n` +
+  `Seeding ${policyId} (each new supplier starts a ${durationText(state.policy.cooldown_ns)} cooldown):\n` +
     fresh.map((s) => `  + "${s.name}" → ${s.chain} ${s.recipient}${isNative(s, state.token_id) ? " (native USDC; registered on the token if needed)" : ` (${s.asset_id})`}`).join("\n"),
 );
 

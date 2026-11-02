@@ -14,7 +14,15 @@ import { parseArgs } from "node:util";
 import { InvoiceAgent, InvoiceStore, NearAiExtractor, networkVerifiers, OfflineExtractor, parseStoreKey } from "@getleash/agent";
 import { parseTenantSecret, UpdateLog } from "@getleash/ingestion";
 import { AgentClient, NETWORKS, networkId, PolicyView, provider } from "@getleash/shared";
-import { dataDir, directoryPath, keyFilePath, loadDirectory, signingAccount } from "@getleash/shared/node";
+import {
+  dataDir,
+  DeliveredNotices,
+  directoryPath,
+  keyFilePath,
+  loadDirectory,
+  ownerNoticesPath,
+  signingAccount,
+} from "@getleash/shared/node";
 
 import { parseIdList, startBot, TelegramChannel, telegramDownloader } from "./bot.ts";
 
@@ -79,6 +87,8 @@ startBot(token, (bot) =>
     view,
     directory: () => loadDirectory(directoryFile),
     dashboardUrl: process.env.DASHBOARD_URL ?? null,
+    ownerChatId: process.env.TELEGRAM_OWNER_CHAT_ID ?? null,
+    delivered: new DeliveredNotices(ownerNoticesPath(network)),
     log: (line) => console.log(line),
   }),
 );

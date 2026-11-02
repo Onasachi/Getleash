@@ -68,6 +68,8 @@ export type MockOptions = {
   pollMs?: number;
   /** If set, quotes without this X-API-Key are refused (mirrors authenticated use). */
   requireJwt?: string;
+  /** NEAR the solver sends to create a deposit account before moving its tokens (default 1; testnet: 0.05). */
+  depositAccountNear?: string;
   log?: (line: string) => void;
 };
 
@@ -447,7 +449,7 @@ export class MockOneClick {
     try {
       await this.rpc.viewAccount({ accountId: d.address });
     } catch {
-      await this.solver.signAndSendTransaction({ receiverId: d.address, actions: [actions.transfer(near("1"))] });
+      await this.solver.signAndSendTransaction({ receiverId: d.address, actions: [actions.transfer(near(this.opts.depositAccountNear ?? "1"))] });
     }
     const depositAccount = new Account(d.address, this.rpc, new KeyPairSigner(d.key));
     const out = parseOutcome(

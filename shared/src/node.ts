@@ -6,9 +6,20 @@
  * otherwise. Services only ever hold the function-call keys they generated themselves; the
  * owner's key stays in the owner's wallet or the owner's own near-cli credentials.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { Account, KeyPair, KeyPairSigner, type JsonRpcProvider, type KeyPairString } from "near-api-js";
 import { z } from "zod";
@@ -16,8 +27,13 @@ import { z } from "zod";
 import { Directory } from "./directory.ts";
 import type { NetworkId } from "./networks.ts";
 
+/**
+ * near-cli (JS) and `keygen` write `account_id`. near-cli-rs's legacy keychain (checked with
+ * 0.30.1) leaves it out and names the file after the account instead: `<account>.json` and
+ * `<account>/ed25519_<key>.json`. It also stores the seed phrase, which this schema drops.
+ */
 export const KeyFile = z.object({
-  account_id: z.string(),
+  account_id: z.string().optional(),
   public_key: z.string().startsWith("ed25519:"),
   private_key: z.string().startsWith("ed25519:"),
 });
@@ -55,7 +71,17 @@ export function generateKeyFile(network: NetworkId, accountId: string, path = ke
 export function readKeyFile(path: string): KeyFile {
   const parsed = KeyFile.safeParse(JSON.parse(readFileSync(path, "utf8")));
   if (!parsed.success) throw new Error(`${path} is not a NEAR key file: ${parsed.error.message}`);
+  if (publicKeyOf(parsed.data.private_key) !== parsed.data.public_key) {
+    throw new Error(`${path}: public_key does not belong to private_key`);
+  }
   return parsed.data;
+}
+
+/** The account a key file is for: its `account_id`, else the near-cli-rs file name. */
+export function keyFileAccount(path: string, file: KeyFile): string {
+  if (file.account_id) return file.account_id;
+  const name = basename(path, ".json");
+  return name.startsWith("ed25519_") ? basename(dirname(path)) : name;
 }
 
 /** Loads a signing account from an explicit private key or a key file. */
@@ -67,8 +93,12 @@ export function signingAccount(
   let secret: string | undefined = source.privateKey;
   if (!secret && source.keyFile) {
     const file = readKeyFile(source.keyFile);
-    if (file.account_id !== accountId) {
-      throw new Error(`${source.keyFile} holds a key for ${file.account_id}, not ${accountId}`);
+    if (keyFileAccount(source.keyFile, file) !== accountId) {
+      throw new Error(
+        file.account_id
+          ? `${source.keyFile} holds a key for ${file.account_id}, not ${accountId}`
+          : `${source.keyFile} has no account_id and is not named after ${accountId}; add "account_id": "${accountId}" to it`,
+      );
     }
     secret = file.private_key;
   }
@@ -100,4 +130,75 @@ export function loadDirectory(path: string): Directory {
 export function saveDirectory(path: string, directory: Directory): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${JSON.stringify(Directory.parse(directory), null, 2)}\n`, { mode: 0o600 });
+}
+
+// ── Owner notices sent by more than one service ─────────────────────────────────────────────
+
+/**
+ * Keys of the owner notices that two services can send: the bot, when it replies to an invoice in the
+ * owner's own chat, and the executor. The executor uses the same keys for its own dedupe.
+ */
+export const noticeKey = {
+  approval: (intentId: number) => `approval:${intentId}`,
+  paid: (intentId: number, since: string) => `paid:${intentId}:${since}`,
+  failed: (intentId: number, since: string) => `failed:${intentId}:${since}`,
+};
+
+export function ownerNoticesPath(network: NetworkId): string {
+  return join(dataDir(network), "owner-notices.jsonl");
+}
+
+/**
+ * Notices the owner already received, shared through an append-only JSON-lines file by services on
+ * the same machine, so the owner gets each one once. Each `has` reads only what was appended since
+ * the last read. A convenience like the executor journal: without the file the owner gets a message twice,
+ * never one fewer.
+ */
+export class DeliveredNotices {
+  private readonly keys = new Set<string>();
+  private offset = 0;
+
+  constructor(private readonly path: string) {}
+
+  has(key: string): boolean {
+    this.refresh();
+    return this.keys.has(key);
+  }
+
+  add(keys: readonly string[], by: string): void {
+    if (keys.length === 0) return;
+    const at = new Date().toISOString();
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    appendFileSync(this.path, keys.map((key) => `${JSON.stringify({ at, by, key })}\n`).join(""), { mode: 0o600 });
+    for (const key of keys) this.keys.add(key);
+  }
+
+  private refresh() {
+    if (!existsSync(this.path)) return;
+    const size = statSync(this.path).size;
+    if (size < this.offset) {
+      // Replaced or truncated: read it again from the start.
+      this.offset = 0;
+      this.keys.clear();
+    }
+    if (size === this.offset) return;
+    const bytes = Buffer.alloc(size - this.offset);
+    const fd = openSync(this.path, "r");
+    try {
+      readSync(fd, bytes, 0, bytes.length, this.offset);
+    } finally {
+      closeSync(fd);
+    }
+    const end = bytes.lastIndexOf(0x0a); // a line still being written is read next time
+    if (end < 0) return;
+    for (const line of bytes.subarray(0, end).toString("utf8").split("\n")) {
+      try {
+        const entry = JSON.parse(line) as { key?: unknown };
+        if (typeof entry.key === "string") this.keys.add(entry.key);
+      } catch {
+        // A line from a crashed writer is skipped.
+      }
+    }
+    this.offset += end + 1;
+  }
 }

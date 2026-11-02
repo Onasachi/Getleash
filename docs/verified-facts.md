@@ -53,6 +53,54 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
 | Testnet contract | `3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af` | Circle (same page) |
 | Decimals | **6** (`ft_metadata` → `{"spec":"ft-1.0.0","name":"USDC","symbol":"USDC","decimals":6}`) | mainnet RPC view call, https://rpc.mainnet.fastnear.com |
 | `storage_balance_bounds` | min = max = `1250000000000000000000` yocto (**0.00125 NEAR**) | mainnet RPC view call |
+| Testnet contract, same values | decimals 6; bounds min = max = 0.00125 NEAR (checked 2026-11-02) | testnet RPC view calls, https://rpc.testnet.near.org |
+| Testnet faucet | https://faucet.circle.com (USDC, NEAR Testnet) sent **20 USDC** in one request; the receiving account was already registered (2026-11-02) | observed |
+| `storage_deposit` gas (testnet, `registration_only`, new account) | **2.04 TGas** burned in the token's receipt; 2.57 TGas for the whole transaction (conversion + refund receipt); result `{"total":"1250000000000000000000","available":"0"}` (2026-11-02) | tx `2HwRgBQFVZAe5PMpUnP3xVaaXUaCAysKgdjSiB2p1qRe` (owner registering itself) |
+
+## GetLeash v2 on testnet (measured 2026-11-02, release wasm 8eaccbf1…640a3d)
+
+- Setup (`pnpm setup:owner --network testnet`): the owner spent **1.425 NEAR** in all: 1.05 + 0.15 + 0.2 moved
+  into the policy, agent and executor accounts, 0.0025 for two USDC registrations, 0.0227 gas (each role
+  account 0.0071, the policy create+deploy+init batch 0.0082, the policy's USDC registration 0.0002). The policy
+  account then held 84,442 bytes (0.844 NEAR locked, 0.206 free); two suppliers added 328 bytes.
+- Native autonomous payout inside `propose` (70 TGas attached), tx `HC6L8yJukFH8W9hvAqX5zvwpjP9EabvSQZ4SQvVBeqBu`:
+  **7.33 TGas burnt = 0.00067 NEAR** (propose 2.56, Circle USDC `ft_transfer` 2.30, `on_paid` 1.50, refund
+  receipts 0.66). The contract reserves 15 TGas for the transfer and 10 for the callback.
+- A refused proposal (`OBLIGATION_OPEN_OR_PAID`, the reworded duplicate) burnt 2.05 TGas (0.00018 NEAR); a
+  proposal left PENDING (`ABOVE_THRESHOLD`) 2.20 TGas (0.0002 NEAR).
+- The owner approving that PENDING intent from the dashboard (`decide` APPROVE, 3 USDC, 80 TGas, 1 yoctoNEAR),
+  tx `Gd68CW37c78Lj2UuBe94NJs9QnzVkQUXajmYi2DoRPa3`: **7.25 TGas burnt = 0.00066 NEAR**, paid in the same
+  transaction (`decide` 2.47, `ft_transfer` 2.30, `on_paid` 1.50).
+- Cross-chain payout of 1.00 USDT to a Tron supplier through mock-1click (`pnpm mock:1click`, real Circle
+  testnet USDC; nothing reaches Tron). The trust budget is 0, so the owner authorized it:
+  - `create_attempt` by the executor (30 TGas attached), tx `F5BV8B4UXdjsM7xbykXKAqAS51PmZvL2s1Lyx6W3uwsn`:
+    2.16 TGas = 0.00019 NEAR. Deposit `62e30341…5529e99`, 1.206121 USDC in.
+  - `authorize` by the owner (30 TGas, 1 yoctoNEAR), tx `H2ccUpJZpKB6KcAbewxajQnaTZLz7Q62BSe5FH6fSFL5`: 2.03 TGas
+    = 0.00018 NEAR.
+  - `fund(3)` by the executor (80 TGas attached), tx `6gkUxMGr649mf6RFmrR2wbNotbfqJSarnTTFp8WmwB1U`:
+    **9.33 TGas = 0.00087 NEAR** (fund 2.65, USDC 4.19, `on_paid` 1.51, refund receipts 0.66).
+    Circle's USDC ran the batch `[storage_deposit(registration_only), ft_transfer]` in **one receipt (4.19 TGas)**
+    and sent no storage refund. The deposit account then showed
+    `storage_balance_of = {"total":"1250000000000000000000","available":"0"}` and held the 1.206121 USDC.
+    The registration was paid from the policy contract's own NEAR, 1.05 → 1.04875.
+  - mock-1click marked the deposit PROCESSING, and 15 s later moved it to its solver and reported SUCCESS.
+- NEAR AI extracted the first three invoices with signatures verified (seen in the bot's replies); the signed
+  responses named the model `Qwen/Qwen3.8-27B`.
+
+## near-cli-rs (checked 2026-11-02, version 0.30.1)
+
+- `near account create-account sponsor-by-faucet-service <name>.testnet autogenerate-new-keypair
+  save-to-legacy-keychain network-config testnet create` created `getleash-owner.testnet` with **10 NEAR**.
+- The legacy keychain writes `~/.near-credentials/<network>/<account>.json` and
+  `<account>/ed25519_<key>.json` with `{seed_phrase_hd_path, master_seed_phrase, implicit_account_id,
+  public_key, private_key}`: **no `account_id`**, the seed phrase in plain text, file mode 0644.
+  `@getleash/shared/node` takes the account from the file name in that case and drops the seed phrase.
+- Installed with `npm install -g near-cli-rs` under asdf-managed Node, the `near` command appears only after
+  `asdf reshim nodejs`.
+- The "NEAR CLI" wallet in near-connect (executor `near/near-cli-connect` `dist/near-cli.js`) prints a
+  `near contract call-function as-transaction …` command, ending in `sign-with-keychain` and no `send`, and then
+  takes the transaction hash. It writes 1 yoctoNEAR as `'0.000000000000000000000001 NEAR'`. The same command with
+  `sign-with-legacy-keychain send` signed with the faucet account's `~/.near-credentials` key without prompting.
 
 ## NEAR Intents 1Click API (checked 2026-11-01)
 

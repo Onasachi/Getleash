@@ -8,9 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import { UpdateLog } from "@getleash/ingestion";
-import type { PolicyView } from "@getleash/shared";
+import type { IntentStatus, PolicyView } from "@getleash/shared";
 
-import { parseIdList, TelegramChannel } from "../src/bot.ts";
+import { coveredNotices, parseIdList, TelegramChannel } from "../src/bot.ts";
 
 const OWNER = 1001;
 const CHAT = 2002;
@@ -22,24 +22,38 @@ function message(update_id: number, fields: Record<string, unknown>, from = OWNE
   } as unknown as Update;
 }
 
-function setup(overrides: { download?: (p: string) => Promise<Uint8Array>; fileSize?: number } = {}) {
+const REFUSED = {
+  status: "rejected_onchain",
+  result: { accepted: false, intent_id: null, status: null, route: null, reason: "OBLIGATION_OPEN_OR_PAID" },
+  intentStatus: null,
+  intentSince: null,
+  summary: "refused by the contract: OBLIGATION_OPEN_OR_PAID",
+} satisfies Partial<AgentOutcome>;
+
+function setup(
+  overrides: {
+    download?: (p: string) => Promise<Uint8Array>;
+    fileSize?: number;
+    outcome?: Partial<AgentOutcome>;
+    ownerChatId?: string;
+  } = {},
+) {
   const sent: Array<{ chatId: string | number; text: string }> = [];
   const processed: string[] = [];
   const downloads: string[] = [];
+  const delivered: string[] = [];
   const agent = {
     process: async (input: { key: string }) => {
       processed.push(input.key);
       return {
         key: input.key,
-        status: "rejected_onchain",
         decision: { action: "propose", supplierId: 1, supplierName: "Acme", amountOut: 18_000_000n, invoiceNumber: "1001", reviewFlag: null, flags: [], notes: [] },
-        result: { accepted: false, intent_id: null, status: null, route: null, reason: "OBLIGATION_OPEN_OR_PAID" },
-        intentStatus: null,
         obligationId: "00".repeat(32),
         badge: "Verification unavailable",
         model: "offline-text-reader",
-        summary: "refused by the contract: OBLIGATION_OPEN_OR_PAID",
         notices: [],
+        ...REFUSED,
+        ...overrides.outcome,
       } satisfies AgentOutcome;
     },
   } as unknown as InvoiceAgent;
@@ -67,8 +81,10 @@ function setup(overrides: { download?: (p: string) => Promise<Uint8Array>; fileS
     view,
     directory: () => ({ suppliers: [] }),
     dashboardUrl: "https://getleash.example",
+    ownerChatId: overrides.ownerChatId ?? null,
+    delivered: { add: (keys: readonly string[]) => void delivered.push(...keys) },
   });
-  return { channel, sent, processed, downloads };
+  return { channel, sent, processed, downloads, delivered };
 }
 
 describe("Telegram channel", () => {
@@ -118,5 +134,39 @@ describe("Telegram channel", () => {
     await channel.handle(message(508, { text: "INVOICE\nFrom: Acme\nInvoice No: 1001\nTotal: USD 18" }));
     expect(sent.at(-1)!.text).toContain("OBLIGATION_OPEN_OR_PAID");
     expect(sent.at(-1)!.text).toContain("Inference: Verification unavailable");
+  });
+
+  it("a reply in the owner's chat stands in for the executor's notice of the same news", async () => {
+    const pending = { status: "proposed", intentStatus: "PENDING", result: { accepted: true, intent_id: 2, status: "PENDING", route: "ABOVE_THRESHOLD", reason: null } } as const;
+    const inOwnerChat = setup({ outcome: pending, ownerChatId: String(CHAT) });
+    await inOwnerChat.channel.handle(message(509, { text: "INVOICE\nTotal: USD 3" }));
+    expect(inOwnerChat.sent.at(-1)!.text).toContain("intent 2 needs your approval (ABOVE_THRESHOLD)");
+    expect(inOwnerChat.delivered).toEqual(["approval:2"]);
+
+    // Invoices from any other approved chat leave the owner's notices to the executor.
+    const elsewhere = setup({ outcome: pending, ownerChatId: "4004" });
+    await elsewhere.channel.handle(message(510, { text: "INVOICE\nTotal: USD 3" }));
+    expect(elsewhere.delivered).toEqual([]);
+  });
+
+  it("names the payment results it covered by their status time", () => {
+    const proposed = (intentStatus: IntentStatus, intentSince: string | null): AgentOutcome => ({
+      key: "k",
+      status: "proposed",
+      decision: null,
+      result: { accepted: true, intent_id: 1, status: intentStatus === "APPROVED" ? "APPROVED" : "PAYING", route: "AUTONOMOUS", reason: null },
+      intentStatus,
+      intentSince,
+      obligationId: null,
+      badge: "",
+      model: null,
+      summary: "",
+      notices: [],
+    });
+    expect(coveredNotices(proposed("PAID", "7"))).toEqual(["paid:1:7"]);
+    expect(coveredNotices(proposed("FAILED", "8"))).toEqual(["failed:1:8"]);
+    // Still in flight, or cross-chain: the executor's later notices carry news the reply did not.
+    expect(coveredNotices(proposed("PAYING", null))).toEqual([]);
+    expect(coveredNotices(proposed("APPROVED", null))).toEqual([]);
   });
 });
