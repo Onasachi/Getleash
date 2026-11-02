@@ -1,0 +1,7 @@
+INVOICE
+From: Acme Packaging Ltd
+Invoice No: INV-1003
+Date: 2026-11-05
+Description: 600 corrugated boxes
+Total: USD 40.00
+Pay to (NEAR): acme.near
