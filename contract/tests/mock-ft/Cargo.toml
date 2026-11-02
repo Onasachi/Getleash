@@ -1,0 +1,27 @@
+[package]
+name = "mock-ft"
+description = "Test-only NEP-141 token standing in for USDC in GetLeash sandbox tests."
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+repository = "https://bitbucket.org/crackedstudios/getleash"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "5.29"
+near-contract-standards = "5.29"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(near)']

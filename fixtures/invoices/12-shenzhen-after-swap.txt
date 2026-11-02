@@ -1,0 +1,7 @@
+INVOICE
+From: Shenzhen Parts Co.
+Invoice No: SP-2240
+Date: 2026-11-06
+Description: Hinges, batch 3
+Total: USDT 3.00
+Pay to (TRON USDT): TF1Abk71gzu7f9ADmY4iiRYe6fZVuonFTv

@@ -1,0 +1,34 @@
+{
+  "name": "getleash",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run --project unit",
+    "test:sandbox": "vitest run --project sandbox",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "keygen": "tsx scripts/src/keygen.ts",
+    "setup:owner": "tsx scripts/src/setup.ts",
+    "topup": "tsx scripts/src/topup.ts",
+    "seed": "tsx scripts/src/seed.ts",
+    "status": "tsx scripts/src/status.ts",
+    "rotate": "tsx scripts/src/rotate.ts",
+    "executor": "tsx executor/src/main.ts",
+    "demo:mock": "tsx scripts/src/demo.ts",
+    "bot": "tsx channels/telegram/src/main.ts",
+    "services": "tsx scripts/src/services.ts",
+    "devnet": "tsx scripts/src/devnet.ts",
+    "mock:1click": "tsx scripts/src/mock-1click.ts",
+    "render:env": "tsx scripts/src/render-env.ts",
+    "dashboard": "pnpm --filter @getleash/web dev"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}

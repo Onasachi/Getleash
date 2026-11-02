@@ -1,0 +1,14 @@
+packages:
+  - shared
+  - scripts
+  - mock-1click
+  - executor
+  - devkit
+  - ingestion
+  - agent
+  - channels/*
+  - web
+onlyBuiltDependencies:
+  - esbuild
+  - near-sandbox
+  - sharp

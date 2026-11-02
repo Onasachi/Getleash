@@ -1,0 +1,16 @@
+{
+  "autonomous_daily_budget": "5000000",
+  "approval_threshold": "2500000",
+  "daily_cap": "20000000",
+  "executor_trust_daily_budget": "0",
+  "cooldown_max": "500000",
+  "max_fixed_fee": "1500000",
+  "max_fee_bps": 100,
+  "cooldown_ns": "172800000000000",
+  "intent_ttl_ns": "259200000000000",
+  "quote_min_validity_ns": "300000000000",
+  "funding_margin_ns": "180000000000",
+  "callback_grace_ns": "3600000000000",
+  "retention_ns": "604800000000000",
+  "max_proposals_per_day": 20
+}

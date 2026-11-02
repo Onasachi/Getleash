@@ -1,0 +1,22 @@
+{
+  "name": "@getleash/devkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./sandbox": "./src/sandbox.ts",
+    "./paths": "./src/paths.ts",
+    "./world": "./src/world.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@getleash/executor": "workspace:*",
+    "@getleash/mock-1click": "workspace:*",
+    "@getleash/shared": "workspace:*",
+    "near-api-js": "7.4.0",
+    "near-sandbox": "0.3.4",
+    "zod": "4.6.7"
+  }
+}

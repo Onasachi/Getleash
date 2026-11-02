@@ -1,0 +1,4 @@
+INVOICE
+From: Ikeja Logistics
+Invoice No: IKL-0193
+Total: NGN 45,000.00

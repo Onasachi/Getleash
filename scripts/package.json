@@ -1,0 +1,20 @@
+{
+  "name": "@getleash/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@getleash/agent": "workspace:*",
+    "@getleash/devkit": "workspace:*",
+    "@getleash/executor": "workspace:*",
+    "@getleash/ingestion": "workspace:*",
+    "@getleash/mock-1click": "workspace:*",
+    "@getleash/shared": "workspace:*",
+    "near-api-js": "7.4.0",
+    "zod": "4.6.7"
+  },
+  "exports": {}
+}

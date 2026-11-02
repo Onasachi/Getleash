@@ -1,0 +1,8 @@
+INVOICE
+From: Acme Packaging Ltd
+Invoice No: INV-1001
+Date: 2026-11-03
+Bill to: Lagos Imports
+Description: 300 corrugated boxes, 40x30x30
+Total: USD 18.00
+Pay to (NEAR): acme.near

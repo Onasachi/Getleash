@@ -1,0 +1,8 @@
+INVOICE
+From: Shenzhen Parts Co.
+Invoice No: SP-2207
+Date: 2026-11-03
+Bill to: Lagos Imports
+Description: Replacement hinges (sample batch)
+Total: USDT 2.00
+Pay to (TRON USDT): T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb
