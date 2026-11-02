@@ -1,0 +1,6 @@
+INVOICE
+From: Shenzhen Parts Co.
+Invoice No: SP-TEST-1
+Description: Test payment to confirm the new wallet (agreed by phone)
+Total: USDT 0.50
+Pay to (TRON USDT): TF1Abk71gzu7f9ADmY4iiRYe6fZVuonFTv
