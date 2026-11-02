@@ -1,0 +1,7 @@
+INVOICE
+From: Acme Packaging Ltd
+Invoice No: INV-1002
+Date: 2026-11-04
+Description: Packing tape (12 rolls)
+Total: USD 9.00
+Pay to (NEAR): acme.near
