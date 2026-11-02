@@ -100,6 +100,9 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
   of which 0.844 NEAR covers 84,415 bytes; `agent-1.onanikes.near` (0.15 NEAR) and
   `executor-1.onanikes.near` (0.20 NEAR) each hold one function-call key for their methods only.
 - Cost to the owner: **1.424 NEAR** (4.0359 → 2.6120), the same as on testnet.
+- `pnpm seed` added supplier 1 (`chisolu.near`, native USDC; the owner registered it on USDC for 0.00125
+  NEAR), whose 2-day cooldown ends 2026-11-04T21:49:22Z. `pnpm topup --amount 4.91` moved 4.91 USDC into the
+  treasury (tx `6rxAqroYRBpzbkXPUw67HyhhSn7G52jNqzphqSJ6Vq5t`). Both together cost the owner 0.0019 NEAR.
 
 ## near-cli-rs (checked 2026-11-02, version 0.30.1)
 
