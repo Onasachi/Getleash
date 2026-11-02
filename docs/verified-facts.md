@@ -87,6 +87,20 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
 - NEAR AI extracted the first three invoices with signatures verified (seen in the bot's replies); the signed
   responses named the model `Qwen/Qwen3.8-27B`.
 
+## GetLeash v2 on mainnet (deployed 2026-11-02)
+
+- `pnpm setup:owner --network mainnet --owner onanikes.near --wasm-sha256 8eaccbf1…640a3d --policy
+  deploy/mainnet-policy.json`, signed by the owner with near-cli credentials, in four transactions:
+  agent account `8LDu8ci9tWXp98gMdLshpL4wMCXguZaX8a6FFT22vZ4H`, executor account
+  `Fm9fo8Cc3veMx5qr9JEbsMDQLvbGNAch5m1G9UpPKUpx`, policy create + deploy + init in one batch
+  `6eQEDGzNLfKKWX7h21mZzoGYawAHdSJ5veNJm3ThepZr`, policy registered on USDC
+  `BZpggyY7ugTDUuXsaWCFHcri9WxBHJoSvHAX3bLdwJ6h`.
+- Chain state afterwards: `getleash.onanikes.near` has **0 access keys**, code hash
+  `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (sha256 `8eaccbf1…640a3d`, the release wasm), 1.05 NEAR
+  of which 0.844 NEAR covers 84,415 bytes; `agent-1.onanikes.near` (0.15 NEAR) and
+  `executor-1.onanikes.near` (0.20 NEAR) each hold one function-call key for their methods only.
+- Cost to the owner: **1.424 NEAR** (4.0359 → 2.6120), the same as on testnet.
+
 ## near-cli-rs (checked 2026-11-02, version 0.30.1)
 
 - `near account create-account sponsor-by-faucet-service <name>.testnet autogenerate-new-keypair
