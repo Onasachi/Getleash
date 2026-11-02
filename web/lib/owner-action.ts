@@ -13,7 +13,7 @@ import { useWallet } from "./wallet";
 
 function plainError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/user (rejected|cancel)|rejected by user|cancell?ed|denied/i.test(message)) return "Cancelled in the wallet.";
+  if (/wallet closed|user (rejected|cancel)|rejected by user|cancell?ed|denied/i.test(message)) return "Cancelled in the wallet.";
   return message;
 }
 

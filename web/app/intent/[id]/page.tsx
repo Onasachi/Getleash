@@ -380,7 +380,9 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
             onCopied={() => setWatching(true)}
           />
         )}
-        <TxNote result={result} error={error} />
+        {/* An error only matters while there is still something to do: a payment signed elsewhere
+            (in a terminal) after the wallet window was closed has moved on. */}
+        <TxNote result={result} error={canAct ? error : null} />
         {pastGrace && (
           <div className="notice">
             <p>
