@@ -67,6 +67,12 @@ export type ExecutorConfig = {
    * already have sent in the owner's chat (its approval request or payment result).
    */
   intakeGraceMs: number;
+  /**
+   * The first tick records the notices the current state would send instead of sending them: a fresh
+   * journal (a host that lost its disk, a first start) would otherwise repeat every notice for the
+   * intents still stored. Anything that happens after that first tick is notified as usual.
+   */
+  quietStart: boolean;
   dashboardUrl: string | null;
 };
 
@@ -78,6 +84,7 @@ export const DEFAULT_CONFIG: Omit<ExecutorConfig, "policyId" | "originAsset" | "
   maxFundingFailures: 3,
   forgetEveryMs: 3_600_000,
   intakeGraceMs: 20_000,
+  quietStart: false,
 };
 
 export type ExecutorDeps = {
@@ -104,12 +111,14 @@ export class Executor {
   private readonly cfg: ExecutorConfig;
   private lastForget = 0;
   private stopped = false;
+  private quiet: boolean;
 
   constructor(
     cfg: Partial<ExecutorConfig> & Pick<ExecutorConfig, "policyId" | "originAsset">,
     private readonly deps: ExecutorDeps,
   ) {
     this.cfg = { ...DEFAULT_CONFIG, dashboardUrl: null, ...cfg };
+    this.quiet = this.cfg.quietStart;
   }
 
   private now(): number {
@@ -140,6 +149,10 @@ export class Executor {
 
   private async notifyOnce(notice: Notice) {
     if (this.deps.journal.wasNotified(notice.key)) return;
+    if (this.quiet) {
+      this.deps.journal.record("notified", { key: notice.key, kind: notice.kind, by: "quiet_start" });
+      return;
+    }
     if (this.deps.delivered?.has(notice.key)) {
       this.deps.journal.record("notified", { key: notice.key, kind: notice.kind, by: "intake" });
       return;
@@ -202,6 +215,8 @@ export class Executor {
       }
     }
     await this.housekeeping(intents, suppliers, state, report);
+    // What was already true has been recorded; from now on, changes are notified.
+    this.quiet = false;
     return report;
   }
 
