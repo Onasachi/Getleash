@@ -18,7 +18,6 @@ export function Shell({ children }: { children: ReactNode }) {
         </Link>
         <nav>
           <Link href="/">Overview</Link>
-          <Link href="/reconcile">Reconcile</Link>
           <Link href="/pause">Pause</Link>
           <Link href="/private">Private</Link>
         </nav>
@@ -43,11 +42,11 @@ export function Shell({ children }: { children: ReactNode }) {
 }
 
 export function Pill({ value }: { value: string }) {
-  const tone = /DONE|DELIVERED|APPROVED|AUTHORIZED|OWNER_SIGNED|VERIFIED|OK/.test(value)
+  const tone = /PAID|SUCCESS|APPROVED|OK/.test(value)
     ? "good"
-    : /FAILED|REJECTED|VOID|CANCELLED|INVALIDATED|EXPIRED|SWAP_FAILED|PAUSED/.test(value)
+    : /FAILED|REJECTED|REFUNDED|INCOMPLETE|PAUSED/.test(value)
       ? "bad"
-      : /PENDING|AWAITING|NEEDS|FUNDING|FUNDED/.test(value)
+      : /PENDING|PAYING|PROCESSING|KNOWN_DEPOSIT/.test(value)
         ? "warn"
         : "plain";
   return <span className={`pill ${tone}`}>{value}</span>;

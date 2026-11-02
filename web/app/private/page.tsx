@@ -138,7 +138,7 @@ export default function PrivatePage() {
             {inv.outcome.result?.intent_id != null && (
               <>
                 {" "}
-                · <a href={`/approve/${inv.outcome.result.intent_id}`}>intent #{inv.outcome.result.intent_id}</a>
+                · <a href={`/intent/${inv.outcome.result.intent_id}`}>intent #{inv.outcome.result.intent_id}</a>
                 {names.size > 0 && null}
               </>
             )}

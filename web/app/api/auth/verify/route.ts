@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   if (!challenge) return NextResponse.json({ error: "challenge expired" }, { status: 401 });
 
   const rpc = provider(RPC_URL);
-  const { owner_id } = await new PolicyView(rpc, POLICY_ID).config();
+  const { owner_id } = await new PolicyView(rpc, POLICY_ID).state();
   if (parsed.data.accountId !== owner_id) return NextResponse.json({ error: "only the contract's owner can sign in" }, { status: 403 });
   try {
     await verifyMessage({

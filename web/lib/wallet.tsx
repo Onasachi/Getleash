@@ -60,7 +60,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setAccountId(null);
   }, []);
 
-  const ownerCall = useCallback(async (method: string, args: Record<string, unknown>, tgas = 50) => {
+  const ownerCall = useCallback(async (method: string, args: Record<string, unknown>, tgas = 30) => {
     if (!connector.current) throw new Error("wallet not ready");
     const wallet = await connector.current.wallet();
     const raw = await wallet.signAndSendTransaction({
