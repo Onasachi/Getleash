@@ -1,5 +1,7 @@
-//! Unit, scenario and property tests (cfg(test) only).
+//! Unit, scenario and property tests for the v2 contract. Run in debug (the release profile's
+//! `panic = "abort"` would break the harness's `catch_unwind`).
 
-mod harness;
+pub mod harness;
+mod json;
 mod props;
 mod unit;

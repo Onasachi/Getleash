@@ -1,240 +1,150 @@
-//! The agent's single method: `propose_payment` (PLAN §4.1.4).
+//! The agent's one method. Its key can call nothing else.
 
-use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
 use near_sdk::{env, near, require};
 
-use crate::ledger::Period;
+use crate::budget::{day_of, max_in, to_treasury_units};
+use crate::events::{Event, reason_code, route_code};
 use crate::types::*;
-use crate::{events, hash, ledger_ok, validate, Contract, ContractExt};
+use crate::*;
 
 #[near]
 impl Contract {
-    /// Propose paying `amount_out` (destination base units) to an allowlisted supplier.
-    ///
-    /// The agent supplies no destination: it comes from the supplier record. `obligation_id` is
-    /// the ingestion HMAC (64 hex chars). `review_flag` can only force owner review.
-    ///
-    /// Order (F-08): caller check, input checks and quotas all panic before any write; rule
-    /// failures are recorded (bounded ring buffer + event) and returned, not panicked.
-    pub fn propose_payment(
+    /// Proposes paying `amount_out` (in the supplier's asset units) for the invoice whose keyed
+    /// id is `obligation`. The flag is the only model-influenced input (an enum). Refusals store
+    /// nothing; an accepted proposal either waits for the owner or, within the agent's limits,
+    /// is approved now, and a native one is paid in this same call.
+    #[result_serializer(borsh)]
+    pub fn propose(
         &mut self,
-        obligation_id: String,
-        supplier_id: SupplierId,
-        amount_out: U128,
-        review_flag: Option<ReviewFlag>,
+        #[serializer(borsh)] obligation: Hash32,
+        #[serializer(borsh)] supplier_id: SupplierId,
+        #[serializer(borsh)] amount_out: u128,
+        #[serializer(borsh)] flag: u8,
     ) -> ProposeResult {
-        self.assert_agent();
-        let obligation_id = hash::parse_hex32(&obligation_id)
-            .unwrap_or_else(|| env::panic_str("BAD_OBLIGATION_ID"));
-        let amount_out = amount_out.0;
+        require!(env::predecessor_account_id() == self.agent_id, "ONLY_AGENT");
         require!(amount_out > 0 && amount_out <= MAX_AMOUNT, "BAD_AMOUNT");
-
+        require!(flag <= MAX_FLAG, "BAD_FLAG");
         let now = env::block_timestamp();
-        let period = Period::at(now);
+        let mut b = self.budgets.at(day_of(now));
         require!(
-            self.open_intents.len() < self.policy.max_open_intents,
-            "QUOTA_OPEN_INTENTS"
+            b.proposals < self.policy.max_proposals_per_day,
+            "QUOTA_PROPOSALS"
         );
-        Self::take_quota(
-            &mut self.quotas.proposals,
-            period.day,
-            self.policy.max_proposals_per_day,
-            "QUOTA_PROPOSALS",
-        );
+        b.proposals += 1;
+        self.budgets = b;
 
-        match self.evaluate_proposal(&obligation_id, supplier_id, amount_out, now) {
+        let (supplier, value, max_in) = match self.evaluate(&obligation, supplier_id, amount_out) {
+            Ok(found) => found,
             Err(reason) => {
-                self.record_rejection(Rejection {
-                    at: now,
-                    obligation_id,
-                    supplier_id,
-                    amount_out,
-                    reason,
-                });
-                ProposeResult {
+                Event::new()
+                    .num("supplier_id", supplier_id.into())
+                    .text("reason", reason_code(reason))
+                    .emit("proposal_refused");
+                return ProposeResult {
                     accepted: false,
-                    intent_id: None,
-                    status: None,
-                    route: None,
-                    intent_hash: None,
-                    reason: Some(reason),
-                }
+                    intent_id: 0,
+                    status: Status::Rejected,
+                    route: Route::Autonomous,
+                    reason,
+                };
             }
-            Ok(candidate) => self.create_intent(obligation_id, candidate, review_flag, now),
-        }
-    }
-}
-
-/// A proposal that passed the rules, with its derived amounts.
-pub(crate) struct Candidate {
-    pub supplier: Supplier,
-    pub kind: PayoutKind,
-    pub amount_out: u128,
-    pub value: u128,
-    pub max_in: u128,
-    pub test_payment: bool,
-}
-
-impl Contract {
-    fn evaluate_proposal(
-        &self,
-        obligation_id: &Hash32,
-        supplier_id: SupplierId,
-        amount_out: u128,
-        now: u64,
-    ) -> Result<Candidate, RejectReason> {
-        if self.paused {
-            return Err(RejectReason::Paused);
-        }
-        let supplier = self.suppliers.get(&supplier_id).cloned().ok_or(RejectReason::UnknownSupplier)?;
-        if !supplier.active {
-            return Err(RejectReason::InactiveSupplier);
-        }
-        let asset = match self.assets.get(&supplier.asset_id) {
-            Some(asset) if asset.enabled => asset.clone(),
-            _ => return Err(RejectReason::AssetDisabled),
-        };
-        self.check_obligation(obligation_id)?;
-
-        let kind = self.payout_kind(&supplier);
-        let value = validate::to_treasury_units(amount_out, asset.decimals, self.treasury_decimals)
-            .filter(|v| *v <= MAX_AMOUNT)
-            .ok_or(RejectReason::OverPerPaymentCap)?;
-        let max_in = validate::max_in(kind, value, self.policy.max_fee_bps, asset.max_fixed_fee)
-            .ok_or(RejectReason::OverPerPaymentCap)?;
-        let test_payment = self.in_cooldown(&supplier, now);
-        self.check_payment_rules(&supplier, amount_out, value, max_in, test_payment, now)?;
-        Ok(Candidate { supplier, kind, amount_out, value, max_in, test_payment })
-    }
-
-    /// One open-or-paid intent per obligation id; owner rejections are final (D-07).
-    pub(crate) fn check_obligation(&self, obligation_id: &Hash32) -> Result<(), RejectReason> {
-        let Some(previous) = self.obligations.get(obligation_id) else { return Ok(()) };
-        match self.intents.get(previous).map(|i| i.status) {
-            Some(IntentStatus::Expired | IntentStatus::Invalidated) => Ok(()),
-            Some(IntentStatus::Rejected | IntentStatus::Cancelled) => {
-                Err(RejectReason::ObligationRejected)
-            }
-            // Open, done, or a closed intent that has been pruned.
-            _ => Err(RejectReason::ObligationOpenOrPaid),
-        }
-    }
-
-    pub(crate) fn payout_kind(&self, supplier: &Supplier) -> PayoutKind {
-        if supplier.chain == Chain::Near && supplier.asset_id == self.treasury_asset_id {
-            PayoutKind::Native
-        } else {
-            PayoutKind::CrossChain
-        }
-    }
-
-    fn create_intent(
-        &mut self,
-        obligation_id: Hash32,
-        candidate: Candidate,
-        review_flag: Option<ReviewFlag>,
-        now: u64,
-    ) -> ProposeResult {
-        let Candidate { mut supplier, kind, amount_out, value, max_in, test_payment } = candidate;
-        let period = Period::at(now);
-        let needs_approval = if review_flag.is_some() {
-            Some(ApprovalReason::ReviewFlag)
-        } else if test_payment {
-            Some(ApprovalReason::TestPayment)
-        } else if !supplier.verified {
-            Some(ApprovalReason::UnverifiedSupplier)
-        } else if value > self.policy.approval_threshold {
-            Some(ApprovalReason::AboveThreshold)
-        } else if !self.ledger.autonomous_fits(max_in, period.day, self.policy.autonomous_daily_budget) {
-            Some(ApprovalReason::AutonomousBudgetUsed)
-        } else {
-            None
-        };
-        let route = match needs_approval {
-            Some(reason) => Route::NeedsApproval(reason),
-            None => Route::Autonomous,
         };
 
-        let id = self.next_intent_id;
-        self.next_intent_id += 1;
-        let terms = IntentTerms {
-            id,
-            obligation_id,
-            supplier_id: supplier.id,
-            supplier_revision: supplier.revision,
-            chain: supplier.chain,
-            asset_id: supplier.asset_id.clone(),
-            recipient: supplier.recipient.clone(),
-            kind,
+        let native = self.is_native(&supplier);
+        let route = crate::rules::route(
+            &self.policy,
+            &b,
+            value,
+            max_in,
+            flag != 0,
+            self.in_cooldown(&supplier, now),
+        );
+        let intent_id = self.next_intent_id;
+        self.next_intent_id = checked(intent_id.checked_add(1));
+        self.stored_intents = checked(self.stored_intents.checked_add(1));
+        write(&obligation_key(&obligation), &intent_id);
+        let mut intent = Intent {
+            supplier_id,
+            revision: supplier.revision,
+            obligation,
             amount_out,
             value,
             max_in,
-            created_at: now,
-            expires_at: now.saturating_add(self.policy.intent_ttl_ns),
+            status: if route == Route::Autonomous {
+                Status::Approved
+            } else {
+                Status::Pending
+            },
             route,
-            review_flag,
-            test_payment,
+            flag,
+            since: now,
+            created_at: now,
+            attempt: None,
         };
-        let intent_hash = hash::intent_hash(&env::current_account_id(), &terms);
-        let mut intent = Intent {
-            terms,
-            intent_hash,
-            status: IntentStatus::Pending,
-            reserved: 0,
-            live_attempt: None,
-            attempt_ids: Vec::new(),
-            approved_at: None,
-            updated_at: now,
-        };
-
         if route == Route::Autonomous {
-            // The rules passed a moment ago, so this cannot fail; if it did, revert everything.
-            self.commit_approval(&mut intent, &mut supplier, now)
-                .unwrap_or_else(|reason| env::panic_str(reason.code()));
-            ledger_ok(self.ledger.take_autonomous(max_in, period.day));
+            b.autonomous = checked(b.autonomous.checked_add(max_in));
+            self.budgets = b;
         }
-
-        self.suppliers.insert(supplier.id, supplier);
-        self.obligations.insert(obligation_id, id);
-        self.open_intents.insert(id);
-        let status = intent.status;
-        self.intents.insert(id, intent);
-        events::emit(
-            "intent_created",
-            json!({
-                "intent_id": id,
-                "status": status,
-                "route": route,
-                "amount_out": amount_out.to_string(),
-                "max_in": max_in.to_string(),
-                "intent_hash": hash::to_hex(&intent_hash),
-            }),
-        );
+        Event::new()
+            .num("intent_id", intent_id.into())
+            .num("supplier_id", supplier_id.into())
+            .amount("amount_out", amount_out)
+            .text("route", route_code(route))
+            .emit("intent_created");
+        if route == Route::Autonomous && native {
+            self.start_payout(intent_id, &mut intent, &supplier, now);
+        } else {
+            write(&intent_key(intent_id), &intent);
+        }
         ProposeResult {
             accepted: true,
-            intent_id: Some(id),
-            status: Some(status),
-            route: Some(route),
-            intent_hash: Some(hash::to_hex(&intent_hash)),
-            reason: None,
+            intent_id,
+            status: intent.status,
+            route,
+            reason: Reason::None,
         }
     }
+}
 
-    fn record_rejection(&mut self, rejection: Rejection) {
-        events::emit(
-            "proposal_rejected",
-            json!({
-                "supplier_id": rejection.supplier_id,
-                "amount_out": rejection.amount_out.to_string(),
-                "reason": rejection.reason,
-            }),
-        );
-        if self.rejections.len() < REJECTION_RING {
-            self.rejections.push(rejection);
-        } else {
-            self.rejections.replace(self.rejection_cursor, rejection);
+impl Contract {
+    /// The refusals: everything that stores nothing.
+    fn evaluate(
+        &self,
+        obligation: &Hash32,
+        supplier_id: SupplierId,
+        amount_out: u128,
+    ) -> Result<(Supplier, u128, u128), Reason> {
+        if self.paused {
+            return Err(Reason::Paused);
         }
-        self.rejection_cursor = (self.rejection_cursor + 1) % REJECTION_RING;
+        // Supplier id 0 never exists: unknown payees are proposed as 0 so the refusal is recorded (D-20).
+        let supplier: Supplier = read(&supplier_key(supplier_id)).ok_or(Reason::UnknownSupplier)?;
+        if !supplier.active {
+            return Err(Reason::InactiveSupplier);
+        }
+        if let Some(existing) = read::<IntentId>(&obligation_key(obligation)) {
+            let rejected = existing == REJECTED_OBLIGATION
+                || read::<Intent>(&intent_key(existing))
+                    .is_some_and(|i| i.status == Status::Rejected);
+            return Err(if rejected {
+                Reason::ObligationRejected
+            } else {
+                Reason::ObligationOpenOrPaid
+            });
+        }
+        if self.stored_intents >= MAX_STORED_INTENTS {
+            return Err(Reason::StorageFull);
+        }
+        let value = to_treasury_units(amount_out, supplier.decimals, self.token_decimals)
+            .filter(|v| *v > 0 && *v <= MAX_AMOUNT)
+            .ok_or(Reason::BadAmount)?;
+        let max_in = if self.is_native(&supplier) {
+            value
+        } else {
+            max_in(value, self.policy.max_fee_bps, self.policy.max_fixed_fee)
+                .filter(|m| *m <= MAX_AMOUNT)
+                .ok_or(Reason::BadAmount)?
+        };
+        Ok((supplier, value, max_in))
     }
 }

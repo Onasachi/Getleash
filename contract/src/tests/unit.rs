@@ -1,968 +1,934 @@
-//! Scenario tests. Names follow the PLAN §9 adversarial table where a row applies.
+//! Unit and scenario tests. Names follow the PLAN §9 adversarial table where a row still applies
+//! (docs/audit-response.md maps rows to tests).
 
-use near_sdk::json_types::{U128, U64};
-use near_sdk::NearToken;
+use near_sdk::serde_json::json;
 
 use super::harness::*;
-use crate::ledger::Period;
 use crate::types::*;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────────────────────
+const T: u128 = USDC;
 
-fn accepted(r: Result<ProposeResult, String>) -> IntentId {
-    let r = r.expect("propose call");
-    assert!(r.accepted, "proposal rejected: {:?}", r.reason);
-    r.intent_id.unwrap()
+fn propose_ok(w: &mut World, ob: u8, supplier: SupplierId, amount: u128) -> ProposeResult {
+    let r = w.propose(ob, supplier, amount, 0).unwrap();
+    assert!(r.accepted, "refused: {:?}", r.reason);
+    r
 }
 
-fn rejected(r: Result<ProposeResult, String>) -> RejectReason {
-    let r = r.expect("propose call");
-    assert!(!r.accepted, "expected a rejection, got intent {:?}", r.intent_id);
-    r.reason.unwrap()
-}
-
-impl World {
-    fn create_native(&mut self, intent_id: IntentId) -> Result<AttemptId, String> {
-        self.executor(|c| c.create_attempt_native(intent_id))
+/// An approved cross-chain intent with an unauthorized attempt on deposit `dep`.
+fn crosschain_with_attempt(
+    w: &mut World,
+    tron: SupplierId,
+    ob: u8,
+    amount: u128,
+    amount_in: u128,
+    dep: u8,
+) -> IntentId {
+    let r = propose_ok(w, ob, tron, amount);
+    if r.status == Status::Pending {
+        w.decide(r.intent_id, "APPROVE").unwrap();
     }
-
-    fn create_cross(&mut self, intent_id: IntentId, deposit: &str, amount_in: u128, quote: &str) -> Result<AttemptId, String> {
-        let deadline = self.now + 30 * MINUTE;
-        let deposit = acc(deposit);
-        let quote = quote.to_string();
-        self.executor(|c| c.create_attempt_crosschain(intent_id, deposit, U128(amount_in), U64(deadline), quote))
-    }
-
-    fn fund_native(&mut self, attempt_id: AttemptId) -> Result<(), String> {
-        self.executor(|c| {
-            c.fund_native(attempt_id).detach();
-        })
-    }
-
-    fn fund_cross(&mut self, attempt_id: AttemptId) -> Result<(), String> {
-        self.executor(|c| {
-            c.fund_crosschain(attempt_id).detach();
-        })
-    }
-
-    fn ledger(&mut self) -> crate::ledger::Ledger {
-        self.view(|c| c.get_ledger())
-    }
-
-    /// Native intent paid end to end; returns (intent, attempt).
-    fn pay_native(&mut self, obligation: u8, supplier: SupplierId, amount: u128) -> (IntentId, AttemptId) {
-        let intent = accepted(self.propose(obligation, supplier, amount, None));
-        if self.intent(intent).status == IntentStatus::Pending {
-            self.approve(intent).unwrap();
-        }
-        let attempt = self.create_native(intent).unwrap();
-        self.fund_native(attempt).unwrap();
-        self.transfer_callback(attempt, true).unwrap();
-        (intent, attempt)
-    }
-}
-
-fn trust_policy(trust: u128) -> Policy {
-    let mut p = test_policy();
-    p.executor_trust_daily_budget = trust;
-    p
+    assert_eq!(w.intent(r.intent_id).status, Status::Approved);
+    let deadline = w.now + HOUR;
+    w.create_attempt(r.intent_id, dep, amount_in, deadline)
+        .unwrap();
+    r.intent_id
 }
 
 // ── Setup and access control ───────────────────────────────────────────────────────────────────
 
 #[test]
-fn init_sets_roles_and_registers_the_treasury_asset() {
-    let mut w = World::new(None, true);
-    let config = w.view(|c| c.get_config());
-    assert_eq!(config.owner_id, owner());
-    assert_eq!(config.treasury_asset_id, usdc_asset());
-    assert!(config.hosted_mode);
-    assert_eq!(config.policy.executor_trust_daily_budget, 0);
-    let assets = w.view(|c| c.list_assets());
-    assert_eq!(assets.len(), 1);
-    assert_eq!(assets[0].0, usdc_asset());
-}
-
-#[test]
-#[should_panic(expected = "HOSTED_MODE_TRUST_BUDGET_MUST_BE_ZERO")]
-fn init_refuses_a_trust_budget_in_hosted_mode() {
-    World::new(Some(trust_policy(5 * USDC)), true);
-}
-
-#[test]
-fn unauthorized_callers_spam_proposals_panic_before_writing() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let before = (w.ledger(), w.view(|c| c.get_budgets_today()), w.view(|c| c.get_recent_rejections()));
-    let ob = obligation_hex(1);
-    for caller in [stranger(), owner(), executor()] {
-        let ob = ob.clone();
-        expect_err(
-            w.call(&caller, zero(), Vec::new(), |c| c.propose_payment(ob, native, U128(USDC), None)),
-            "ONLY_AGENT",
-        );
-    }
-    let after = (w.ledger(), w.view(|c| c.get_budgets_today()), w.view(|c| c.get_recent_rejections()));
-    assert_eq!(before, after, "a rejected caller must not change state, not even quotas");
-}
-
-#[test]
-fn every_role_is_enforced() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 5 * USDC, None));
-    let attempt = w.create_native(intent).unwrap();
-    // Executor methods.
-    expect_err(w.call(&agent(), zero(), Vec::new(), |c| c.create_attempt_native(intent)), "ONLY_EXECUTOR");
-    expect_err(w.call(&owner(), one_yocto(), Vec::new(), |c| { c.fund_native(attempt).detach(); }), "ONLY_EXECUTOR");
-    expect_err(w.call(&stranger(), zero(), Vec::new(), |c| { c.register_recipient(attempt).detach(); }), "ONLY_EXECUTOR");
-    // Owner methods.
-    for caller in [agent(), executor(), stranger()] {
-        expect_err(w.call(&caller, one_yocto(), Vec::new(), |c| c.pause()), "ONLY_OWNER");
-        expect_err(w.call(&caller, one_yocto(), Vec::new(), |c| { c.withdraw(U128(USDC)).detach(); }), "ONLY_OWNER");
-        expect_err(w.call(&caller, one_yocto(), Vec::new(), |c| { c.upgrade().detach(); }), "ONLY_OWNER");
-    }
-    // Operational methods: executor or owner only.
-    expect_err(w.call(&agent(), zero(), Vec::new(), |c| c.sweep(10)), "ONLY_EXECUTOR_OR_OWNER");
-    // Top-ups only from the treasury token.
-    expect_err(
-        w.call(&stranger(), zero(), Vec::new(), |c| c.ft_on_transfer(owner(), U128(USDC), String::new())),
-        "UNSUPPORTED_TOKEN",
+fn init_sets_roles_and_policy() {
+    let mut w = World::new(&test_policy());
+    let s = w.state();
+    assert_eq!(
+        (s.owner_id, s.agent_id, s.executor_id, s.token_id),
+        (owner(), agent(), executor(), usdc())
+    );
+    assert_eq!(s.policy, test_policy());
+    assert_eq!(
+        (
+            s.next_supplier_id,
+            s.next_intent_id,
+            s.stored_intents,
+            s.paying
+        ),
+        (1, 1, 0, 0)
     );
 }
 
 #[test]
-fn non_owner_calls_upgrade_or_withdraw_rejected_and_owner_needs_one_yocto() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    expect_err(w.call(&stranger(), one_yocto(), Vec::new(), |c| { c.upgrade().detach(); }), "ONLY_OWNER");
-    expect_err(w.call(&stranger(), one_yocto(), Vec::new(), |c| { c.withdraw(U128(USDC)).detach(); }), "ONLY_OWNER");
-    for deposit in [zero(), NearToken::from_yoctonear(2)] {
-        expect_err(w.call(&owner(), deposit, Vec::new(), |c| { c.withdraw(U128(USDC)).detach(); }), "1 yoctoNEAR");
-        expect_err(w.call(&owner(), deposit, Vec::new(), |c| c.pause()), "1 yoctoNEAR");
-        expect_err(w.call(&owner(), deposit, Vec::new(), |c| { c.upgrade().detach(); }), "1 yoctoNEAR");
+fn every_role_is_enforced() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    expect_err(
+        w.call(&stranger(), zero(), Vec::new(), Vec::new(), |c| {
+            c.propose([1; 32], native, T, 0)
+        }),
+        "ONLY_AGENT",
+    );
+    expect_err(
+        w.call(&owner(), zero(), Vec::new(), Vec::new(), |c| {
+            c.propose([1; 32], native, T, 0)
+        }),
+        "ONLY_AGENT",
+    );
+    expect_err(
+        w.call(&agent(), zero(), Vec::new(), Vec::new(), |c| c.fund(1)),
+        "ONLY_EXECUTOR",
+    );
+    expect_err(
+        w.call(&agent(), zero(), Vec::new(), Vec::new(), |c| {
+            c.create_attempt(1, deposit(1), T, 0)
+        }),
+        "ONLY_EXECUTOR",
+    );
+    expect_err(
+        w.call(&agent(), zero(), Vec::new(), Vec::new(), |c| {
+            c.forget(vec![1])
+        }),
+        "ONLY_EXECUTOR_OR_OWNER",
+    );
+    let args = json!({ "paused": true }).to_string().into_bytes();
+    expect_err(
+        w.call(&executor(), one_yocto(), args.clone(), Vec::new(), |c| {
+            c.set_paused()
+        }),
+        "ONLY_OWNER",
+    );
+    // The owner without exactly 1 yocto (i.e. not a full-access key) is refused too.
+    expect_err(
+        w.call(&owner(), zero(), args, Vec::new(), |c| c.set_paused()),
+        "Requires attached deposit of exactly 1 yoctoNEAR",
+    );
+}
+
+#[test]
+fn unauthorized_callers_spam_proposals_panic_before_writing() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let before = w.state();
+    for n in 0..20 {
+        expect_err(
+            w.call(&stranger(), zero(), Vec::new(), Vec::new(), |c| {
+                c.propose([n; 32], native, T, 0)
+            }),
+            "ONLY_AGENT",
+        );
     }
+    assert_eq!(w.state(), before, "nothing was written");
+    assert!(w.debits.is_empty());
 }
 
 #[test]
-fn set_policy_with_trust_budget_while_hosted_rejected() {
-    let (mut w, _, _) = standard_world(test_policy(), true);
-    expect_err(w.owner(|c| c.set_policy(trust_policy(5 * USDC))), "HOSTED_MODE_TRUST_BUDGET_MUST_BE_ZERO");
-    w.owner(|c| c.set_hosted_mode(false)).unwrap();
-    w.owner(|c| c.set_policy(trust_policy(5 * USDC))).unwrap();
-    w.owner(|c| c.set_hosted_mode(true)).unwrap();
-    assert_eq!(w.view(|c| c.get_policy().executor_trust_daily_budget), 0, "hosted mode forces 0");
+fn owner_arguments_are_parsed_strictly() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, native, 40 * T).intent_id; // above threshold: pending
+    let raw = |text: &str| text.as_bytes().to_vec();
+    let decide = |w: &mut World, text: &str| {
+        w.call(&owner(), one_yocto(), raw(text), Vec::new(), |c| c.decide())
+    };
+    // A wallet could show the first value while a lax parser read the second.
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"APPROVE","amount_out":"1","amount_out":"40000000","supplier_id":1}"#,
+        ),
+        "DUPLICATE_ARG",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"APPROVE","amount_out":"40000000","supplier_id":1,"x":1}"#,
+        ),
+        "UNKNOWN_ARG",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"APPROVE","amount_out":"40000000"}"#,
+        ),
+        "MISSING_ARG",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1.0,"action":"APPROVE","amount_out":"40000000","supplier_id":1}"#,
+        ),
+        "BAD_JSON",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":"1","action":"APP\u0052OVE","amount_out":"40000000","supplier_id":1}"#,
+        ),
+        "BAD_JSON",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"APPROVE","amount_out":"040000000","supplier_id":1}"#,
+        ),
+        "BAD_NUMBER",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"APPROVE","amount_out":"40000000","supplier_id":1} x"#,
+        ),
+        "BAD_JSON",
+    );
+    expect_err(
+        decide(
+            &mut w,
+            r#"{"intent_id":1,"action":"approve","amount_out":"40000000","supplier_id":1}"#,
+        ),
+        "BAD_ACTION",
+    );
+    assert_eq!(w.intent(id).status, Status::Pending);
+    // Whitespace and numbers-as-strings are fine.
+    decide(&mut w, " {\n \"intent_id\" : \"1\", \"action\":\"APPROVE\", \"amount_out\":\"40000000\", \"supplier_id\":1 }\n").unwrap();
+    assert_eq!(w.intent(id).status, Status::Paying);
 }
 
 #[test]
-fn rotation_moves_authority_to_the_new_account() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let new_agent = acc("agent-2.biz.near");
-    let a2 = new_agent.clone();
-    w.owner(|c| c.rotate_agent(a2)).unwrap();
-    expect_err(w.propose(1, native, USDC, None), "ONLY_AGENT");
-    let ob = obligation_hex(1);
-    let r = w.call(&new_agent, zero(), Vec::new(), |c| c.propose_payment(ob, native, U128(USDC), None));
-    assert!(r.unwrap().accepted);
-    expect_err(w.owner(|c| c.rotate_executor(owner())), "BAD_ROLE_ACCOUNT");
+fn policy_validation() {
+    let (mut w, _, _) = standard_world(&test_policy());
+    let bad = |f: fn(&mut Policy)| {
+        let mut p = test_policy();
+        f(&mut p);
+        p
+    };
+    expect_err(
+        w.set_policy(&bad(|p| p.autonomous_daily_budget = p.daily_cap + 1)),
+        "POLICY_ABOVE_DAILY_CAP",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.executor_trust_daily_budget = p.daily_cap + 1)),
+        "POLICY_ABOVE_DAILY_CAP",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.callback_grace_ns = HOUR - 1)),
+        "POLICY_CALLBACK_GRACE",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.funding_margin_ns = p.quote_min_validity_ns + 1)),
+        "POLICY_QUOTE_MARGINS",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.max_fee_bps = 5_001)),
+        "POLICY_FEE_BPS",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.max_proposals_per_day = 0)),
+        "POLICY_MAX_PROPOSALS",
+    );
+    expect_err(
+        w.set_policy(&bad(|p| p.retention_ns = DAY - 1)),
+        "POLICY_RETENTION",
+    );
+    let mut ok = test_policy();
+    ok.executor_trust_daily_budget = 0;
+    w.set_policy(&ok).unwrap();
+    assert_eq!(w.state().policy, ok);
 }
 
 // ── Native payouts ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn native_funding_debit_equals_amount_out() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let cash_before = w.ledger().cash;
-    let r = w.propose(1, native, 10 * USDC, None).unwrap();
-    assert_eq!(r.route, Some(Route::Autonomous));
-    assert_eq!(r.status, Some(IntentStatus::Approved));
-    let intent = r.intent_id.unwrap();
-    let attempt = w.create_native(intent).unwrap();
-    assert_eq!(w.attempt(attempt).authorization, AttemptAuth::NativeAuto);
-    w.fund_native(attempt).unwrap();
-
-    let debit = w.debits.last().unwrap().clone();
-    assert_eq!(debit.receiver, acc("acme.near"));
-    assert_eq!(debit.amount, 10 * USDC);
-    assert_eq!(debit.callback_attempt, Some(attempt));
-    let l = w.ledger();
-    assert_eq!(l.cash, cash_before - 10 * USDC);
-    assert_eq!(l.in_flight, 10 * USDC);
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::FundingPending);
-
-    w.transfer_callback(attempt, true).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Delivered);
-    assert_eq!(w.intent(intent).status, IntentStatus::Done);
-    let l = w.ledger();
-    assert_eq!((l.in_flight, l.reserved), (0, 0));
-    assert_eq!(l.spent_day.current(Period::at(w.now).day), 10 * USDC);
-    assert!(w.view(|c| c.get_open_work()).is_empty());
-}
-
-#[test]
-fn transfer_failure_restores_the_ledger_once_and_allows_a_retry() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let before = w.ledger();
-    let intent = accepted(w.propose(1, native, 10 * USDC, None));
-    let reserved_after_approval = w.ledger().reserved;
-    let attempt = w.create_native(intent).unwrap();
-    w.fund_native(attempt).unwrap();
-    w.transfer_callback(attempt, false).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Failed);
-    let i = w.intent(intent);
-    assert_eq!(i.status, IntentStatus::Approved);
-    assert_eq!(i.live_attempt, None);
-    let l = w.ledger();
-    assert_eq!(l.cash, before.cash);
-    assert_eq!(l.in_flight, 0);
-    assert_eq!(l.reserved, reserved_after_approval);
-    assert_eq!(l.spent_day.current(Period::at(w.now).day), 0);
-    // A duplicate callback changes nothing.
-    w.transfer_callback(attempt, false).unwrap();
-    assert_eq!(w.ledger(), l);
-    // Retry with a new attempt.
-    let retry = w.create_native(intent).unwrap();
-    assert_ne!(retry, attempt);
-    w.fund_native(retry).unwrap();
-    w.transfer_callback(retry, true).unwrap();
-    assert_eq!(w.intent(intent).status, IntentStatus::Done);
-}
-
-#[test]
-fn transfer_succeeds_callback_fails_needs_reconciliation_and_no_refund() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 10 * USDC, None));
-    let attempt = w.create_native(intent).unwrap();
-    w.fund_native(attempt).unwrap();
-    // The callback never runs (out of gas, say). The executor must not re-fund.
-    expect_err(w.fund_native(attempt), "ATTEMPT_NOT_AUTHORIZED");
-    expect_err(w.create_native(intent), "INTENT_NOT_APPROVED");
-    expect_err(w.executor(|c| c.flag_reconciliation(attempt)), "CANNOT_FLAG");
-    w.advance(11 * MINUTE);
-    w.executor(|c| c.flag_reconciliation(attempt)).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::NeedsReconciliation);
-    // A late callback is now stale and changes nothing.
-    let l = w.ledger();
-    w.transfer_callback(attempt, true).unwrap();
-    assert_eq!(w.ledger(), l);
-    // Only the owner resolves it.
-    expect_err(
-        w.call(&executor(), zero(), Vec::new(), |c| c.resolve_reconciliation(attempt, ReconcileOutcome::Sent)),
-        "ONLY_OWNER",
-    );
-    w.owner(|c| c.resolve_reconciliation(attempt, ReconcileOutcome::Sent)).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Delivered);
-    assert_eq!(w.intent(intent).status, IntentStatus::Done);
-    assert_eq!(w.ledger().in_flight, 0);
-    assert_eq!(w.debits.len(), 1, "exactly one transfer was ever requested");
-}
-
-#[test]
-fn stale_callback_after_a_new_attempt_has_no_effect() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 10 * USDC, None));
-    let first = w.create_native(intent).unwrap();
-    w.fund_native(first).unwrap();
-    w.transfer_callback(first, false).unwrap();
-    let second = w.create_native(intent).unwrap();
-    w.fund_native(second).unwrap();
-    let l = w.ledger();
-    let a2 = w.attempt(second);
-    // A replayed success callback for the first attempt must not touch the second.
-    w.transfer_callback(first, true).unwrap();
-    assert_eq!(w.ledger(), l);
-    assert_eq!(w.attempt(second), a2);
-    assert_eq!(w.attempt(first).status, AttemptStatus::Failed);
-}
-
-#[test]
-fn worker_restart_after_broadcast_recovers_from_open_work() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 10 * USDC, None));
-    let attempt = w.create_native(intent).unwrap();
-    w.fund_native(attempt).unwrap();
-    // A restarted worker rebuilds its queue from the contract.
-    let work = w.view(|c| c.get_open_work());
-    assert_eq!(work.len(), 1);
-    assert_eq!(work[0].intent.terms.id, intent);
-    assert_eq!(work[0].attempt.as_ref().unwrap().status, AttemptStatus::FundingPending);
-    // Whatever it retries, no second transfer is possible.
-    expect_err(w.fund_native(attempt), "ATTEMPT_NOT_AUTHORIZED");
-    expect_err(w.create_native(intent), "INTENT_NOT_APPROVED");
+    let (mut w, native, _) = standard_world(&test_policy());
+    let r = propose_ok(&mut w, 1, native, 18 * T);
+    assert_eq!((r.status, r.route), (Status::Paying, Route::Autonomous));
     assert_eq!(w.debits.len(), 1);
-}
-
-// ── Proposals, reason codes and routing ────────────────────────────────────────────────────────
-
-#[test]
-fn prompt_injection_to_an_unknown_supplier_is_rejected_and_recorded() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    assert_eq!(rejected(w.propose(1, 999, 10 * USDC, None)), RejectReason::UnknownSupplier);
-    let rejections = w.view(|c| c.get_recent_rejections());
-    assert_eq!(rejections.len(), 1);
-    assert_eq!(rejections[0].reason, RejectReason::UnknownSupplier);
-    assert_eq!(w.view(|c| c.get_config().next_intent_id), 1, "no intent was created");
-}
-
-#[test]
-fn every_rejection_reason_code() {
-    let mut p = test_policy();
-    p.daily_cap = 120 * USDC;
-    p.monthly_cap = 150 * USDC;
-    let (mut w, native, _) = standard_world(p, false);
-
-    // OVER_PER_PAYMENT_CAP (supplier cap 100)
-    assert_eq!(rejected(w.propose(1, native, 101 * USDC, None)), RejectReason::OverPerPaymentCap);
-    // OVER_DAILY_CAP: approve 100, then 30 more exceeds 120
-    let big = accepted(w.propose(2, native, 100 * USDC, None));
-    w.approve(big).unwrap();
-    assert_eq!(rejected(w.propose(3, native, 30 * USDC, None)), RejectReason::OverDailyCap);
-    // OVER_MONTHLY_CAP: pay the 100, then next day 100 charged this month + 60 > 150 (daily is fine)
-    let a = w.create_native(big).unwrap();
-    w.fund_native(a).unwrap();
-    w.transfer_callback(a, true).unwrap();
-    w.advance(DAY);
-    assert_eq!(rejected(w.propose(3, native, 60 * USDC, None)), RejectReason::OverMonthlyCap);
-    // OBLIGATION_OPEN_OR_PAID
-    assert_eq!(rejected(w.propose(2, native, 10 * USDC, None)), RejectReason::ObligationOpenOrPaid);
-    // INSUFFICIENT_FUNDS: cash 400, nothing reserved → withdraw 395 leaves 5 available
-    w.owner(|c| { c.withdraw(U128(395 * USDC)).detach(); }).unwrap();
-    assert_eq!(rejected(w.propose(4, native, 6 * USDC, None)), RejectReason::InsufficientFunds);
-    w.top_up(400 * USDC).unwrap();
-    // OVER_MONTHLY_SUPPLIER_CAP
-    w.owner(|c| c.set_supplier_caps(native, U128(100 * USDC), U128(110 * USDC))).unwrap();
-    assert_eq!(rejected(w.propose(5, native, 20 * USDC, None)), RejectReason::OverMonthlySupplierCap);
-    w.owner(|c| c.set_supplier_caps(native, U128(100 * USDC), U128(1_000 * USDC))).unwrap();
-    // INACTIVE_SUPPLIER
-    w.owner(|c| c.set_supplier_active(native, false)).unwrap();
-    assert_eq!(rejected(w.propose(6, native, USDC, None)), RejectReason::InactiveSupplier);
-    w.owner(|c| c.set_supplier_active(native, true)).unwrap();
-    // ASSET_DISABLED
-    let asset = usdc_asset();
-    w.owner(|c| c.set_asset(asset, U128(0), false)).unwrap();
-    assert_eq!(rejected(w.propose(7, native, USDC, None)), RejectReason::AssetDisabled);
-    let asset = usdc_asset();
-    w.owner(|c| c.set_asset(asset, U128(0), true)).unwrap();
-    // PAUSED
-    w.owner(|c| c.pause()).unwrap();
-    assert_eq!(rejected(w.propose(8, native, USDC, None)), RejectReason::Paused);
-    w.owner(|c| c.unpause()).unwrap();
-    // UNKNOWN_SUPPLIER
-    assert_eq!(rejected(w.propose(9, 77, USDC, None)), RejectReason::UnknownSupplier);
-    // OBLIGATION_REJECTED
-    let flagged = accepted(w.propose(10, native, USDC, Some(ReviewFlag::UnusualAmount)));
-    w.owner(|c| c.reject(flagged)).unwrap();
-    assert_eq!(rejected(w.propose(10, native, USDC, None)), RejectReason::ObligationRejected);
-    // SUPPLIER_COOLDOWN and OVER_UNVERIFIED_BUDGET: a brand-new supplier
-    let fresh = w.add_supplier(Chain::Near, &usdc_asset(), "newco.near", 100 * USDC, 1_000 * USDC);
-    assert_eq!(rejected(w.propose(11, fresh, 5 * USDC, None)), RejectReason::SupplierCooldown);
-    w.advance(3 * DAY);
-    assert_eq!(rejected(w.propose(11, fresh, 11 * USDC, None)), RejectReason::OverUnverifiedBudget);
-    let unverified = accepted(w.propose(11, fresh, 6 * USDC, None));
-    w.approve(unverified).unwrap();
-    assert_eq!(rejected(w.propose(12, fresh, 5 * USDC, None)), RejectReason::OverUnverifiedBudget);
-}
-
-#[test]
-fn routing_reasons() {
-    let mut p = test_policy();
-    p.autonomous_daily_budget = 30 * USDC;
-    let (mut w, native, _) = standard_world(p, false);
-    let route = |r: Result<ProposeResult, String>| r.unwrap().route.unwrap();
-    assert_eq!(route(w.propose(1, native, 20 * USDC, None)), Route::Autonomous);
+    let d = w.debits[0].clone();
     assert_eq!(
-        route(w.propose(2, native, 26 * USDC, None)),
-        Route::NeedsApproval(ApprovalReason::AboveThreshold)
+        (d.receiver.as_str(), d.amount, d.registered),
+        ("acme.near", 18 * T, false)
+    );
+    assert_eq!(d.callback, Some((r.intent_id, w.now)));
+    assert_eq!(w.state().paying, 1);
+    w.settle(r.intent_id, true).unwrap();
+    assert_eq!(w.intent(r.intent_id).status, Status::Paid);
+    assert_eq!(w.state().paying, 0);
+}
+
+#[test]
+fn a_native_payout_the_token_refuses_fails_cleanly_and_can_be_retried() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    w.settle(id, false).unwrap(); // e.g. balance too low: the token refuses, nothing moves
+    assert_eq!(w.intent(id).status, Status::Failed);
+    let b = w.state().budgets;
+    assert_eq!(
+        (b.autonomous, b.outflow),
+        (10 * T, 10 * T),
+        "failed transfers never give budget back"
+    );
+    w.advance(MINUTE);
+    w.decide(id, "RETRY").unwrap();
+    assert_eq!(w.debits.len(), 2);
+    assert_eq!(
+        w.state().budgets.outflow,
+        20 * T,
+        "the retry is counted again"
+    );
+    w.settle(id, true).unwrap();
+    assert_eq!(w.intent(id).status, Status::Paid);
+    expect_err(w.decide(id, "RETRY"), "NOT_RETRYABLE");
+}
+
+#[test]
+fn above_threshold_waits_for_the_owner_and_approval_names_the_terms() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let r = propose_ok(&mut w, 1, native, 40 * T);
+    assert_eq!(
+        (r.status, r.route),
+        (Status::Pending, Route::AboveThreshold)
+    );
+    assert!(w.debits.is_empty());
+    expect_err(
+        w.decide_terms(r.intent_id, "APPROVE", 4 * T, native),
+        "TERMS_MISMATCH",
+    );
+    expect_err(
+        w.decide_terms(r.intent_id, "APPROVE", 40 * T, native + 1),
+        "TERMS_MISMATCH",
+    );
+    w.decide(r.intent_id, "APPROVE").unwrap();
+    assert_eq!(w.intent(r.intent_id).status, Status::Paying);
+    assert_eq!(
+        (w.debits[0].receiver.as_str(), w.debits[0].amount),
+        ("acme.near", 40 * T)
     );
     assert_eq!(
-        route(w.propose(3, native, 11 * USDC, None)),
-        Route::NeedsApproval(ApprovalReason::AutonomousBudgetUsed)
+        w.state().budgets.autonomous,
+        0,
+        "owner approvals do not use the agent's budget"
     );
-    assert_eq!(
-        route(w.propose(4, native, USDC, Some(ReviewFlag::AddressMismatch))),
-        Route::NeedsApproval(ApprovalReason::ReviewFlag)
-    );
-    let unverified = w.add_supplier(Chain::Near, &usdc_asset(), "newco.near", 100 * USDC, 1_000 * USDC);
-    assert_eq!(
-        route(w.propose(5, unverified, USDC / 2, None)),
-        Route::NeedsApproval(ApprovalReason::TestPayment)
-    );
-    w.advance(3 * DAY);
-    assert_eq!(
-        route(w.propose(6, unverified, USDC, None)),
-        Route::NeedsApproval(ApprovalReason::UnverifiedSupplier)
-    );
-}
-
-#[test]
-fn a_review_flag_can_only_force_review() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    for flag in [
-        ReviewFlag::AddressMismatch,
-        ReviewFlag::UncertainMatch,
-        ReviewFlag::AmbiguousExtraction,
-        ReviewFlag::UnusualAmount,
-    ] {
-        let r = w.propose(flag as u8 + 1, native, USDC, Some(flag)).unwrap();
-        assert_eq!(r.status, Some(IntentStatus::Pending));
-        let intent = r.intent_id.unwrap();
-        expect_err(w.create_native(intent), "INTENT_NOT_APPROVED");
-    }
-}
-
-#[test]
-fn same_invoice_with_edited_fields_keeps_its_obligation_id() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let (intent, _) = w.pay_native(1, native, 10 * USDC);
-    assert_eq!(w.intent(intent).status, IntentStatus::Done);
-    // Same obligation id (same supplier + invoice number) with a different amount: refused.
-    assert_eq!(rejected(w.propose(1, native, 12 * USDC, None)), RejectReason::ObligationOpenOrPaid);
-    // While one is open, a duplicate is refused too.
-    let open = accepted(w.propose(2, native, 30 * USDC, None));
-    assert_eq!(w.intent(open).status, IntentStatus::Pending);
-    assert_eq!(rejected(w.propose(2, native, 5 * USDC, None)), RejectReason::ObligationOpenOrPaid);
-}
-
-#[test]
-fn authorized_agent_spam_hits_quotas_and_the_ring_stays_bounded() {
-    let mut p = test_policy();
-    p.max_proposals_per_day = 150;
-    let (mut w, _, _) = standard_world(p, false);
-    for i in 0..150u32 {
-        let r = w.propose((i % 250) as u8, 999, USDC, None).unwrap();
-        assert!(!r.accepted);
-    }
-    assert_eq!(w.view(|c| c.get_recent_rejections()).len(), REJECTION_RING as usize);
-    expect_err(w.propose(1, 999, USDC, None), "QUOTA_PROPOSALS");
-    w.advance(DAY);
-    assert!(w.propose(1, 999, USDC, None).is_ok(), "quota resets the next day");
-}
-
-#[test]
-fn open_intents_are_capped() {
-    let mut p = test_policy();
-    p.max_open_intents = 3;
-    let (mut w, native, _) = standard_world(p, false);
-    for ob in 1..=3 {
-        accepted(w.propose(ob, native, 30 * USDC, None)); // above threshold → pending
-    }
-    expect_err(w.propose(4, native, 30 * USDC, None), "QUOTA_OPEN_INTENTS");
-}
-
-// ── Approvals and supplier changes ─────────────────────────────────────────────────────────────
-
-#[test]
-fn approval_is_bound_to_the_intent_hash() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 30 * USDC, None));
-    expect_err(w.owner(|c| c.approve(intent, "00".repeat(32))), "INTENT_HASH_MISMATCH");
-    expect_err(w.owner(|c| c.approve(intent, "zz".to_string())), "BAD_HASH");
-    w.approve(intent).unwrap();
-    expect_err(w.approve(intent), "INTENT_NOT_PENDING");
-}
-
-#[test]
-fn intent_hash_binds_the_contract_and_terms() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let id = accepted(w_propose(&mut w, 1, native));
-    let intent = w.intent(id);
-    let recomputed = w.view(|_| crate::hash::intent_hash(&contract_id(), &intent.terms));
-    assert_eq!(recomputed, intent.intent_hash);
-    let other = w.view(|_| crate::hash::intent_hash(&acc("demo-getleash.biz.near"), &intent.terms));
-    assert_ne!(other, intent.intent_hash, "the same terms hash differently on another contract");
-    let mut edited = intent.terms.clone();
-    edited.amount_out += 1;
-    assert_ne!(w.view(|_| crate::hash::intent_hash(&contract_id(), &edited)), intent.intent_hash);
-}
-
-fn w_propose(w: &mut World, ob: u8, supplier: SupplierId) -> Result<ProposeResult, String> {
-    w.propose(ob, supplier, 30 * USDC, None)
-}
-
-#[test]
-fn supplier_changed_after_approval_invalidates_open_intents() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 30 * USDC, None));
-    w.approve(intent).unwrap();
-    let attempt = w.create_native(intent).unwrap();
-    let reserved = w.ledger().reserved;
-    assert_eq!(reserved, 30 * USDC);
-
-    let asset = usdc_asset();
-    w.owner(|c| c.update_supplier(native, Chain::Near, asset, "attacker.near".to_string())).unwrap();
-
-    assert_eq!(w.intent(intent).status, IntentStatus::Invalidated);
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Void);
-    assert_eq!(w.ledger().reserved, 0);
-    expect_err(w.fund_native(attempt), "ATTEMPT_NOT_AUTHORIZED");
-    expect_err(w.create_native(intent), "INTENT_NOT_APPROVED");
-    let s = w.view(|c| c.get_supplier(native)).unwrap();
-    assert_eq!((s.revision, s.verified, s.reserved_out), (2, false, 0));
-    assert!(w.debits.is_empty(), "the old approval never paid anyone");
-    // The obligation can be proposed again; the new destination starts its cooldown.
-    assert_eq!(rejected(w.propose(1, native, 30 * USDC, None)), RejectReason::SupplierCooldown);
-}
-
-#[test]
-fn approve_then_pause_or_deactivate_supplier_blocks_funding() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 10 * USDC, None));
-    let attempt = w.create_native(intent).unwrap();
-    w.owner(|c| c.pause()).unwrap();
-    expect_err(w.fund_native(attempt), "PAUSED");
-    expect_err(w.create_native(intent), "PAUSED");
-    w.owner(|c| c.unpause()).unwrap();
-    w.owner(|c| c.set_supplier_active(native, false)).unwrap();
-    expect_err(w.fund_native(attempt), "INACTIVE_SUPPLIER");
-    w.owner(|c| c.set_supplier_active(native, true)).unwrap();
-    w.fund_native(attempt).unwrap();
-}
-
-#[test]
-fn cooldown_allows_only_an_owner_signed_test_payment_and_verification_does_not_end_it() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    let fresh = w.add_supplier(Chain::Near, &usdc_asset(), "newco.near", 100 * USDC, 1_000 * USDC);
-    assert_eq!(rejected(w.propose(1, fresh, USDC, None)), RejectReason::SupplierCooldown);
-    let r = w.propose(2, fresh, USDC / 2, None).unwrap();
-    assert_eq!(r.route, Some(Route::NeedsApproval(ApprovalReason::TestPayment)));
-    let intent = r.intent_id.unwrap();
-    assert!(w.intent(intent).terms.test_payment);
-    w.approve(intent).unwrap();
-    let attempt = w.create_native(intent).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::AwaitingOwner);
-    expect_err(w.fund_native(attempt), "ATTEMPT_NOT_AUTHORIZED");
-    w.authorize(attempt).unwrap();
-    assert_eq!(w.attempt(attempt).authorization, AttemptAuth::OwnerSigned);
-    w.fund_native(attempt).unwrap();
-    w.transfer_callback(attempt, true).unwrap();
-    // The supplier confirms out of band; the owner verifies. The cooldown still applies.
-    w.verify(fresh);
-    assert_eq!(rejected(w.propose(3, fresh, USDC, None)), RejectReason::SupplierCooldown);
-    w.advance(2 * DAY);
-    assert_eq!(w.propose(3, fresh, USDC, None).unwrap().route, Some(Route::Autonomous));
-}
-
-#[test]
-fn verify_supplier_is_bound_to_the_revision() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let asset = usdc_asset();
-    w.owner(|c| c.update_supplier(native, Chain::Near, asset, "acme2.near".to_string())).unwrap();
-    expect_err(w.owner(|c| c.verify_supplier(native, 1)), "REVISION_MISMATCH");
-    w.owner(|c| c.verify_supplier(native, 2)).unwrap();
-}
-
-#[test]
-fn supplier_destinations_are_validated() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    let add = |w: &mut World, chain: Chain, asset: String, recipient: &str| {
-        let recipient = recipient.to_string();
-        w.owner(|c| c.add_supplier(chain, asset, recipient, U128(USDC), U128(USDC)))
-    };
-    expect_err(add(&mut w, Chain::Tron, TRON_USDT.into(), "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u"), "BAD_TRON_RECIPIENT");
-    expect_err(add(&mut w, Chain::Near, TRON_USDT.into(), "acme.near"), "ASSET_CHAIN_MISMATCH");
-    expect_err(add(&mut w, Chain::Near, usdc_asset(), "getleash.biz.near"), "BAD_RECIPIENT");
-    expect_err(add(&mut w, Chain::Near, usdc_asset(), "executor-1.biz.near"), "BAD_RECIPIENT");
-    expect_err(add(&mut w, Chain::Near, "nep141:unknown.near".into(), "acme.near"), "UNKNOWN_ASSET");
-    assert!(add(&mut w, Chain::Tron, TRON_USDT.into(), TRON_RECIPIENT_2).is_ok());
-}
-
-#[test]
-fn rejected_and_amended_obligations() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 30 * USDC, None));
-    w.owner(|c| c.reject(intent)).unwrap();
-    assert_eq!(rejected(w.propose(1, native, 30 * USDC, None)), RejectReason::ObligationRejected);
-    // The owner can revive it with a corrected amount; it still needs approval.
-    let amended = w.owner(|c| c.amend_intent(intent, U128(28 * USDC))).unwrap();
-    let a = w.intent(amended);
-    assert_eq!(a.status, IntentStatus::Pending);
-    assert_eq!(a.terms.route, Route::NeedsApproval(ApprovalReason::OwnerAmended));
-    assert_eq!(a.terms.obligation_id, w.intent(intent).terms.obligation_id);
-    expect_err(w.owner(|c| c.amend_intent(intent, U128(USDC))), "NOT_LATEST_FOR_OBLIGATION");
-    w.approve(amended).unwrap();
-    // Cancelling an approved intent releases the reservation and blocks the obligation.
-    w.owner(|c| c.cancel(amended)).unwrap();
-    assert_eq!(w.ledger().reserved, 0);
-    assert_eq!(rejected(w.propose(1, native, 30 * USDC, None)), RejectReason::ObligationRejected);
-}
-
-// ── Budgets and accounting ─────────────────────────────────────────────────────────────────────
-
-#[test]
-fn sixty_of_hundred_in_flight_no_double_subtraction() {
-    let mut w = World::new(Some(test_policy()), false);
-    let s = w.add_supplier(Chain::Near, &usdc_asset(), "acme.near", 100 * USDC, 1_000 * USDC);
-    w.top_up(100 * USDC).unwrap();
-    w.advance(3 * DAY);
-    w.verify(s);
-    let intent = accepted(w.propose(1, s, 60 * USDC, None));
-    w.approve(intent).unwrap();
-    let attempt = w.create_native(intent).unwrap();
-    w.fund_native(attempt).unwrap();
-    let l = w.ledger();
-    assert_eq!((l.cash, l.in_flight, l.reserved, l.available()), (40 * USDC, 60 * USDC, 0, 40 * USDC));
-    // 40 is really available: a 40 payment fits, 41 does not.
-    let mut p = test_policy();
-    p.approval_threshold = 100 * USDC;
-    p.autonomous_daily_budget = 100 * USDC;
-    w.owner(|c| c.set_policy(p)).unwrap();
-    assert_eq!(rejected(w.propose(2, s, 41 * USDC, None)), RejectReason::InsufficientFunds);
-    accepted(w.propose(2, s, 40 * USDC, None));
-    assert_eq!(w.ledger().available(), 0);
-}
-
-#[test]
-fn concurrent_approvals_with_fee_headroom_never_exceed_cash() {
-    let mut w = World::new(Some(test_policy()), false);
-    w.add_tron_asset(3 * USDC / 2);
-    let tron = w.add_supplier(Chain::Tron, TRON_USDT, TRON_RECIPIENT, 100 * USDC, 1_000 * USDC);
-    w.top_up(20 * USDC).unwrap();
-    w.advance(3 * DAY);
-    w.verify(tron);
-    // Each 2 USDT intent reserves 3.52 USDC (2.02 + 1.5 fixed fee bound).
-    let mut approved = Vec::new();
-    for ob in 1..=10u8 {
-        let r = w.propose(ob, tron, 2 * USDC, None).unwrap();
-        if !r.accepted {
-            assert_eq!(r.reason, Some(RejectReason::InsufficientFunds));
-            break;
-        }
-        approved.push(r.intent_id.unwrap());
-        let l = w.ledger();
-        assert!(l.reserved <= l.cash);
-    }
-    assert_eq!(approved.len(), 5, "5 × 3.52 = 17.6 ≤ 20 < 6 × 3.52");
-    assert_eq!(w.intent(approved[0]).terms.max_in, 3_520_000);
-}
-
-#[test]
-fn unexecutable_approved_intent_expires_releasing_only_the_unfunded_reservation() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let stuck = accepted(w.propose(1, native, 10 * USDC, None));
-    let paid = accepted(w.propose(2, native, 5 * USDC, None));
-    let a = w.create_native(paid).unwrap();
-    w.fund_native(a).unwrap(); // in flight, callback pending
-    assert_eq!(w.ledger().reserved, 10 * USDC);
-    w.advance(3 * DAY + MINUTE);
-    let swept = w.executor(|c| c.sweep(10)).unwrap();
-    assert_eq!(swept.expired, 1);
-    assert_eq!(w.intent(stuck).status, IntentStatus::Expired);
-    assert_eq!(w.intent(paid).status, IntentStatus::Funding, "funded intents never expire");
-    let l = w.ledger();
-    assert_eq!((l.reserved, l.in_flight), (0, 5 * USDC));
-    // An expired obligation may be proposed again.
-    accepted(w.propose(1, native, 10 * USDC, None));
 }
 
 #[test]
 fn autonomous_budget_caps_a_fabricated_small_invoice_stream() {
-    // PLAN §8 "the honest one": small fake invoices to a real supplier are paid within the rules,
-    // but the autonomous budget bounds the damage per day.
-    let mut p = test_policy();
-    p.autonomous_daily_budget = 20 * USDC;
-    let (mut w, native, _) = standard_world(p, false);
-    let mut auto_total = 0;
-    for ob in 1..=10u8 {
-        let r = w.propose(ob, native, 4 * USDC, None).unwrap();
-        if r.route == Some(Route::Autonomous) {
-            auto_total += 4 * USDC;
-        } else {
-            assert_eq!(r.route, Some(Route::NeedsApproval(ApprovalReason::AutonomousBudgetUsed)));
-        }
+    let (mut w, native, _) = standard_world(&test_policy());
+    for n in 0..5 {
+        let r = propose_ok(&mut w, n, native, 10 * T);
+        assert_eq!(r.route, Route::Autonomous, "invoice {n}");
     }
-    assert_eq!(auto_total, 20 * USDC);
-    let budgets = w.view(|c| c.get_budgets_today());
-    assert_eq!(budgets.autonomous.used, 20 * USDC);
-    assert_eq!(budgets.autonomous.remaining, 0);
+    let r = propose_ok(&mut w, 5, native, 10 * T);
+    assert_eq!(
+        (r.status, r.route),
+        (Status::Pending, Route::AutonomousBudgetUsed)
+    );
+    assert_eq!(
+        w.debits.iter().map(|d| d.amount).sum::<u128>(),
+        50 * T,
+        "at most the autonomous budget per day"
+    );
+    w.advance(DAY);
+    assert_eq!(
+        propose_ok(&mut w, 6, native, 10 * T).route,
+        Route::Autonomous,
+        "a new day, a new budget"
+    );
 }
 
 #[test]
-fn caps_hold_across_midnight_after_a_failed_transfer() {
+fn the_daily_cap_binds_the_owner_too() {
     let mut p = test_policy();
-    p.daily_cap = 50 * USDC;
-    p.approval_threshold = 50 * USDC;
-    p.autonomous_daily_budget = 200 * USDC;
-    let mut w = World::new(Some(p), false);
-    let s = w.add_supplier(Chain::Near, &usdc_asset(), "acme.near", 100 * USDC, 1_000 * USDC);
-    w.top_up(500 * USDC).unwrap();
-    // Start just before a midnight.
-    w.advance(3 * DAY - 2 * MINUTE);
-    w.verify(s);
-    let a = accepted(w.propose(1, s, 40 * USDC, None));
-    let at = w.create_native(a).unwrap();
-    w.fund_native(at).unwrap();
-    w.advance(5 * MINUTE); // new day
-    let b = accepted(w.propose(2, s, 45 * USDC, None)); // fits the fresh day
-    assert_eq!(w.intent(b).status, IntentStatus::Approved);
-    // The first transfer turns out to have failed: restoring 40 would break today's cap.
-    w.transfer_callback(at, false).unwrap();
-    assert_eq!(w.intent(a).status, IntentStatus::Pending, "needs approval again (D-08)");
-    let budgets = w.view(|c| c.get_budgets_today());
-    assert!(budgets.daily.used <= 50 * USDC);
-    assert_eq!(w.ledger().reserved, 45 * USDC);
+    p.daily_cap = 60 * T;
+    p.autonomous_daily_budget = 20 * T;
+    let (mut w, native, _) = standard_world(&p);
+    let a = propose_ok(&mut w, 1, native, 50 * T).intent_id;
+    let b = propose_ok(&mut w, 2, native, 30 * T).intent_id; // both above the 25 threshold
+    w.decide(a, "APPROVE").unwrap();
+    expect_err(w.decide(b, "APPROVE"), "OVER_DAILY_CAP");
+    assert_eq!(w.intent(b).status, Status::Pending);
+    w.advance(DAY);
+    w.decide(b, "APPROVE").unwrap();
+    assert_eq!(w.debits.len(), 2);
 }
 
-// ── Cross-chain ────────────────────────────────────────────────────────────────────────────────
-
-const DEPOSIT: &str = "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a7988";
-const DEPOSIT_2: &str = "aa2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a7988";
-
 #[test]
-fn executor_supplies_its_own_deposit_address_above_the_trust_budget() {
-    let (mut w, _, tron) = standard_world(test_policy(), false); // trust budget 0
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, "executor-loot.near", 2_865_850, "quote-1").unwrap();
-    let a = w.attempt(attempt);
-    assert_eq!(a.status, AttemptStatus::AwaitingOwner);
-    assert_eq!(a.terms.final_recipient, TRON_RECIPIENT);
-    assert_eq!(a.terms.refund_to, Some(contract_id()));
-    assert_eq!(a.terms.deposit_type, Some(DepositType::OriginChain));
-    expect_err(w.fund_cross(attempt), "ATTEMPT_NOT_AUTHORIZED");
-    // The owner checks the quote on the attempt page, sees a mismatch, and cancels instead.
-    w.owner(|c| c.cancel_attempt(attempt)).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Void);
+fn a_review_flag_can_only_force_review() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let r = w.propose(1, native, T, 1).unwrap();
+    assert_eq!((r.status, r.route), (Status::Pending, Route::ReviewFlag));
+    expect_err(w.propose(2, native, T, 5), "BAD_FLAG");
     assert!(w.debits.is_empty());
 }
 
 #[test]
+fn prompt_injection_to_an_unknown_supplier_is_refused_and_logged() {
+    let (mut w, _, _) = standard_world(&test_policy());
+    let r = w.propose(1, 0, 3 * T, 0).unwrap();
+    assert_eq!(
+        (r.accepted, r.reason, r.intent_id),
+        (false, Reason::UnknownSupplier, 0)
+    );
+    assert_eq!(w.state().stored_intents, 0, "refusals store nothing");
+    assert!(
+        w.logs
+            .iter()
+            .any(|l| l.contains("proposal_refused") && l.contains("UNKNOWN_SUPPLIER"))
+    );
+    // Its invoice is not blocked: a refusal is not an obligation.
+    assert_eq!(
+        w.propose(1, 0, 3 * T, 0).unwrap().reason,
+        Reason::UnknownSupplier
+    );
+}
+
+// ── Invoices (obligations) ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn same_invoice_with_edited_fields_keeps_its_obligation_id() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let paid = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    w.settle(paid, true).unwrap();
+    assert_eq!(
+        w.propose(1, native, 12 * T, 0).unwrap().reason,
+        Reason::ObligationOpenOrPaid
+    );
+    let rejected = propose_ok(&mut w, 2, native, 40 * T).intent_id;
+    w.decide(rejected, "REJECT").unwrap();
+    assert_eq!(
+        w.propose(2, native, 40 * T, 0).unwrap().reason,
+        Reason::ObligationRejected
+    );
+    // After retention both are forgotten, and both invoices stay blocked.
+    w.advance(8 * DAY);
+    assert_eq!(w.forget(vec![paid, rejected]).unwrap(), 2);
+    assert_eq!(
+        w.propose(1, native, 10 * T, 0).unwrap().reason,
+        Reason::ObligationOpenOrPaid
+    );
+    assert_eq!(
+        w.propose(2, native, 40 * T, 0).unwrap().reason,
+        Reason::ObligationRejected
+    );
+}
+
+#[test]
+fn unexecutable_approved_intent_expires_and_frees_its_invoice_when_forgotten() {
+    let (mut w, native, tron) = standard_world(&test_policy());
+    let pending = propose_ok(&mut w, 1, native, 40 * T).intent_id;
+    let approved = propose_ok(&mut w, 2, tron, 2 * T).intent_id;
+    assert_eq!(w.intent(approved).status, Status::Approved);
+    w.advance(3 * DAY + 1);
+    expect_err(w.decide(pending, "APPROVE"), "INTENT_EXPIRED");
+    let deadline = w.now + HOUR;
+    expect_err(
+        w.create_attempt(approved, 9, 2_100_000, deadline),
+        "INTENT_EXPIRED",
+    );
+    assert_eq!(w.forget(vec![pending, approved]).unwrap(), 2);
+    assert_eq!(w.state().stored_intents, 0);
+    assert!(
+        propose_ok(&mut w, 1, native, 40 * T).accepted,
+        "an expired, never-paid invoice can be proposed again"
+    );
+}
+
+#[test]
+fn forget_never_touches_live_or_recent_intents() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let paying = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    let pending = propose_ok(&mut w, 2, native, 40 * T).intent_id;
+    let paid = propose_ok(&mut w, 3, native, 10 * T).intent_id;
+    w.settle(paid, true).unwrap();
+    assert_eq!(w.forget(vec![paying, pending, paid, 99]).unwrap(), 0);
+    w.advance(30 * DAY);
+    assert_eq!(
+        w.forget(vec![paying]).unwrap(),
+        0,
+        "a payout in flight is never forgotten"
+    );
+    expect_err(w.forget((0..51).collect()), "TOO_MANY");
+}
+
+// ── Suppliers and the cooldown ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn cooldown_holds_every_payment_and_caps_even_the_owner() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    w.update_supplier(native, "NEAR", &usdc_asset(), "acme-new.near", 6)
+        .unwrap();
+    let normal = w.propose(1, native, 3 * T, 0).unwrap();
+    assert_eq!(
+        (normal.status, normal.route),
+        (Status::Pending, Route::SupplierCooldown)
+    );
+    expect_err(w.decide(normal.intent_id, "APPROVE"), "OVER_COOLDOWN_MAX");
+    let test = propose_ok(&mut w, 2, native, T / 2);
+    assert_eq!(test.route, Route::SupplierCooldown);
+    w.decide(test.intent_id, "APPROVE").unwrap();
+    assert_eq!(
+        (w.debits[0].receiver.as_str(), w.debits[0].amount),
+        ("acme-new.near", T / 2)
+    );
+    w.advance(2 * DAY);
+    w.decide(normal.intent_id, "APPROVE").unwrap();
+    assert_eq!(w.debits.len(), 2);
+}
+
+#[test]
+fn supplier_changed_after_approval_invalidates_open_intents() {
+    let (mut w, native, tron) = standard_world(&test_policy());
+    let pending = propose_ok(&mut w, 1, native, 40 * T).intent_id;
+    let cross = crosschain_with_attempt(&mut w, tron, 2, 2 * T, 2_100_000, 7);
+    w.update_supplier(native, "NEAR", &usdc_asset(), "acme-new.near", 6)
+        .unwrap();
+    w.update_supplier(tron, "TRON", TRON_USDT, TRON_RECIPIENT_2, 6)
+        .unwrap();
+    expect_err(w.decide(pending, "APPROVE"), "SUPPLIER_CHANGED");
+    w.authorize(cross).unwrap();
+    expect_err(w.fund(cross), "SUPPLIER_CHANGED");
+    assert!(w.debits.is_empty());
+    // Stale intents can be forgotten at once, freeing the invoices for the new address.
+    assert_eq!(w.forget(vec![pending, cross]).unwrap(), 2);
+    assert!(w.propose(1, native, 40 * T, 0).unwrap().accepted);
+}
+
+#[test]
+fn approve_then_pause_or_deactivate_supplier_blocks_funding() {
+    let (mut w, native, tron) = standard_world(&test_policy());
+    let id = crosschain_with_attempt(&mut w, tron, 1, 2 * T, 2_100_000, 7);
+    w.set_paused(true).unwrap();
+    expect_err(w.fund(id), "PAUSED");
+    w.set_paused(false).unwrap();
+    w.owner_json(json!({ "supplier_id": tron, "active": false }), |c| {
+        c.set_supplier_active()
+    })
+    .unwrap();
+    expect_err(w.fund(id), "INACTIVE_SUPPLIER");
+    let pending = propose_ok(&mut w, 2, native, 40 * T).intent_id;
+    w.owner_json(json!({ "supplier_id": native, "active": false }), |c| {
+        c.set_supplier_active()
+    })
+    .unwrap();
+    expect_err(w.decide(pending, "APPROVE"), "INACTIVE_SUPPLIER");
+    assert_eq!(
+        w.propose(3, native, T, 0).unwrap().reason,
+        Reason::InactiveSupplier
+    );
+    assert!(w.debits.is_empty());
+}
+
+#[test]
+fn supplier_destinations_are_validated() {
+    let mut w = World::new(&test_policy());
+    for bad in [
+        "getleash.biz.near",
+        "biz.near",
+        "agent-1.biz.near",
+        "executor-1.biz.near",
+        "Not An Account",
+    ] {
+        expect_err(
+            w.add_supplier("NEAR", &usdc_asset(), bad, 6),
+            "BAD_NEAR_RECIPIENT",
+        );
+    }
+    expect_err(
+        w.add_supplier("NEAR", &usdc_asset(), usdc().as_str(), 6),
+        "BAD_NEAR_RECIPIENT",
+    );
+    expect_err(
+        w.add_supplier("TRON", TRON_USDT, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj60", 6),
+        "BAD_TRON_RECIPIENT",
+    );
+    expect_err(
+        w.add_supplier("TRON", TRON_USDT, "acme.near", 6),
+        "BAD_TRON_RECIPIENT",
+    );
+    expect_err(
+        w.add_supplier("SOLANA", TRON_USDT, TRON_RECIPIENT, 6),
+        "BAD_CHAIN",
+    );
+    expect_err(
+        w.add_supplier("TRON", "nep141:has space", TRON_RECIPIENT, 6),
+        "BAD_ASSET_ID",
+    );
+    // A native supplier must use the token's decimals: otherwise 1,000 USDC could count as 1.
+    expect_err(
+        w.add_supplier("NEAR", &usdc_asset(), "acme.near", 18),
+        "NATIVE_DECIMALS",
+    );
+    // USDT on NEAR is not native (paid via 1Click), so other decimals are fine there.
+    assert_eq!(
+        w.add_supplier("NEAR", "nep141:usdt.tether-token.near", "acme.near", 6)
+            .unwrap(),
+        1
+    );
+}
+
+// ── Cross-chain payouts ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn executor_supplies_its_own_deposit_address_above_the_trust_budget() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    // 20 USDT, approved by the owner; the attempt needs 20.3, above the 5 USDC trust budget.
+    let id = crosschain_with_attempt(&mut w, tron, 1, 20 * T, 20_300_000, 66);
+    expect_err(w.fund(id), "OVER_TRUST_BUDGET");
+    assert!(
+        w.debits.is_empty(),
+        "funding is impossible without the owner's signature"
+    );
+    w.authorize(id).unwrap();
+    w.fund(id).unwrap();
+    let d = w.debits[0].clone();
+    assert_eq!(
+        (d.receiver, d.amount, d.registered),
+        (deposit_hex(66), 20_300_000, true)
+    );
+    assert_eq!(
+        w.state().budgets.trust,
+        0,
+        "owner-signed funding does not use the trust budget"
+    );
+    w.settle(id, true).unwrap();
+    assert_eq!(w.intent(id).status, Status::Paid);
+}
+
+#[test]
 fn executor_funds_its_own_address_within_the_trust_budget_is_bounded() {
-    let (mut w, _, tron) = standard_world(trust_policy(5 * USDC), false);
-    let i1 = accepted(w.propose(1, tron, 2 * USDC, None));
-    let i2 = accepted(w.propose(2, tron, 2 * USDC, None));
-    let a1 = w.create_cross(i1, DEPOSIT, 3 * USDC, "q1").unwrap();
-    assert_eq!(w.attempt(a1).authorization, AttemptAuth::TrustBudget);
-    // The accepted risk: a stolen executor key can redirect this one (3 ≤ 5)…
-    w.fund_cross(a1).unwrap();
-    // …but not the next: 3 + 3 > 5 needs the owner.
-    let a2 = w.create_cross(i2, DEPOSIT_2, 3 * USDC, "q2").unwrap();
-    assert_eq!(w.attempt(a2).status, AttemptStatus::AwaitingOwner);
-    expect_err(w.fund_cross(a2), "ATTEMPT_NOT_AUTHORIZED");
-    assert_eq!(w.view(|c| c.get_budgets_today()).executor_trust.used, 3 * USDC);
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let a = crosschain_with_attempt(&mut w, tron, 1, 2 * T, 2_300_000, 7);
+    let b = crosschain_with_attempt(&mut w, tron, 2, 2 * T, 2_300_000, 8);
+    let c = crosschain_with_attempt(&mut w, tron, 3, T, 1_100_000, 9);
+    w.fund(a).unwrap();
+    w.fund(b).unwrap();
+    expect_err(w.fund(c), "OVER_TRUST_BUDGET");
+    assert_eq!(w.state().budgets.trust, 4_600_000);
+    assert!(
+        w.debits.iter().map(|d| d.amount).sum::<u128>() <= 5 * T,
+        "at most the trust budget per day without the owner"
+    );
+    w.advance(DAY);
+    // Next day there is room again; the old quote has expired, so the executor re-quotes.
+    expect_err(w.fund(c), "QUOTE_TOO_CLOSE_TO_DEADLINE");
+    let deadline = w.now + HOUR;
+    w.create_attempt(c, 10, 1_100_000, deadline).unwrap();
+    w.fund(c).unwrap();
 }
 
 #[test]
-fn hosted_mode_cross_chain_always_needs_the_owner() {
-    let (mut w, _, tron) = standard_world(test_policy(), true);
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, DEPOSIT, 3 * USDC, "q1").unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::AwaitingOwner);
+fn requoted_attempt_cannot_use_an_earlier_authorization() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let id = crosschain_with_attempt(&mut w, tron, 1, 20 * T, 20_300_000, 66);
+    let reviewed = deposit_hex(66);
+    // The executor swaps in another deposit before the owner's signature lands.
+    let deadline = w.now + HOUR;
+    w.create_attempt(id, 67, 20_300_000, deadline).unwrap();
+    expect_err(
+        w.authorize_terms(id, &reviewed, 20_300_000),
+        "TERMS_MISMATCH",
+    );
+    expect_err(w.fund(id), "OVER_TRUST_BUDGET");
+    // And an authorization never survives a re-quote.
+    w.authorize(id).unwrap();
+    let deadline = w.now + HOUR;
+    w.create_attempt(id, 68, 20_300_000, deadline).unwrap();
+    assert!(!w.intent(id).attempt.unwrap().authorized);
+    expect_err(
+        w.create_attempt(id, 68, 20_300_000, deadline),
+        "SAME_DEPOSIT",
+    );
 }
 
 #[test]
-fn quote_reused_for_another_intent_or_attempt_rejected() {
-    let (mut w, _, tron) = standard_world(trust_policy(10 * USDC), false);
-    let i1 = accepted(w.propose(1, tron, 2 * USDC, None));
-    let i2 = accepted(w.propose(2, tron, 2 * USDC, None));
-    let a1 = w.create_cross(i1, DEPOSIT, 3 * USDC, "q1").unwrap();
-    expect_err(w.create_cross(i1, DEPOSIT_2, 3 * USDC, "q2"), "LIVE_ATTEMPT_EXISTS");
-    expect_err(w.create_cross(i2, DEPOSIT_2, 3 * USDC, "q1"), "QUOTE_REUSED");
-    expect_err(w.create_cross(i2, DEPOSIT, 3 * USDC, "q3"), "DEPOSIT_ADDRESS_REUSED");
-    // Even after the first attempt is cancelled, its quote and deposit account stay burnt.
-    w.executor(|c| c.cancel_attempt(a1)).unwrap();
-    expect_err(w.create_cross(i1, DEPOSIT, 3 * USDC, "q4"), "DEPOSIT_ADDRESS_REUSED");
-    expect_err(w.create_cross(i1, DEPOSIT_2, 3 * USDC, "q1"), "QUOTE_REUSED");
-    assert!(w.create_cross(i1, DEPOSIT_2, 3 * USDC, "q5").is_ok());
+fn rotating_the_executor_voids_trust_funding_of_its_attempts() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let id = crosschain_with_attempt(&mut w, tron, 1, 2 * T, 2_300_000, 7);
+    // The executor key is stolen; the owner rotates it. The new executor must not fund the old
+    // key's deposits from the trust budget.
+    let new_executor = acc("executor-2.biz.near");
+    w.set_roles(&agent(), &new_executor).unwrap();
+    assert_eq!(w.state().executor_epoch, 1);
+    let fund = w.call(&new_executor, zero(), Vec::new(), Vec::new(), |c| {
+        c.fund(id)
+    });
+    expect_err(fund, "STALE_EXECUTOR_EPOCH");
+    expect_err(w.fund(id), "ONLY_EXECUTOR");
+    // An owner-signed attempt is still fine.
+    w.authorize(id).unwrap();
+    w.call(&new_executor, zero(), Vec::new(), Vec::new(), |c| {
+        c.fund(id)
+    })
+    .unwrap();
+    assert_eq!(w.debits.len(), 1);
+}
+
+#[test]
+fn attempts_are_refused_on_native_intents() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, native, 40 * T).intent_id;
+    let deadline = w.now + HOUR;
+    expect_err(
+        w.create_attempt(id, 7, 40 * T, deadline),
+        "INTENT_NOT_APPROVED",
+    );
+    expect_err(w.fund(id), "INTENT_NOT_APPROVED");
+    // Native intents never rest in APPROVED: approving pays at once.
+    w.decide(id, "APPROVE").unwrap();
+    assert_eq!(w.intent(id).status, Status::Paying);
+    expect_err(w.fund(id), "INTENT_NOT_APPROVED");
 }
 
 #[test]
 fn crosschain_attempt_terms_are_checked() {
-    let (mut w, native, tron) = standard_world(trust_policy(10 * USDC), false);
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    expect_err(w.create_cross(intent, DEPOSIT, 3_520_001, "q1"), "AMOUNT_IN_ABOVE_MAX");
-    expect_err(w.create_cross(intent, "getleash.biz.near", 3 * USDC, "q1"), "BAD_DEPOSIT_ADDRESS");
-    let soon = w.now + MINUTE;
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, tron, 2 * T).intent_id; // value 2, max_in 2*1.01+1.5 = 3.52
+    assert_eq!(w.intent(id).max_in, 3_520_000);
+    let now = w.now;
     expect_err(
-        w.executor(|c| c.create_attempt_crosschain(intent, acc(DEPOSIT), U128(3 * USDC), U64(soon), "q1".into())),
-        "QUOTE_DEADLINE_TOO_SOON",
+        w.create_attempt(id, 7, 2_100_000, now + MINUTE),
+        "BAD_DEADLINE",
     );
-    expect_err(w.create_cross(intent, DEPOSIT, 3 * USDC, "has space"), "BAD_QUOTE_REF");
-    let native_intent = accepted(w.propose(2, native, USDC, None));
-    expect_err(w.create_cross(native_intent, DEPOSIT, USDC, "q1"), "NOT_CROSSCHAIN");
-    expect_err(w.create_native(intent), "NOT_NATIVE");
-    // The right funding method only.
-    let attempt = w.create_cross(intent, DEPOSIT, 3 * USDC, "q1").unwrap();
-    expect_err(w.fund_native(attempt), "WRONG_FUNDING_METHOD");
-    // Too close to the quote deadline: funding refused, sweep voids it, a fresh quote is needed.
-    w.advance(28 * MINUTE);
-    expect_err(w.fund_cross(attempt), "QUOTE_TOO_CLOSE_TO_DEADLINE");
-    let swept = w.executor(|c| c.sweep(10)).unwrap();
-    assert_eq!(swept.voided_attempts, 1);
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Void);
-    assert_eq!(w.view(|c| c.get_budgets_today()).executor_trust.used, 0, "trust budget returned");
-    assert!(w.create_cross(intent, DEPOSIT_2, 3 * USDC, "q2").is_ok());
-}
-
-#[test]
-fn register_recipient_registers_only_the_committed_payee() {
-    let (mut w, _, tron) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, DEPOSIT, 3 * USDC, "q1").unwrap();
-    w.executor(|c| { c.register_recipient(attempt).detach(); }).unwrap();
-    assert_eq!(w.registrations, vec![acc(DEPOSIT)]);
-}
-
-#[test]
-fn executor_claims_a_refund_no_credit_no_budget_restoration() {
-    let (mut w, _, tron) = standard_world(trust_policy(10 * USDC), false);
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, DEPOSIT, 2_865_850, "q1").unwrap();
-    w.fund_cross(attempt).unwrap();
-    w.transfer_callback(attempt, true).unwrap();
-    let before = (w.ledger(), w.view(|c| c.get_budgets_today()));
-    let entry = vec![InflowEntry { amount: 2_865_850, attribution: InflowAttribution::AttemptReturn { attempt_id: attempt } }];
-    let e2 = entry.clone();
-    expect_err(w.call(&executor(), zero(), Vec::new(), |c| c.reconcile_inflows(e2)), "ONLY_OWNER");
-    expect_err(w.call(&executor(), one_yocto(), Vec::new(), |c| c.reconcile_inflows(entry)), "ONLY_OWNER");
-    // Reporting delivery credits nothing either.
-    w.executor(|c| c.report_delivery(attempt, U128(2 * USDC), "tron-tx-1".into())).unwrap();
-    let after = (w.ledger(), w.view(|c| c.get_budgets_today()));
-    assert_eq!(before.0.cash, after.0.cash);
-    assert_eq!(before.1.daily, after.1.daily);
-    assert_eq!(before.1.executor_trust, after.1.executor_trust);
-}
-
-#[test]
-fn exact_output_swap_returns_change_recorded_separately() {
-    let (mut w, _, tron) = standard_world(trust_policy(10 * USDC), false);
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, DEPOSIT, 2_865_850, "q1").unwrap();
-    w.fund_cross(attempt).unwrap();
-    w.transfer_callback(attempt, true).unwrap();
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::Funded);
-    assert_eq!(w.ledger().reserved, 0, "fee slack released once the deposit is confirmed");
-    w.executor(|c| c.report_delivery(attempt, U128(2 * USDC), "tron-tx-1".into())).unwrap();
-    let spent = w.view(|c| c.get_budgets_today()).daily.used;
-    // 1Click returns 14 330 units of unused input; the owner attributes it.
-    let entry = vec![InflowEntry { amount: 14_330, attribution: InflowAttribution::AttemptReturn { attempt_id: attempt } }];
-    let cash = w.ledger().cash;
-    w.owner(|c| c.reconcile_inflows(entry)).unwrap();
-    let a = w.attempt(attempt);
-    assert_eq!(a.delivered_amount, Some(2 * USDC));
-    assert_eq!(a.returned_amount, 14_330);
-    assert_eq!(a.status, AttemptStatus::Delivered);
-    assert_eq!(w.ledger().cash, cash + 14_330);
-    assert_eq!(w.view(|c| c.get_budgets_today()).daily.used, spent, "returns never restore budget");
-    // Never more than what left.
-    let too_much = vec![InflowEntry { amount: 2_865_850, attribution: InflowAttribution::AttemptReturn { attempt_id: attempt } }];
-    expect_err(w.owner(|c| c.reconcile_inflows(too_much)), "RETURN_EXCEEDS_AMOUNT_IN");
-}
-
-#[test]
-fn refund_for_an_october_attempt_arriving_in_november_leaves_november_charges() {
-    let mut w = World::new(Some(trust_policy(10 * USDC)), false);
-    // Set up on Oct 27 so that Oct 31 23:00 is past the supplier's cooldown.
-    w.now = NOV_1_2026 - 5 * DAY;
-    w.add_tron_asset(3 * USDC / 2);
-    let tron = w.add_supplier(Chain::Tron, TRON_USDT, TRON_RECIPIENT, 100 * USDC, 1_000 * USDC);
-    w.top_up(100 * USDC).unwrap();
-    w.advance(3 * DAY);
-    w.verify(tron);
-    w.now = NOV_1_2026 - HOUR; // Oct 31, 23:00
-    let intent = accepted(w.propose(1, tron, 2 * USDC, None));
-    let attempt = w.create_cross(intent, DEPOSIT, 2_865_850, "q1").unwrap();
-    w.fund_cross(attempt).unwrap();
-    w.transfer_callback(attempt, true).unwrap();
-    let october = Period::at(w.now).month;
-    w.executor(|c| c.flag_reconciliation(attempt)).unwrap();
-    w.advance(2 * HOUR); // Nov 1, 01:00
-    let november = Period::at(w.now).month;
-    assert_ne!(october, november);
-    w.owner(|c| c.resolve_reconciliation(attempt, ReconcileOutcome::SwapFailed)).unwrap();
-    let refund = vec![InflowEntry { amount: 2_865_850, attribution: InflowAttribution::AttemptReturn { attempt_id: attempt } }];
-    w.owner(|c| c.reconcile_inflows(refund)).unwrap();
-    let l = w.ledger();
-    assert_eq!(l.spent_month.current(november), 0, "November charges unchanged by the refund");
-    assert_eq!(l.total_returned, 2_865_850);
-    assert_eq!(w.attempt(attempt).status, AttemptStatus::SwapFailed);
-    // The invoice is still owed: the intent is re-reserved for a retry with a fresh quote.
-    let i = w.intent(intent);
-    assert_eq!(i.status, IntentStatus::Approved);
-    assert_eq!(i.reserved, i.terms.max_in);
-}
-
-#[test]
-fn unrelated_top_up_during_refund_processing_stays_unreconciled_until_attributed() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    let cash = w.ledger().cash;
-    // A plain ft_transfer arrives (no ft_on_transfer): the contract does not see it at all.
-    // The dashboard shows it as live balance − cash. Only the owner can recognise it.
-    assert_eq!(w.ledger().cash, cash);
-    let entry = vec![InflowEntry { amount: 7 * USDC, attribution: InflowAttribution::Unattributed }];
-    w.owner(|c| c.reconcile_inflows(entry)).unwrap();
-    let l = w.ledger();
-    assert_eq!(l.cash, cash + 7 * USDC);
-    assert_eq!(l.total_unattributed, 7 * USDC);
-}
-
-// ── Withdrawals and upgrades ───────────────────────────────────────────────────────────────────
-
-#[test]
-fn withdraw_only_unreserved_cash_and_restore_on_failure() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let intent = accepted(w.propose(1, native, 30 * USDC, None));
-    w.approve(intent).unwrap();
-    expect_err(w.owner(|c| { c.withdraw(U128(471 * USDC)).detach(); }), "INSUFFICIENT_FUNDS");
-    w.owner(|c| { c.withdraw(U128(470 * USDC)).detach(); }).unwrap();
-    let debit = w.debits.last().unwrap().clone();
-    assert_eq!((debit.receiver, debit.amount), (owner(), 470 * USDC));
-    assert_eq!(debit.callback_withdraw, Some(470 * USDC));
-    assert_eq!(w.ledger().cash, 30 * USDC);
-    w.withdraw_callback(470 * USDC, false).unwrap();
-    assert_eq!(w.ledger().cash, 500 * USDC);
-    // Pause does not block the owner's exit.
-    w.owner(|c| c.pause()).unwrap();
-    w.owner(|c| { c.withdraw(U128(USDC)).detach(); }).unwrap();
-}
-
-#[test]
-fn upgrade_deploys_and_migrates_in_one_batch() {
-    let (mut w, _, _) = standard_world(test_policy(), false);
-    // The raw input is the code; in unit tests env::input() is empty, so the call refuses.
-    expect_err(w.owner(|c| { c.upgrade().detach(); }), "NO_CODE");
-}
-
-#[test]
-fn prune_removes_old_closed_intents_but_keeps_obligations_blocked() {
-    let (mut w, native, _) = standard_world(test_policy(), false);
-    let (paid, attempt) = w.pay_native(1, native, 5 * USDC);
-    let expiring = accepted(w.propose(2, native, 30 * USDC, None));
-    w.advance(4 * DAY);
-    w.executor(|c| c.sweep(10)).unwrap();
-    assert_eq!(w.intent(expiring).status, IntentStatus::Expired);
-    assert_eq!(w.executor(|c| c.prune(10)).unwrap(), 0, "retention not reached");
-    w.advance(31 * DAY);
-    assert_eq!(w.executor(|c| c.prune(10)).unwrap(), 2);
-    assert!(w.view(|c| c.get_intent(paid)).is_none());
-    assert!(w.view(|c| c.get_attempt(attempt)).is_none());
-    assert_eq!(rejected(w.propose(1, native, 5 * USDC, None)), RejectReason::ObligationOpenOrPaid);
-    accepted(w.propose(2, native, 5 * USDC, None)); // expired obligations stay re-proposable
-}
-
-#[test]
-fn rotating_the_executor_or_going_hosted_voids_its_trust_budget_attempts() {
-    // A compromised executor creates an attempt to its own deposit account inside the trust
-    // budget. The owner rotates the executor: the new, honest executor must not fund it (D-19).
-    let (mut w, _, tron) = standard_world(trust_policy(10 * USDC), false);
-    let i1 = accepted(w.propose(1, tron, 2 * USDC, None));
-    let stolen = w.create_cross(i1, DEPOSIT, 3 * USDC, "q1").unwrap();
-    assert_eq!(w.attempt(stolen).authorization, AttemptAuth::TrustBudget);
-    let new_executor = acc("executor-2.biz.near");
-    let ne = new_executor.clone();
-    w.owner(|c| c.rotate_executor(ne)).unwrap();
-    assert_eq!(w.attempt(stolen).status, AttemptStatus::Void);
-    assert_eq!(w.intent(i1).live_attempt, None);
-    assert_eq!(w.view(|c| c.get_budgets_today()).executor_trust.used, 0);
     expect_err(
-        w.call(&new_executor, zero(), Vec::new(), |c| c.fund_crosschain(stolen).detach()),
-        "ATTEMPT_NOT_AUTHORIZED",
+        w.create_attempt(id, 7, 2_100_000, now + DAY + 1),
+        "BAD_DEADLINE",
     );
-    // The new executor re-quotes into a fresh attempt for the same intent.
-    let deadline = w.now + 30 * MINUTE;
-    let fresh = w
-        .call(&new_executor, zero(), Vec::new(), |c| {
-            c.create_attempt_crosschain(i1, acc(DEPOSIT_2), U128(3 * USDC), U64(deadline), "q2".into())
-        })
+    expect_err(w.create_attempt(id, 7, 3_520_001, now + HOUR), "FEE_BOUND");
+    expect_err(w.create_attempt(id, 7, 1_979_999, now + HOUR), "FEE_BOUND");
+    // Circle's USDC id is itself 64-hex: it must never be accepted as a deposit account.
+    let usdc_bytes = crate::validate::parse_hex32(usdc().as_str()).unwrap();
+    let bad = w.call(&executor(), zero(), Vec::new(), Vec::new(), |c| {
+        c.create_attempt(id, usdc_bytes, 2_100_000, now + HOUR)
+    });
+    expect_err(bad, "BAD_DEPOSIT");
+    w.create_attempt(id, 7, 1_980_000, now + HOUR).unwrap();
+    w.create_attempt(id, 8, 3_520_000, now + HOUR).unwrap();
+}
+
+#[test]
+fn cooldown_crosschain_attempts_need_the_owner() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    w.update_supplier(tron, "TRON", TRON_USDT, TRON_RECIPIENT_2, 6)
         .unwrap();
+    let r = propose_ok(&mut w, 1, tron, T / 2);
+    assert_eq!(r.route, Route::SupplierCooldown);
+    w.decide(r.intent_id, "APPROVE").unwrap();
+    let deadline = w.now + HOUR;
+    w.create_attempt(r.intent_id, 7, 600_000, deadline).unwrap();
+    expect_err(w.fund(r.intent_id), "COOLDOWN_NEEDS_OWNER");
+    w.authorize(r.intent_id).unwrap();
+    w.fund(r.intent_id).unwrap();
+}
 
-    // Going hosted voids trust-budget attempts too, and blocks funding them.
-    w.owner(|c| c.set_hosted_mode(true)).unwrap();
-    assert_eq!(w.attempt(fresh).status, AttemptStatus::Void);
-    assert!(w.debits.is_empty(), "nothing the untrusted executor chose was ever paid");
+#[test]
+fn quote_deadline_margin_blocks_funding_and_authorization() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let id = crosschain_with_attempt(&mut w, tron, 1, 2 * T, 2_300_000, 7);
+    w.advance(HOUR - 2 * MINUTE); // inside the 3-minute margin
+    expect_err(w.fund(id), "QUOTE_TOO_CLOSE_TO_DEADLINE");
+    expect_err(w.authorize(id), "QUOTE_TOO_CLOSE_TO_DEADLINE");
+}
+
+#[test]
+fn executor_claims_a_refund_no_budget_restoration() {
+    let (mut w, _, tron) = standard_world(&test_policy());
+    let id = crosschain_with_attempt(&mut w, tron, 1, 2 * T, 2_300_000, 7);
+    w.fund(id).unwrap();
+    w.settle(id, true).unwrap();
+    let before = w.state().budgets;
+    // The swap is refunded: USDC comes back to the contract by plain transfer. Nothing on-chain
+    // gives budget back; only the owner can send the intent round again, and that is counted.
+    expect_err(
+        w.call(&executor(), zero(), Vec::new(), Vec::new(), |c| c.decide()),
+        "ONLY_OWNER",
+    );
+    w.decide(id, "RETRY").unwrap();
+    let i = w.intent(id);
+    assert_eq!((i.status, i.attempt), (Status::Approved, None));
+    assert_eq!(w.state().budgets, before);
+    let deadline = w.now + HOUR;
+    w.create_attempt(id, 8, 2_300_000, deadline).unwrap();
+    w.fund(id).unwrap();
+    assert_eq!(w.state().budgets.outflow, before.outflow + 2_300_000);
+}
+
+// ── Callbacks ──────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn stale_callback_after_a_retry_has_no_effect() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    let (_, first) = w.debits[0].callback.unwrap();
+    // The callback is late; after the grace time the owner marks it failed and retries.
+    expect_err(w.decide(id, "MARK_FAILED"), "NOT_STUCK");
+    w.advance(HOUR);
+    w.decide(id, "MARK_FAILED").unwrap();
+    w.decide(id, "RETRY").unwrap();
+    let (_, second) = w.debits[1].callback.unwrap();
+    assert_ne!(first, second);
+    // The late callback of the first transfer must not settle the second.
+    w.callback(id, first, true).unwrap();
+    assert_eq!(w.intent(id).status, Status::Paying);
+    assert!(w.logs.iter().any(|l| l == "CALLBACK_STALE"));
+    w.callback(id, second, true).unwrap();
+    assert_eq!(w.intent(id).status, Status::Paid);
+    assert_eq!(w.state().paying, 0);
+}
+
+#[test]
+fn a_lost_callback_can_only_be_settled_after_the_grace_time() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    let id = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    expect_err(w.decide(id, "MARK_PAID"), "NOT_STUCK");
+    expect_err(w.decide(id, "RETRY"), "NOT_RETRYABLE");
+    expect_err(
+        w.call(&owner(), one_yocto(), Vec::new(), Vec::new(), |c| {
+            c.upgrade()
+        }),
+        "PAYOUTS_IN_FLIGHT",
+    );
+    w.advance(HOUR);
+    w.decide(id, "MARK_PAID").unwrap();
+    assert_eq!((w.intent(id).status, w.state().paying), (Status::Paid, 0));
+}
+
+#[test]
+fn callbacks_never_panic() {
+    let (mut w, native, _) = standard_world(&test_policy());
+    w.callback(42, 0, true).unwrap();
+    let id = propose_ok(&mut w, 1, native, 10 * T).intent_id;
+    w.settle(id, true).unwrap();
+    w.settle(id, false).unwrap(); // a duplicate after settlement
+    assert_eq!(w.intent(id).status, Status::Paid);
+    let wrong = w.call(&contract_id(), zero(), Vec::new(), Vec::new(), |c| {
+        c.on_paid(id, 0)
+    });
+    assert!(wrong.is_ok());
+}
+
+// ── Quotas, storage and pause ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn authorized_agent_spam_hits_the_daily_quota_and_the_storage_cap() {
+    let mut p = test_policy();
+    p.max_proposals_per_day = 60;
+    let (mut w, native, _) = standard_world(&p);
+    for n in 0..MAX_STORED_INTENTS as u8 {
+        assert!(w.propose(n, native, 40 * T, 0).unwrap().accepted);
+    }
+    assert_eq!(
+        w.propose(200, native, 40 * T, 0).unwrap().reason,
+        Reason::StorageFull
+    );
+    for n in 0..9u8 {
+        w.propose(201 + n, native, 40 * T, 0).unwrap();
+    }
+    expect_err(w.propose(250, native, 40 * T, 0), "QUOTA_PROPOSALS");
+    assert_eq!(w.state().stored_intents, MAX_STORED_INTENTS);
+    w.advance(DAY);
+    assert_eq!(
+        w.propose(251, native, 40 * T, 0).unwrap().reason,
+        Reason::StorageFull,
+        "the cap holds across days"
+    );
+}
+
+#[test]
+fn pause_blocks_payments_but_not_exits() {
+    let (mut w, native, tron) = standard_world(&test_policy());
+    let pending = propose_ok(&mut w, 1, native, 40 * T).intent_id;
+    let cross = crosschain_with_attempt(&mut w, tron, 2, 2 * T, 2_300_000, 7);
+    let paying = propose_ok(&mut w, 3, native, 10 * T).intent_id;
+    w.set_paused(true).unwrap();
+    assert_eq!(w.propose(4, native, T, 0).unwrap().reason, Reason::Paused);
+    expect_err(w.decide(pending, "APPROVE"), "PAUSED");
+    expect_err(w.authorize(cross), "PAUSED");
+    expect_err(w.fund(cross), "PAUSED");
+    let deadline = w.now + HOUR;
+    expect_err(w.create_attempt(cross, 8, 2_300_000, deadline), "PAUSED");
+    // Still allowed: callbacks, rejections, withdrawals, admin.
+    w.settle(paying, true).unwrap();
+    w.decide(pending, "REJECT").unwrap();
+    w.owner_json(json!({ "amount": "1000000" }), |c| c.withdraw())
+        .unwrap();
+    assert_eq!(w.debits.last().unwrap().receiver, owner().to_string());
+    w.set_policy(&test_policy()).unwrap();
+}
+
+// ── Owner powers ───────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn non_owner_calls_upgrade_or_withdraw_rejected_and_owner_needs_one_yocto() {
+    let (mut w, _, _) = standard_world(&test_policy());
+    let amount = json!({ "amount": "1" }).to_string().into_bytes();
+    expect_err(
+        w.call(
+            &stranger(),
+            one_yocto(),
+            b"\0asm".to_vec(),
+            Vec::new(),
+            |c| c.upgrade(),
+        ),
+        "ONLY_OWNER",
+    );
+    expect_err(
+        w.call(&agent(), one_yocto(), amount.clone(), Vec::new(), |c| {
+            c.withdraw()
+        }),
+        "ONLY_OWNER",
+    );
+    expect_err(
+        w.call(&executor(), one_yocto(), amount.clone(), Vec::new(), |c| {
+            c.withdraw_near()
+        }),
+        "ONLY_OWNER",
+    );
+    expect_err(
+        w.call(&owner(), zero(), amount, Vec::new(), |c| c.withdraw()),
+        "Requires attached deposit of exactly 1 yoctoNEAR",
+    );
+    expect_err(
+        w.call(&owner(), one_yocto(), Vec::new(), Vec::new(), |c| {
+            c.upgrade()
+        }),
+        "NO_CODE",
+    );
+    w.call(
+        &owner(),
+        one_yocto(),
+        b"\0asm-new-code".to_vec(),
+        Vec::new(),
+        |c| c.upgrade(),
+    )
+    .unwrap();
+    assert_eq!(w.deploys, 1);
+}
+
+#[test]
+fn withdraw_near_keeps_storage_and_a_reserve() {
+    let (mut w, _, _) = standard_world(&test_policy());
+    // The mocked account holds 2 NEAR and a few hundred bytes of storage.
+    expect_err(
+        w.owner_json(json!({ "amount": "1960000000000000000000000" }), |c| {
+            c.withdraw_near()
+        }),
+        "NOT_ENOUGH_NEAR",
+    );
+    w.owner_json(json!({ "amount": "1000000000000000000000000" }), |c| {
+        c.withdraw_near()
+    })
+    .unwrap();
+    assert_eq!(
+        w.near_transfers,
+        vec![(owner().to_string(), 1_000_000_000_000_000_000_000_000)]
+    );
+}
+
+#[test]
+fn set_roles_keeps_roles_distinct() {
+    let (mut w, _, _) = standard_world(&test_policy());
+    expect_err(w.set_roles(&agent(), &agent()), "ROLES_MUST_DIFFER");
+    expect_err(w.set_roles(&owner(), &executor()), "ROLES_MUST_DIFFER");
+    expect_err(w.set_roles(&usdc(), &executor()), "BAD_ROLE");
+    expect_err(w.set_roles(&agent(), &contract_id()), "BAD_ROLE");
+    w.set_roles(&acc("agent-2.biz.near"), &executor()).unwrap();
+    assert_eq!(
+        w.state().executor_epoch,
+        0,
+        "a new agent alone does not bump the executor epoch"
+    );
 }

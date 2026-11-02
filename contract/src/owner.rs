@@ -1,628 +1,350 @@
-//! Owner methods (PLAN §4.1.4). Every one is `#[payable]` and requires exactly 1 yoctoNEAR plus the
-//! owner as caller, so it needs a full-access key and a wallet confirmation.
+//! Owner methods. Every one needs the owner's account and exactly 1 yoctoNEAR, which only a
+//! full-access key can attach, and both are checked before the arguments are read. Arguments are
+//! flat JSON, parsed strictly by `json.rs`, so the owner's wallet shows exactly what is signed.
 
-use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
-use near_sdk::{env, near, require, AccountId, NearToken, Promise, PromiseError};
+use near_sdk::{AccountId, NearToken, Promise, env, near, require};
 
-use crate::ledger::{CreditKind, Period};
+use crate::events::{Event, status_code};
+use crate::json::{self, Args};
 use crate::types::*;
-use crate::{
-    checked, events, hash, ledger_ok, validate, validate_policy, Contract, ContractExt,
-    GAS_FT_TRANSFER, GAS_TRANSFER_CALLBACK, MIN_GAS_FOR_FUNDING, NEAR_RESERVE, ONE_YOCTO,
-};
+use crate::validate::{ft_transfer_args, is_tron_format, parse_hex32, valid_asset_id};
+use crate::*;
 
 #[near]
 impl Contract {
     // ── Intents ────────────────────────────────────────────────────────────────────────────────
 
-    /// Approve a pending intent. `expected_intent_hash` must match what the owner was shown; the
-    /// rules are re-checked against current state and `max_in` is reserved.
+    /// `{intent_id, action, amount_out, supplier_id}`: the owner's decision on one intent.
+    /// `amount_out` and `supplier_id` must repeat the intent's terms, so what the wallet shows
+    /// is what is approved.
+    /// - APPROVE a pending intent (a native one is paid in this call);
+    /// - REJECT a pending or approved-unfunded one (its invoice stays blocked, D-07);
+    /// - RETRY a failed one, or a cross-chain one the swap refunded (budgets are charged again);
+    /// - MARK_PAID / MARK_FAILED a payout whose callback has not come back within the grace time.
     #[payable]
-    pub fn approve(&mut self, intent_id: IntentId, expected_intent_hash: String) {
+    pub fn decide(&mut self) {
         self.assert_owner_call();
-        self.assert_not_paused();
-        let now = env::block_timestamp();
-        let mut intent = self.load_intent(intent_id);
-        require!(intent.status == IntentStatus::Pending, "INTENT_NOT_PENDING");
-        require!(now < intent.terms.expires_at, "INTENT_EXPIRED");
-        let expected = hash::parse_hex32(&expected_intent_hash)
-            .unwrap_or_else(|| env::panic_str("BAD_HASH"));
-        require!(expected == intent.intent_hash, "INTENT_HASH_MISMATCH");
-        let mut supplier = self.load_supplier(intent.terms.supplier_id);
-        require!(supplier.revision == intent.terms.supplier_revision, "SUPPLIER_CHANGED");
-        self.commit_approval(&mut intent, &mut supplier, now)
-            .unwrap_or_else(|reason| env::panic_str(reason.code()));
-        self.suppliers.insert(supplier.id, supplier);
-        self.intents.insert(intent_id, intent);
-        events::emit("intent_approved", json!({ "intent_id": intent_id }));
-    }
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let intent_id = a.u64("intent_id");
+        let action = Action::parse(a.str("action"));
+        let amount_out = a.u128("amount_out");
+        let supplier_id = a.u32("supplier_id");
+        a.done();
 
-    /// Refuse a pending intent. Its obligation id stays blocked (D-07).
-    #[payable]
-    pub fn reject(&mut self, intent_id: IntentId) {
-        self.assert_owner_call();
-        let now = env::block_timestamp();
-        let mut intent = self.load_intent(intent_id);
-        require!(intent.status == IntentStatus::Pending, "INTENT_NOT_PENDING");
-        self.close_intent(&mut intent, IntentStatus::Rejected, now);
-        self.intents.insert(intent_id, intent);
-    }
-
-    /// Cancel a pending or approved (unfunded) intent and release its reservation.
-    #[payable]
-    pub fn cancel(&mut self, intent_id: IntentId) {
-        self.assert_owner_call();
         let now = env::block_timestamp();
         let mut intent = self.load_intent(intent_id);
         require!(
-            matches!(intent.status, IntentStatus::Pending | IntentStatus::Approved),
-            "INTENT_NOT_CANCELLABLE"
+            intent.amount_out == amount_out && intent.supplier_id == supplier_id,
+            "TERMS_MISMATCH"
         );
-        let mut supplier = self.suppliers.get(&intent.terms.supplier_id).cloned();
-        self.release_unfunded(&mut intent, supplier.as_mut(), now);
-        self.close_intent(&mut intent, IntentStatus::Cancelled, now);
-        if let Some(s) = supplier {
-            self.suppliers.insert(s.id, s);
-        }
-        self.intents.insert(intent_id, intent);
-    }
-
-    /// Replace an intent with a new pending one for the same obligation (for example a corrected
-    /// invoice amount). An open original is cancelled. The new intent snapshots the supplier as it
-    /// is now and always needs approval. Returns the new intent id.
-    #[payable]
-    pub fn amend_intent(&mut self, intent_id: IntentId, amount_out: U128) -> IntentId {
-        self.assert_owner_call();
-        let now = env::block_timestamp();
-        let amount_out = amount_out.0;
-        require!(amount_out > 0 && amount_out <= MAX_AMOUNT, "BAD_AMOUNT");
-        let mut old = self.load_intent(intent_id);
-        require!(
-            !matches!(old.status, IntentStatus::Funding | IntentStatus::Done),
-            "INTENT_NOT_AMENDABLE"
-        );
-        let obligation_id = old.terms.obligation_id;
-        require!(
-            self.obligations.get(&obligation_id) == Some(&intent_id),
-            "NOT_LATEST_FOR_OBLIGATION"
-        );
-        if old.status.is_open() {
-            let mut supplier = self.suppliers.get(&old.terms.supplier_id).cloned();
-            self.release_unfunded(&mut old, supplier.as_mut(), now);
-            self.close_intent(&mut old, IntentStatus::Cancelled, now);
-            if let Some(s) = supplier {
-                self.suppliers.insert(s.id, s);
-            }
-            self.intents.insert(intent_id, old.clone());
-        }
-        require!(self.open_intents.len() < self.policy.max_open_intents, "QUOTA_OPEN_INTENTS");
-
-        let supplier = self.load_supplier(old.terms.supplier_id);
-        require!(supplier.active, "INACTIVE_SUPPLIER");
-        let asset = self
-            .assets
-            .get(&supplier.asset_id)
-            .filter(|a| a.enabled)
-            .cloned()
-            .unwrap_or_else(|| env::panic_str("ASSET_DISABLED"));
-        let kind = self.payout_kind(&supplier);
-        let value = validate::to_treasury_units(amount_out, asset.decimals, self.treasury_decimals)
-            .filter(|v| *v <= MAX_AMOUNT)
-            .unwrap_or_else(|| env::panic_str("BAD_AMOUNT"));
-        let max_in = checked(validate::max_in(kind, value, self.policy.max_fee_bps, asset.max_fixed_fee));
-        let test_payment = self.in_cooldown(&supplier, now);
-        require!(!test_payment || value <= self.policy.test_payment_max, "SUPPLIER_COOLDOWN");
-
-        let id = self.next_intent_id;
-        self.next_intent_id += 1;
-        let terms = IntentTerms {
-            id,
-            obligation_id,
-            supplier_id: supplier.id,
-            supplier_revision: supplier.revision,
-            chain: supplier.chain,
-            asset_id: supplier.asset_id.clone(),
-            recipient: supplier.recipient.clone(),
-            kind,
-            amount_out,
-            value,
-            max_in,
-            created_at: now,
-            expires_at: now.saturating_add(self.policy.intent_ttl_ns),
-            route: Route::NeedsApproval(ApprovalReason::OwnerAmended),
-            review_flag: None,
-            test_payment,
-        };
-        let intent_hash = hash::intent_hash(&env::current_account_id(), &terms);
-        self.intents.insert(
-            id,
-            Intent {
-                terms,
-                intent_hash,
-                status: IntentStatus::Pending,
-                reserved: 0,
-                live_attempt: None,
-                attempt_ids: Vec::new(),
-                approved_at: None,
-                updated_at: now,
-            },
-        );
-        self.obligations.insert(obligation_id, id);
-        self.open_intents.insert(id);
-        events::emit(
-            "intent_amended",
-            json!({ "old_intent_id": intent_id, "intent_id": id, "intent_hash": hash::to_hex(&intent_hash) }),
-        );
-        id
-    }
-
-    // ── Attempts ───────────────────────────────────────────────────────────────────────────────
-
-    /// Sign off an attempt that needs the owner (cross-chain above the trust budget, or a test
-    /// payment). `expected_attempt_hash` must match the attempt the owner checked.
-    #[payable]
-    pub fn authorize_attempt(&mut self, attempt_id: AttemptId, expected_attempt_hash: String) {
-        self.assert_owner_call();
-        self.assert_not_paused();
-        let now = env::block_timestamp();
-        let mut attempt = self.load_attempt(attempt_id);
-        require!(attempt.status == AttemptStatus::AwaitingOwner, "ATTEMPT_NOT_AWAITING_OWNER");
-        let expected = hash::parse_hex32(&expected_attempt_hash)
-            .unwrap_or_else(|| env::panic_str("BAD_HASH"));
-        require!(expected == attempt.attempt_hash, "ATTEMPT_HASH_MISMATCH");
-        let intent = self.load_intent(attempt.terms.intent_id);
-        require!(
-            intent.status == IntentStatus::Approved && intent.live_attempt == Some(attempt_id),
-            "INTENT_NOT_FUNDABLE"
-        );
-        if let Some(deadline) = attempt.terms.quote_deadline {
-            require!(
-                now.saturating_add(self.policy.funding_margin_ns) <= deadline,
-                "QUOTE_TOO_CLOSE_TO_DEADLINE"
-            );
-        }
-        attempt.status = AttemptStatus::Authorized;
-        attempt.authorization = AttemptAuth::OwnerSigned;
-        attempt.updated_at = now;
-        self.attempts.insert(attempt_id, attempt);
-        events::emit("attempt_authorized", json!({ "attempt_id": attempt_id }));
-    }
-
-    /// Rule on an attempt in `NeedsReconciliation` (D-09). Works while paused.
-    #[payable]
-    pub fn resolve_reconciliation(&mut self, attempt_id: AttemptId, outcome: ReconcileOutcome) {
-        self.assert_owner_call();
-        let now = env::block_timestamp();
-        let mut attempt = self.load_attempt(attempt_id);
-        require!(
-            attempt.status == AttemptStatus::NeedsReconciliation,
-            "ATTEMPT_NOT_IN_RECONCILIATION"
-        );
-        let kind = attempt.terms.kind;
-        match outcome {
-            ReconcileOutcome::NotSent => {
-                require!(!attempt.transfer_confirmed, "TRANSFER_ALREADY_CONFIRMED");
-                self.apply_transfer_failed(&mut attempt, now)
-                    .unwrap_or_else(|code| env::panic_str(code));
-            }
-            ReconcileOutcome::Sent => {
-                if attempt.transfer_confirmed {
-                    attempt.status = AttemptStatus::Funded;
-                    attempt.updated_at = now;
-                    self.attempts.insert(attempt_id, attempt);
+        match action {
+            Action::Approve => {
+                require!(intent.status == Status::Pending, "NOT_PENDING");
+                require!(!self.expired(&intent, now), "INTENT_EXPIRED");
+                let supplier = self.load_supplier(intent.supplier_id);
+                self.check_owner_payable(&intent, &supplier, now);
+                if self.is_native(&supplier) {
+                    self.start_payout(intent_id, &mut intent, &supplier, now);
                 } else {
-                    self.apply_transfer_sent(&mut attempt, now)
-                        .unwrap_or_else(|code| env::panic_str(code));
+                    intent.status = Status::Approved;
+                    intent.since = now;
+                    write(&intent_key(intent_id), &intent);
                 }
             }
-            ReconcileOutcome::Delivered { delivered_amount, dest_tx } => {
-                require!(validate::validate_ref(&dest_tx, MAX_TX_REF_LEN), "BAD_DEST_TX");
-                require!(delivered_amount <= MAX_AMOUNT, "BAD_AMOUNT");
-                if !attempt.transfer_confirmed {
-                    self.apply_transfer_sent(&mut attempt, now)
-                        .unwrap_or_else(|code| env::panic_str(code));
-                }
-                if kind == PayoutKind::CrossChain {
-                    self.mark_delivered(&mut attempt, delivered_amount, dest_tx, now);
+            Action::Reject => {
+                require!(
+                    matches!(intent.status, Status::Pending | Status::Approved),
+                    "NOT_REJECTABLE"
+                );
+                intent.status = Status::Rejected;
+                intent.since = now;
+                write(&intent_key(intent_id), &intent);
+            }
+            Action::Retry => {
+                let supplier = self.load_supplier(intent.supplier_id);
+                let native = self.is_native(&supplier);
+                require!(
+                    intent.status == Status::Failed || (intent.status == Status::Paid && !native),
+                    "NOT_RETRYABLE"
+                );
+                self.check_owner_payable(&intent, &supplier, now);
+                intent.since = now;
+                if native {
+                    self.start_payout(intent_id, &mut intent, &supplier, now);
+                } else {
+                    intent.status = Status::Approved;
+                    intent.attempt = None;
+                    write(&intent_key(intent_id), &intent);
                 }
             }
-            ReconcileOutcome::SwapFailed => {
-                require!(kind == PayoutKind::CrossChain, "NOT_CROSSCHAIN");
-                if !attempt.transfer_confirmed {
-                    self.apply_transfer_sent(&mut attempt, now)
-                        .unwrap_or_else(|code| env::panic_str(code));
-                }
-                self.mark_swap_failed(&mut attempt, now);
+            Action::MarkPaid | Action::MarkFailed => {
+                require!(
+                    intent.status == Status::Paying
+                        && now >= intent.since.saturating_add(self.policy.callback_grace_ns),
+                    "NOT_STUCK"
+                );
+                intent.status = if action == Action::MarkPaid {
+                    Status::Paid
+                } else {
+                    Status::Failed
+                };
+                intent.since = now;
+                self.paying = checked(self.paying.checked_sub(1));
+                write(&intent_key(intent_id), &intent);
             }
         }
-        events::emit("attempt_resolved", json!({ "attempt_id": attempt_id }));
+        Event::new()
+            .num("intent_id", intent_id.into())
+            .text("status", status_code(intent.status))
+            .emit("intent_decided");
     }
 
-    /// Recognise USDC that arrived by plain transfer: top-ups, refunds and returned change for an
-    /// attempt, or unattributed inflow. Never restores budgets (F-02). At most 20 entries.
+    /// `{intent_id, deposit, amount_in}`: signs for exactly this 1Click deposit and amount on an
+    /// approved cross-chain intent. If the executor re-quoted since the owner looked, the terms
+    /// differ and this fails.
     #[payable]
-    pub fn reconcile_inflows(&mut self, entries: Vec<InflowEntry>) {
+    pub fn authorize(&mut self) {
         self.assert_owner_call();
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let intent_id = a.u64("intent_id");
+        let deposit =
+            parse_hex32(a.str("deposit")).unwrap_or_else(|| env::panic_str("BAD_DEPOSIT"));
+        let amount_in = a.u128("amount_in");
+        a.done();
+
+        require!(!self.paused, "PAUSED");
+        let now = env::block_timestamp();
+        let mut intent = self.load_intent(intent_id);
+        require!(intent.status == Status::Approved, "INTENT_NOT_APPROVED");
+        let margin = self.policy.funding_margin_ns;
+        let attempt = intent
+            .attempt
+            .as_mut()
+            .unwrap_or_else(|| env::panic_str("NO_ATTEMPT"));
         require!(
-            !entries.is_empty() && entries.len() <= MAX_RECONCILE_ENTRIES,
-            "BAD_ENTRY_COUNT"
+            attempt.deposit == deposit && attempt.amount_in == amount_in,
+            "TERMS_MISMATCH"
         );
-        for entry in entries {
-            require!(entry.amount > 0 && entry.amount <= MAX_AMOUNT, "BAD_AMOUNT");
-            match entry.attribution {
-                InflowAttribution::TopUp => ledger_ok(self.ledger.credit(entry.amount, CreditKind::TopUp)),
-                InflowAttribution::Unattributed => {
-                    ledger_ok(self.ledger.credit(entry.amount, CreditKind::Unattributed))
-                }
-                InflowAttribution::AttemptReturn { attempt_id } => {
-                    let mut attempt = self.load_attempt(attempt_id);
-                    require!(attempt.terms.kind == PayoutKind::CrossChain, "NOT_CROSSCHAIN");
-                    require!(attempt.transfer_confirmed, "ATTEMPT_FUNDS_NOT_SENT");
-                    let total = checked(attempt.returned_amount.checked_add(entry.amount));
-                    require!(total <= attempt.terms.amount_in, "RETURN_EXCEEDS_AMOUNT_IN");
-                    attempt.returned_amount = total;
-                    attempt.updated_at = env::block_timestamp();
-                    self.attempts.insert(attempt_id, attempt);
-                    ledger_ok(self.ledger.credit(entry.amount, CreditKind::Return));
-                }
-            }
-            events::emit(
-                "inflow_reconciled",
-                json!({ "amount": entry.amount.to_string(), "attribution": entry.attribution }),
-            );
-        }
-    }
-
-    // ── Assets and suppliers ───────────────────────────────────────────────────────────────────
-
-    #[payable]
-    pub fn add_asset(&mut self, asset_id: String, chain: Chain, decimals: u8, max_fixed_fee: U128) {
-        self.assert_owner_call();
-        validate::validate_asset_id(&asset_id).unwrap_or_else(|code| env::panic_str(code));
-        require!(!self.assets.contains_key(&asset_id), "ASSET_EXISTS");
-        require!(self.assets.len() < MAX_ASSETS, "TOO_MANY_ASSETS");
-        require!(decimals <= 24, "BAD_DECIMALS");
-        require!(max_fixed_fee.0 <= MAX_AMOUNT, "BAD_AMOUNT");
-        self.assets.insert(
-            asset_id.clone(),
-            AssetInfo { chain, decimals, max_fixed_fee: max_fixed_fee.0, enabled: true },
+        require!(
+            now.saturating_add(margin) <= attempt.deadline,
+            "QUOTE_TOO_CLOSE_TO_DEADLINE"
         );
-        events::emit("asset_added", json!({ "asset_id": asset_id, "chain": chain }));
+        attempt.authorized = true;
+        write(&intent_key(intent_id), &intent);
+        Event::new()
+            .num("intent_id", intent_id.into())
+            .emit("attempt_authorized");
     }
 
-    #[payable]
-    pub fn set_asset(&mut self, asset_id: String, max_fixed_fee: U128, enabled: bool) {
-        self.assert_owner_call();
-        require!(max_fixed_fee.0 <= MAX_AMOUNT, "BAD_AMOUNT");
-        let mut asset = self
-            .assets
-            .get(&asset_id)
-            .cloned()
-            .unwrap_or_else(|| env::panic_str("UNKNOWN_ASSET"));
-        asset.max_fixed_fee = max_fixed_fee.0;
-        asset.enabled = enabled;
-        self.assets.insert(asset_id.clone(), asset);
-        events::emit("asset_updated", json!({ "asset_id": asset_id, "enabled": enabled }));
-    }
+    // ── Suppliers ──────────────────────────────────────────────────────────────────────────────
 
-    /// Add a supplier. It starts unverified, in cooldown (test payments only).
+    /// `{chain, asset_id, recipient, decimals}`: adds a supplier; its cooldown starts now.
+    /// Returns the id (Borsh u32).
     #[payable]
-    pub fn add_supplier(
-        &mut self,
-        chain: Chain,
-        asset_id: String,
-        recipient: String,
-        per_payment_cap: U128,
-        monthly_cap: U128,
-    ) -> SupplierId {
+    #[result_serializer(borsh)]
+    pub fn add_supplier(&mut self) -> SupplierId {
         self.assert_owner_call();
-        require!(self.suppliers.len() < MAX_SUPPLIERS, "TOO_MANY_SUPPLIERS");
-        self.check_destination(chain, &asset_id, &recipient);
-        check_caps(per_payment_cap.0, monthly_cap.0);
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let supplier = self.supplier_from(&mut a, 1);
+        a.done();
         let id = self.next_supplier_id;
-        self.next_supplier_id += 1;
-        let supplier = Supplier {
-            id,
-            revision: 1,
-            chain,
-            asset_id,
-            recipient,
-            per_payment_cap: per_payment_cap.0,
-            monthly_cap: monthly_cap.0,
-            changed_at: env::block_timestamp(),
-            verified: false,
-            active: true,
-            reserved_out: 0,
-            month_out: Default::default(),
-            unverified_committed: 0,
-        };
-        self.suppliers.insert(id, supplier);
-        events::emit("supplier_added", json!({ "supplier_id": id, "chain": chain }));
+        self.next_supplier_id = checked(id.checked_add(1));
+        write(&supplier_key(id), &supplier);
+        Event::new()
+            .num("supplier_id", id.into())
+            .num("revision", 1)
+            .emit("supplier_added");
         id
     }
 
-    /// Change a supplier's destination: bumps the revision, restarts the cooldown, clears
-    /// verification, and invalidates every open, unfunded intent for it (D-06).
+    /// `{supplier_id, chain, asset_id, recipient, decimals}`: changes where a supplier is paid.
+    /// Bumps the revision (open intents for the old terms can no longer pay) and restarts the
+    /// cooldown.
     #[payable]
-    pub fn update_supplier(&mut self, supplier_id: SupplierId, chain: Chain, asset_id: String, recipient: String) {
+    pub fn update_supplier(&mut self) {
         self.assert_owner_call();
-        let now = env::block_timestamp();
-        let mut supplier = self.load_supplier(supplier_id);
-        self.check_destination(chain, &asset_id, &recipient);
-
-        let open: Vec<IntentId> = self.open_intents.iter().copied().collect();
-        let mut invalidated = 0u32;
-        for id in open {
-            let mut intent = self.load_intent(id);
-            if intent.terms.supplier_id != supplier_id
-                || !matches!(intent.status, IntentStatus::Pending | IntentStatus::Approved)
-            {
-                continue;
-            }
-            self.release_unfunded(&mut intent, Some(&mut supplier), now);
-            self.close_intent(&mut intent, IntentStatus::Invalidated, now);
-            self.intents.insert(id, intent);
-            invalidated += 1;
-        }
-
-        supplier.revision = checked(supplier.revision.checked_add(1));
-        supplier.chain = chain;
-        supplier.asset_id = asset_id;
-        supplier.recipient = recipient;
-        supplier.changed_at = now;
-        supplier.verified = false;
-        supplier.unverified_committed = 0;
-        let revision = supplier.revision;
-        self.suppliers.insert(supplier_id, supplier);
-        events::emit(
-            "supplier_updated",
-            json!({ "supplier_id": supplier_id, "revision": revision, "invalidated_intents": invalidated }),
-        );
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let supplier_id = a.u32("supplier_id");
+        let old = self.load_supplier(supplier_id);
+        let mut supplier = self.supplier_from(&mut a, checked(old.revision.checked_add(1)));
+        a.done();
+        supplier.active = old.active;
+        write(&supplier_key(supplier_id), &supplier);
+        Event::new()
+            .num("supplier_id", supplier_id.into())
+            .num("revision", supplier.revision.into())
+            .emit("supplier_updated");
     }
 
-    /// Change a supplier's caps. Caps are not part of intent terms, so nothing is invalidated.
+    /// `{supplier_id, active}`.
     #[payable]
-    pub fn set_supplier_caps(&mut self, supplier_id: SupplierId, per_payment_cap: U128, monthly_cap: U128) {
+    pub fn set_supplier_active(&mut self) {
         self.assert_owner_call();
-        check_caps(per_payment_cap.0, monthly_cap.0);
-        let mut supplier = self.load_supplier(supplier_id);
-        supplier.per_payment_cap = per_payment_cap.0;
-        supplier.monthly_cap = monthly_cap.0;
-        self.suppliers.insert(supplier_id, supplier);
-        events::emit("supplier_caps_updated", json!({ "supplier_id": supplier_id }));
-    }
-
-    /// Mark a supplier verified after it confirmed a test payment over a previously established
-    /// channel. Bound to `revision` so a newer destination is never verified by mistake.
-    /// Verification does not end the cooldown.
-    #[payable]
-    pub fn verify_supplier(&mut self, supplier_id: SupplierId, revision: u32) {
-        self.assert_owner_call();
-        let mut supplier = self.load_supplier(supplier_id);
-        require!(supplier.revision == revision, "REVISION_MISMATCH");
-        supplier.verified = true;
-        self.suppliers.insert(supplier_id, supplier);
-        events::emit("supplier_verified", json!({ "supplier_id": supplier_id, "revision": revision }));
-    }
-
-    /// Activate or deactivate a supplier. Inactive suppliers get no proposals and no funding.
-    #[payable]
-    pub fn set_supplier_active(&mut self, supplier_id: SupplierId, active: bool) {
-        self.assert_owner_call();
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let supplier_id = a.u32("supplier_id");
+        let active = a.bool("active");
+        a.done();
         let mut supplier = self.load_supplier(supplier_id);
         supplier.active = active;
-        self.suppliers.insert(supplier_id, supplier);
-        events::emit("supplier_active", json!({ "supplier_id": supplier_id, "active": active }));
+        write(&supplier_key(supplier_id), &supplier);
+        Event::new()
+            .num("supplier_id", supplier_id.into())
+            .num("active", active.into())
+            .emit("supplier_active");
     }
 
-    // ── Policy and control ─────────────────────────────────────────────────────────────────────
+    // ── Policy, pause, roles ───────────────────────────────────────────────────────────────────
 
-    /// Replace the policy. Refuses a non-zero executor-trust budget while hosted.
+    /// The policy's fields, flat (see `Policy`).
     #[payable]
-    pub fn set_policy(&mut self, policy: Policy) {
+    pub fn set_policy(&mut self) {
         self.assert_owner_call();
-        validate_policy(&policy, self.hosted_mode);
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let policy = Policy::from_args(&mut a);
+        a.done();
+        validate_policy(&policy);
         self.policy = policy;
-        events::emit("policy_updated", json!({}));
+        Event::new().emit("policy_updated");
     }
 
-    /// Switch between hosted (trust budget forced to 0) and self-hosted mode. Entering hosted mode
-    /// voids every unfunded attempt authorised under the trust budget (D-19).
+    /// `{paused}`.
     #[payable]
-    pub fn set_hosted_mode(&mut self, hosted_mode: bool) {
+    pub fn set_paused(&mut self) {
         self.assert_owner_call();
-        self.hosted_mode = hosted_mode;
-        let mut voided = 0;
-        if hosted_mode {
-            self.policy.executor_trust_daily_budget = 0;
-            voided = self.void_trust_attempts(env::block_timestamp());
-        }
-        events::emit("hosted_mode", json!({ "hosted_mode": hosted_mode, "voided_attempts": voided }));
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let paused = a.bool("paused");
+        a.done();
+        self.paused = paused;
+        Event::new().num("paused", paused.into()).emit("paused");
     }
 
-    /// Blocks proposals, approvals, attempt creation and funding. Callbacks, reconciliation,
-    /// withdrawals and views keep working; funds already in settlement cannot be recalled.
+    /// `{agent_id, executor_id}`: replaces the agent and/or executor. A new executor bumps the
+    /// epoch, so attempts the old one created can no longer be funded from the trust budget
+    /// (D-19).
     #[payable]
-    pub fn pause(&mut self) {
+    pub fn set_roles(&mut self) {
         self.assert_owner_call();
-        self.paused = true;
-        events::emit("paused", json!({}));
-    }
-
-    #[payable]
-    pub fn unpause(&mut self) {
-        self.assert_owner_call();
-        self.paused = false;
-        events::emit("unpaused", json!({}));
-    }
-
-    #[payable]
-    pub fn rotate_agent(&mut self, new_agent_id: AccountId) {
-        self.assert_owner_call();
-        self.check_role_account(&new_agent_id);
-        require!(new_agent_id != self.executor_id, "ROLES_MUST_DIFFER");
-        self.agent_id = new_agent_id.clone();
-        events::emit("agent_rotated", json!({ "agent_id": new_agent_id }));
-    }
-
-    /// Replace the executor. Unfunded attempts the old executor authorised under the trust budget
-    /// are voided: their deposit accounts were chosen by a key the owner no longer trusts (D-19).
-    #[payable]
-    pub fn rotate_executor(&mut self, new_executor_id: AccountId) {
-        self.assert_owner_call();
-        self.check_role_account(&new_executor_id);
-        require!(new_executor_id != self.agent_id, "ROLES_MUST_DIFFER");
-        self.executor_id = new_executor_id.clone();
-        let voided = self.void_trust_attempts(env::block_timestamp());
-        events::emit(
-            "executor_rotated",
-            json!({ "executor_id": new_executor_id, "voided_attempts": voided }),
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let agent_id = a.account("agent_id");
+        let executor_id = a.account("executor_id");
+        a.done();
+        require!(
+            agent_id != executor_id && agent_id != self.owner_id && executor_id != self.owner_id,
+            "ROLES_MUST_DIFFER"
         );
+        let me = env::current_account_id();
+        require!(
+            agent_id != me
+                && executor_id != me
+                && agent_id != self.token_id
+                && executor_id != self.token_id,
+            "BAD_ROLE"
+        );
+        if executor_id != self.executor_id {
+            self.executor_epoch = checked(self.executor_epoch.checked_add(1));
+        }
+        self.agent_id = agent_id;
+        self.executor_id = executor_id;
+        Event::new()
+            .text("agent_id", self.agent_id.as_str())
+            .text("executor_id", self.executor_id.as_str())
+            .num("executor_epoch", self.executor_epoch.into())
+            .emit("roles_updated");
     }
 
-    // ── Withdrawals ────────────────────────────────────────────────────────────────────────────
+    // ── Withdrawals (not blocked by pause: the owner can always take the money back) ────────────
 
-    /// Withdraw unreserved USDC to the owner. Not blocked by pause: the owner can always exit.
+    /// `{amount}` of the treasury token to the owner.
     #[payable]
-    pub fn withdraw(&mut self, amount: U128) -> Promise {
+    pub fn withdraw(&mut self) {
         self.assert_owner_call();
-        require!(env::prepaid_gas() >= MIN_GAS_FOR_FUNDING, "NOT_ENOUGH_GAS");
-        require!(amount.0 > 0, "BAD_AMOUNT");
-        ledger_ok(self.ledger.begin_withdraw(amount.0));
-        events::emit("withdraw", json!({ "amount": amount.0.to_string() }));
-        let args = json!({
-            "receiver_id": self.owner_id,
-            "amount": amount.0.to_string(),
-            "memo": "getleash withdraw",
-        });
-        Promise::new(self.treasury_token.clone())
-            .function_call("ft_transfer", args.to_string().into_bytes(), ONE_YOCTO, GAS_FT_TRANSFER)
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(GAS_TRANSFER_CALLBACK)
-                    .on_withdraw_complete(amount),
+        let amount = Self::amount_arg();
+        Event::new().amount("amount", amount).emit("withdraw");
+        Promise::new(self.token_id.clone())
+            .function_call(
+                "ft_transfer",
+                ft_transfer_args(self.owner_id.as_str(), amount),
+                ONE_YOCTO,
+                GAS_FT_TRANSFER,
             )
+            .detach();
     }
 
-    /// Restores `cash` if the withdrawal transfer provably failed. Never panics.
-    #[private]
-    pub fn on_withdraw_complete(&mut self, amount: U128) {
-        if env::promise_results_count() != 1 {
-            env::log_str("CALLBACK_UNEXPECTED_RESULTS");
-            return;
-        }
-        if matches!(env::promise_result_checked(0, 64), Err(PromiseError::Failed)) {
-            match self.ledger.fail_withdraw(amount.0) {
-                Ok(()) => events::emit("withdraw_failed", json!({ "amount": amount.0.to_string() })),
-                Err(e) => env::log_str(&format!("CALLBACK_DEFERRED:{}", e.code())),
-            }
-        }
-    }
-
-    /// Withdraw NEAR above storage staking and a small reserve.
+    /// `{amount}` of NEAR above storage staking and a small reserve.
     #[payable]
-    pub fn withdraw_near(&mut self, amount: U128) -> Promise {
+    pub fn withdraw_near(&mut self) {
         self.assert_owner_call();
+        let amount = Self::amount_arg();
         let storage = env::storage_byte_cost().saturating_mul(u128::from(env::storage_usage()));
-        let free = env::account_balance().saturating_sub(storage).saturating_sub(NEAR_RESERVE);
-        require!(amount.0 > 0 && amount.0 <= free.as_yoctonear(), "NOT_ENOUGH_NEAR");
-        events::emit("withdraw_near", json!({ "amount": amount.0.to_string() }));
-        Promise::new(self.owner_id.clone()).transfer(NearToken::from_yoctonear(amount.0))
+        let free = env::account_balance()
+            .saturating_sub(storage)
+            .saturating_sub(NEAR_RESERVE);
+        require!(amount <= free.as_yoctonear(), "NOT_ENOUGH_NEAR");
+        Event::new().amount("amount", amount).emit("withdraw_near");
+        Promise::new(self.owner_id.clone())
+            .transfer(NearToken::from_yoctonear(amount))
+            .detach();
     }
-}
-
-fn check_caps(per_payment_cap: u128, monthly_cap: u128) {
-    require!(
-        per_payment_cap > 0 && monthly_cap > 0 && per_payment_cap <= MAX_AMOUNT && monthly_cap <= MAX_AMOUNT,
-        "BAD_CAPS"
-    );
 }
 
 impl Contract {
-    /// The asset must exist on the supplier's chain, and the recipient must be valid for it. A NEAR
-    /// recipient may not be this contract, the treasury token, the agent or the executor.
-    fn check_destination(&self, chain: Chain, asset_id: &str, recipient: &str) {
-        let asset = self
-            .assets
-            .get(asset_id)
-            .unwrap_or_else(|| env::panic_str("UNKNOWN_ASSET"));
-        require!(asset.chain == chain, "ASSET_CHAIN_MISMATCH");
-        validate::validate_recipient(chain, recipient).unwrap_or_else(|code| env::panic_str(code));
-        if chain == Chain::Near {
-            let blocked = [
-                env::current_account_id(),
-                self.treasury_token.clone(),
-                self.agent_id.clone(),
-                self.executor_id.clone(),
-            ];
-            require!(blocked.iter().all(|a| a.as_str() != recipient), "BAD_RECIPIENT");
+    fn amount_arg() -> u128 {
+        let input = json::input();
+        let mut a = Args::parse(&input);
+        let amount = a.u128("amount");
+        a.done();
+        require!(amount > 0, "BAD_AMOUNT");
+        amount
+    }
+
+    /// APPROVE and RETRY: not paused, supplier active at the intent's revision, and during the
+    /// cooldown at most `cooldown_max` (a test payment), even for the owner.
+    fn check_owner_payable(&self, intent: &Intent, supplier: &Supplier, now: u64) {
+        require!(!self.paused, "PAUSED");
+        require!(supplier.active, "INACTIVE_SUPPLIER");
+        require!(supplier.revision == intent.revision, "SUPPLIER_CHANGED");
+        if self.in_cooldown(supplier, now) {
+            require!(
+                intent.value <= self.policy.cooldown_max,
+                "OVER_COOLDOWN_MAX"
+            );
         }
     }
 
-    fn check_role_account(&self, account: &AccountId) {
-        require!(
-            *account != self.owner_id
-                && *account != env::current_account_id()
-                && *account != self.treasury_token,
-            "BAD_ROLE_ACCOUNT"
-        );
-    }
-
-    /// Owner-resolved swap failure: the deposit left but delivery failed. The money is out of
-    /// flight (it comes back through `reconcile_inflows`); the charge stays (F-02). The intent is
-    /// re-reserved for a retry if the rules still allow it, otherwise it needs approval again.
-    fn mark_swap_failed(&mut self, attempt: &mut Attempt, now: u64) {
-        let mut intent = self.load_intent(attempt.terms.intent_id);
-        ledger_ok(self.ledger.land(attempt.terms.amount_in));
-        attempt.status = AttemptStatus::SwapFailed;
-        attempt.updated_at = now;
-        intent.live_attempt = None;
-        intent.updated_at = now;
-        match self.suppliers.get(&intent.terms.supplier_id).cloned() {
-            Some(mut supplier) if supplier.revision == intent.terms.supplier_revision => {
-                intent.status = IntentStatus::Pending;
-                intent.approved_at = None;
-                if self.commit_approval(&mut intent, &mut supplier, now).is_ok() {
-                    self.suppliers.insert(supplier.id, supplier);
+    /// Reads and checks a destination: NEAR suppliers get a real account that is not this
+    /// contract, the token or a role; Tron suppliers a Tron-shaped address; native suppliers use
+    /// the token's decimals, so the amount counted is the amount sent.
+    fn supplier_from(&self, a: &mut Args, revision: u32) -> Supplier {
+        let s = Supplier {
+            chain: Chain::parse(a.str("chain")),
+            asset_id: a.string("asset_id"),
+            recipient: a.string("recipient"),
+            decimals: a.u8("decimals"),
+            active: true,
+            revision,
+            changed_at: env::block_timestamp(),
+        };
+        require!(valid_asset_id(&s.asset_id), "BAD_ASSET_ID");
+        require!(s.decimals <= 24, "BAD_DECIMALS");
+        match s.chain {
+            Chain::Near => {
+                let ok = s.recipient.parse::<AccountId>().is_ok()
+                    && self.is_outside_account(&s.recipient);
+                require!(ok, "BAD_NEAR_RECIPIENT");
+                if self.is_native(&s) {
+                    require!(s.decimals == self.token_decimals, "NATIVE_DECIMALS");
                 }
             }
-            _ => {
-                intent.status = IntentStatus::Pending;
-                self.close_intent(&mut intent, IntentStatus::Invalidated, now);
-            }
+            Chain::Tron => require!(is_tron_format(&s.recipient), "BAD_TRON_RECIPIENT"),
         }
-        events::emit(
-            "attempt_swap_failed",
-            json!({ "attempt_id": attempt.terms.id, "intent_status": intent.status }),
-        );
-        self.attempts.insert(attempt.terms.id, attempt.clone());
-        self.intents.insert(intent.terms.id, intent);
-    }
-
-    /// Voids every unfunded attempt authorised under the executor-trust budget. Bounded by the
-    /// open-intent cap. Returns how many were voided.
-    fn void_trust_attempts(&mut self, now: u64) -> u32 {
-        let open: Vec<IntentId> = self.open_intents.iter().copied().collect();
-        let mut voided = 0;
-        for id in open {
-            let mut intent = self.load_intent(id);
-            let Some(attempt_id) = intent.live_attempt else { continue };
-            let mut attempt = self.load_attempt(attempt_id);
-            if attempt.authorization == AttemptAuth::TrustBudget && attempt.status == AttemptStatus::Authorized {
-                self.void_attempt(&mut attempt, now);
-                self.attempts.insert(attempt_id, attempt);
-                intent.live_attempt = None;
-                intent.updated_at = now;
-                self.intents.insert(id, intent);
-                voided += 1;
-            }
-        }
-        voided
-    }
-
-    /// Sums used in views.
-    pub(crate) fn period_now(&self) -> Period {
-        Period::at(env::block_timestamp())
+        s
     }
 }
