@@ -2,6 +2,11 @@
 
 > Source of truth for this repository. Implementation notes and deliberate deviations are recorded in
 > [`docs/decisions.md`](decisions.md); facts checked against live docs are in [`docs/verified-facts.md`](verified-facts.md).
+>
+> **2 Nov 2026: the contract follows decisions.md D-28 ("lean contract v2") wherever §3–§4 below differ.** To fit
+> a ~1.5 NEAR mainnet budget, v2 keeps custody, allowlist, budgets, invoice dedupe, cooldown, executor-trust bound
+> and pause on-chain, and moves the ledger, reconciliation, listings and term hashes off-chain. `docs/audit-response.md`
+> maps every §9 row to its v2 defence and test.
 
 **An AI agent that pays a business's suppliers across chains, under on-chain rules it cannot break.**
 *Give your AI a wallet. Keep it on a leash.*

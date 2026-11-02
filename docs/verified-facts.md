@@ -33,6 +33,18 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
 | Callback results | `#[callback_result] Result<(), PromiseError>` treats an empty result as `Ok(())`, but a too-long success maps to `Err(TooLong)`. GetLeash reads `env::promise_result_checked` directly and treats only `PromiseError::Failed` as a failed transfer. | near-sdk-macros 5.29.1 `attr_sig_info.rs`, near-sdk 5.29.1 `env.rs` |
 | Store collections | `near_sdk::store` collections flush on `Drop`; the `near` macro derives `JsonSchema`/`BorshSchema` on every non-wasm build | near-sdk 5.29.1 source |
 
+## NEAR gas and storage costs (measured 2026-11-02 on near-sandbox 2.13.4)
+
+- A transaction is refused up front (`NotEnoughBalance`) unless the signer can pay the **attached** gas at a
+  worst-case price: a 100 TGas call by an account holding 0.1 NEAR failed with "cost 100919285708330000000000"
+  (≈0.001 NEAR per TGas, about 10× the base price), although only the gas actually burned is charged and the
+  rest is refunded. So role accounts attach no more gas than a call needs (propose 70, fund 80 TGas) and hold
+  0.15 / 0.2 NEAR (D-28).
+- The v2 contract pays a native supplier inside `propose` at exactly 60 TGas attached; 59 TGas is refused by
+  the contract's own check before any write (`contract/tests/sandbox.rs`).
+- Storage staking is 10^19 yocto per byte (1 NEAR per 100 kB). The v2 policy account held 87,392 bytes after
+  the sandbox run (85,809 of them code): ≈0.87 NEAR locked. Mainnet values to re-check on the first deploy.
+
 ## USDC on NEAR (checked 2026-11-01)
 
 | Fact | Value | Source |

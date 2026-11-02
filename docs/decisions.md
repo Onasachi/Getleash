@@ -4,6 +4,9 @@ Where the code deliberately departs from, or makes precise, something in [`PLAN.
 we do and why. If the plan and this file disagree, this file describes the code; fix one or the other, never leave
 both.
 
+D-01 … D-27 were written for contract v1 (git tag `v1-full-contract`). The contract was then rewritten lean for
+the mainnet budget: **D-28** at the end describes v2, and where it differs from an earlier entry, D-28 wins.
+
 ## Contract accounting
 
 **D-01 · The fee headroom ("slack") stays reserved until the transfer is confirmed.**
@@ -184,3 +187,71 @@ chat allowlist, so GetLeash's durable update log and chat checks would stay anyw
 WhatsApp (Cloud API webhooks, `X-Hub-Signature-256`, template messages outside the 24-hour window),
 which PLAN §2 puts after the hackathon. It will be added then as a second implementation of
 `channels/core`; the hackathon build keeps the tested grammY channel.
+
+## Contract v2 (lean)
+
+**D-28 · A lean contract for a ~1.5 NEAR mainnet deployment.**
+v1 compiled to 370 KB, which locks 3.7 NEAR of storage (≈4.3 NEAR all in); the owner can spend
+about 2 NEAR. Measured on 2 Nov: the contract's own logic was ~103 KB of the pre-optimisation code,
+JSON handling for 51 methods ~130 KB, and size flags were already maxed. v2 keeps the guarantees the
+pitch rests on and moves bookkeeping off-chain; it compiles to 85,809 B and its account holds
+87,392 B after a full sandbox run (≈0.87 NEAR locked). v1 was never deployed (no migration) and is
+tagged `v1-full-contract`.
+
+- **Still on-chain:** keyless custody and owner-only `upgrade` (refused while a payout's callback is
+  outstanding); payments only to allowlisted suppliers at the revision the intent was made for,
+  never to the contract, the token or a role; approval threshold, autonomous daily budget and
+  daily cap; one payment per invoice (a rejected invoice stays blocked, D-07); the address-change
+  cooldown, during which every payment waits for the owner and even the owner can approve at most
+  `cooldown_max`; the executor-trust daily budget, tied to an executor epoch so rotation voids the
+  old key's unsigned attempts (D-19); the cross-chain fee bound `value − fee% ≤ amount_in ≤ max_in`
+  (D-02, with the fixed fee now in the policy); quote deadlines (≤ 1 day, funding margin); pause;
+  proposals per day; a hard cap of 50 stored intents.
+- **Budgets only go up.** Counters are charged when a payment is approved (autonomous budget, as
+  `max_in`) or sent (daily cap and trust, as the amount sent) and never decrease, not even after a
+  failed transfer. Refunds simply land in the token balance. This replaces D-01, D-08 and the
+  owner-only crediting of returned funds.
+- **Owner approvals name the terms instead of signing hashes.** Intents are immutable, so
+  `decide(intent_id, action, amount_out, supplier_id)` binds the approval to the id and repeats
+  the terms the wallet shows; attempts can be re-quoted, so `authorize(intent_id, deposit,
+  amount_in)` names the exact 1Click deposit and fails if the executor has swapped it. Replaces
+  D-18 and the hash checks of D-21.
+- **Every payout goes through `start_payout`**, which checks pause, supplier, revision, expiry,
+  the obligation mapping, gas, the daily cap and, for cross-chain, the attempt's deadline, fee
+  bound and authorization or trust; then writes the intent as `PAYING` and sends. Native payouts
+  are one `ft_transfer` in the call that approves them (the agent's `propose` within limits, or the
+  owner's `decide`), so the executor never touches them and native suppliers must use the token's
+  decimals. Cross-chain payouts are one receipt `[storage_deposit, ft_transfer]` to the token, so a
+  failed transfer also undoes the deposit account's registration.
+- **The callback is `on_paid(intent_id, since)`**: a no-op unless that payout is still the one in
+  flight, never panics, and only changes a fixed-width status, so it can never fail for storage.
+  A lost callback is settled by the owner (`MARK_PAID` / `MARK_FAILED`) after `callback_grace_ns`
+  (≥ 1 h); only `FAILED` intents, or cross-chain `PAID` ones the swap refunded, can be retried.
+- **Off-chain now:** the ledger and reservations (a payout beyond the balance fails cleanly in the
+  token), monthly and per-supplier caps, the unverified-supplier budget and `verify_supplier`,
+  test-payment ceilings (now `cooldown_max`), the asset registry, `amend_intent`, delivery reports
+  and reconciliation (1Click status is read by the executor and the dashboard), the open-work
+  listing (`get_intents` scans), the rejection log (refusals are returned and logged as events),
+  the quote-ref burn set, sweep and hosted mode (a trust budget of 0 is the same thing).
+- **Size measures:** agent, executor and callback arguments, results and views are Borsh; owner
+  methods keep JSON so the wallet shows what is signed, but it is read by a strict flat-object
+  parser (`contract/src/json.rs`) instead of serde_json (≈70 KB): duplicate keys (a wallet could
+  show one value and the contract read another), unknown or missing keys, escapes, floats, nesting
+  and trailing bytes are refused; it is fuzzed against serde_json. Events and the token calls'
+  arguments are written by hand; records use raw storage with one-byte prefixes; no embedded ABI;
+  the Tron checksum is checked off-chain (seed script, dashboard), the contract checks the shape.
+- **Storage:** an intent with its invoice entry is ≈0.003 NEAR; at most 50 are stored, closed ones
+  are forgotten after `retention_ns` (7 days) and never-funded expired or stale ones at once (which
+  frees their invoice). Paid and rejected invoices keep ≈0.0008 NEAR each to block duplicates.
+- **Role accounts:** NEAR checks a signer's balance against the attached gas at a worst-case price
+  (≈0.001 NEAR per TGas), so the services attach only what a call needs (propose 70, fund 80 TGas;
+  the contract requires 60 for a payout, proven on a real node) and the role accounts get 0.15 and
+  0.2 NEAR.
+
+Also superseded or amended by D-28: D-03 and D-04 (the limits and budgets listed above), D-06 (no
+caps or verification; `update_supplier` bumps the revision and restarts the cooldown), D-09 and
+D-16 (no reconciliation on-chain), D-12 (registration happens inside the cross-chain payout), D-13
+(`withdraw_near` keeps a 0.05 NEAR reserve), D-14 (re-quoting replaces an unfunded attempt), D-15
+(the owner approves the test payment and signs its deposit), D-17 (hashes are gone; Borsh as
+above), D-20 (refusals are not stored), D-22 (no sweep; the executor re-quotes), D-26 (the intent
+page replaces the approve, attempt and reconcile pages).

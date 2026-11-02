@@ -3,7 +3,7 @@
  *
  *   pnpm bot
  *
- * Holds only the agent's function-call key (propose_payment), TENANT_SECRET for obligation ids and
+ * Holds only the agent's function-call key (`propose`), TENANT_SECRET for obligation ids and
  * INVOICE_STORE_KEY for the encrypted invoice store. Without NEAR_AI_API_KEY it refuses to start
  * unless --offline is given (offline text reader, "Verification unavailable" on every invoice).
  */

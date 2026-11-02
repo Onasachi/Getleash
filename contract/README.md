@@ -1,79 +1,88 @@
-# getleash-policy
+# getleash-policy (v2)
 
 The GetLeash policy contract: one business's USDC treasury and the rules an AI agent cannot break.
-Spec: [`../docs/PLAN.md`](../docs/PLAN.md) §4.1. Deviations: [`../docs/decisions.md`](../docs/decisions.md).
+Spec: [`../docs/PLAN.md`](../docs/PLAN.md) §4.1, as changed by [`../docs/decisions.md`](../docs/decisions.md)
+**D-28** (the lean v2 for a ~1.5 NEAR mainnet deployment; v1 is git tag `v1-full-contract`).
 
 ```bash
-cargo test                                # unit + scenario + property tests (debug mode only)
-cargo near build non-reproducible-wasm    # → target/near/getleash_policy.wasm (+ ABI)
+cargo test                                               # unit, scenario and property tests (debug mode only)
+cargo test --test sandbox -- --ignored                   # the real wasm on a local NEAR node
+cargo near build non-reproducible-wasm --no-embed-abi    # → target/near/getleash_policy.wasm (≈86 KB)
 ```
 
 ## Roles
 
-| Caller | Key | Methods |
-|---|---|---|
-| owner | full access, 1 yoctoNEAR per call | everything under "Owner" |
-| agent | function-call key | `propose_payment` |
-| executor | function-call key (no deposits) | everything under "Executor" |
-| treasury token (USDC) | — | `ft_on_transfer` |
-| this contract | — | callbacks, `migrate` |
+| Caller | Key | Methods | Arguments |
+|---|---|---|---|
+| owner | full access, exactly 1 yoctoNEAR per call | everything under "Owner" | flat JSON, read strictly (`src/json.rs`) |
+| agent | function-call key | `propose` | Borsh |
+| executor | function-call key (no deposits) | `create_attempt`, `fund`, `forget` | Borsh |
+| this contract | — | `on_paid`, `migrate` | Borsh |
 
 ## Lifecycle
 
 ```
-propose_payment ─▶ Intent Pending ──approve(hash)──▶ Approved ◀── (auto-approved if Autonomous)
-Approved ─create_attempt_*─▶ Attempt Authorized | AwaitingOwner ──authorize_attempt(hash)──▶ Authorized
-Authorized ─fund_*─▶ FundingPending ─callback ok─▶ Delivered (native) | Funded (cross-chain) ─report_delivery─▶ Delivered
-                                    └ callback failed ─▶ Failed (ledger restored, intent Approved again)
-FundingPending (stuck) | Funded ─flag_reconciliation─▶ NeedsReconciliation ─resolve_reconciliation (owner)─▶ …
-Pending | Approved ─expires / cancel / supplier changed─▶ Expired | Cancelled | Invalidated
+propose ─refused─▶ nothing stored (reason returned and logged)
+propose ─within the agent's limits─▶ native: PAYING (paid in this call) │ cross-chain: APPROVED
+propose ─otherwise─▶ PENDING ─decide APPROVE─▶ native: PAYING │ cross-chain: APPROVED
+APPROVED ─create_attempt (executor: 1Click deposit + amount)─▶ APPROVED with an attempt
+         ─authorize(deposit, amount) by the owner, or room in the trust budget─▶ fund ─▶ PAYING
+PAYING ─on_paid(intent, since)─▶ PAID │ FAILED          (stuck past callback_grace_ns: MARK_PAID / MARK_FAILED)
+FAILED, or cross-chain PAID that 1Click refunded ─decide RETRY─▶ native: PAYING │ cross-chain: APPROVED
+PENDING │ APPROVED ─decide REJECT─▶ REJECTED (the invoice stays blocked)
 ```
+
+Every payout goes through `start_payout`: not paused; supplier active at the intent's revision; not
+expired; the invoice still maps to this intent; ≥ 60 TGas; within the daily cap; for cross-chain, a
+live quote, the fee bound and either the owner's signature or room in today's executor-trust budget
+at the current executor epoch, outside the supplier's cooldown. Native payouts are one
+`ft_transfer`; cross-chain payouts are one receipt `[storage_deposit, ft_transfer]` to the token.
 
 ## Methods
 
-JSON conventions: ids are numbers; amounts and nanosecond timestamps are decimal strings; hashes and
-obligation ids are 64-char hex.
-
 **Agent**
-- `propose_payment(obligation_id, supplier_id, amount_out, review_flag?) → ProposeResult`.
-  Rejections are returned (and recorded) rather than panicked: `PAUSED`, `UNKNOWN_SUPPLIER`,
-  `INACTIVE_SUPPLIER`, `ASSET_DISABLED`, `OBLIGATION_OPEN_OR_PAID`, `OBLIGATION_REJECTED`,
-  `SUPPLIER_COOLDOWN`, `OVER_UNVERIFIED_BUDGET`, `OVER_PER_PAYMENT_CAP`, `OVER_MONTHLY_SUPPLIER_CAP`,
-  `OVER_DAILY_CAP`, `OVER_MONTHLY_CAP`, `INSUFFICIENT_FUNDS`.
+- `propose(obligation: [u8; 32], supplier_id: u32, amount_out: u128, flag: u8) → ProposeResult`.
+  Refusals store nothing: `PAUSED`, `UNKNOWN_SUPPLIER`, `INACTIVE_SUPPLIER`,
+  `OBLIGATION_OPEN_OR_PAID`, `OBLIGATION_REJECTED`, `STORAGE_FULL`, `BAD_AMOUNT`. Accepted intents
+  are routed `AUTONOMOUS` or wait for the owner with `ABOVE_THRESHOLD`, `AUTONOMOUS_BUDGET_USED`,
+  `DAILY_CAP`, `REVIEW_FLAG` or `SUPPLIER_COOLDOWN`. Panics (before any write) on `ONLY_AGENT`,
+  `BAD_AMOUNT`, `BAD_FLAG`, `QUOTA_PROPOSALS`.
 
 **Executor**
-- `create_attempt_native(intent_id) → attempt_id`
-- `create_attempt_crosschain(intent_id, deposit_address, amount_in, quote_deadline, quote_ref) → attempt_id`
-- `register_recipient(attempt_id)`: storage-registers the attempt's committed payee on USDC
-- `fund_native(attempt_id)`, `fund_crosschain(attempt_id)`: attach ≥ 60 TGas
-- `report_delivery(attempt_id, delivered_amount, dest_tx)`: informational, credits nothing
-- `flag_reconciliation(attempt_id)`, `cancel_attempt(attempt_id)`, `sweep(limit)`, `prune(limit)`
-  (these four also accept the owner)
+- `create_attempt(intent_id: u64, deposit: [u8; 32], amount_in: u128, deadline: u64)`: cross-chain
+  intents only; `value − fee% ≤ amount_in ≤ max_in`; deadline within (now + quote validity, now + 1 day];
+  never the contract, the token or a role; replaces an unfunded attempt but never with the same deposit.
+- `fund(intent_id: u64)`: id only.
+- `forget(ids: Vec<u64>) → u32` (also the owner): closed intents after `retention_ns`; never-funded
+  expired or stale ones at once, freeing their invoice; never a payout in flight.
 
-**Owner** (all need exactly 1 yoctoNEAR)
-- Intents: `approve(intent_id, expected_intent_hash)`, `reject`, `cancel`, `amend_intent(intent_id, amount_out)`
-- Attempts: `authorize_attempt(attempt_id, expected_attempt_hash)`, `resolve_reconciliation(attempt_id, outcome)`
-- Money: `reconcile_inflows(entries)`, `withdraw(amount)`, `withdraw_near(amount)`
-- Suppliers: `add_supplier`, `update_supplier` (destination; bumps revision, restarts cooldown,
-  invalidates open intents), `set_supplier_caps`, `verify_supplier(supplier_id, revision)`, `set_supplier_active`
-- Assets: `add_asset(asset_id, chain, decimals, max_fixed_fee)`, `set_asset`
-- Control: `set_policy`, `set_hosted_mode`, `pause`, `unpause`, `rotate_agent`, `rotate_executor`,
-  `upgrade` (raw wasm as input; deploys and migrates in one receipt)
+**Owner** (exactly 1 yoctoNEAR; JSON)
+- `decide {intent_id, action, amount_out, supplier_id}` with `APPROVE`, `REJECT`, `RETRY`,
+  `MARK_PAID`, `MARK_FAILED`; the amount and supplier must repeat the intent's.
+- `authorize {intent_id, deposit, amount_in}`: signs exactly that 1Click deposit.
+- `add_supplier {chain, asset_id, recipient, decimals} → u32` (Borsh result), `update_supplier
+  {supplier_id, …}` (bumps the revision, restarts the cooldown), `set_supplier_active {supplier_id, active}`.
+- `set_policy {…the policy's fields}`, `set_paused {paused}`, `set_roles {agent_id, executor_id}`
+  (a new executor bumps the epoch), `withdraw {amount}`, `withdraw_near {amount}`, `upgrade` (raw wasm
+  as input; refused while a payout is in flight; deploys and migrates in one receipt).
+- `new {owner_id, agent_id, executor_id, token_id, token_decimals, …the policy's fields}` once, in the
+  setup batch.
 
-**Views**: `get_config`, `get_policy`, `get_ledger`, `get_budgets_today`, `get_supplier`,
-`list_suppliers`, `list_assets`, `get_intent`, `get_attempt`, `get_obligation`, `get_open_work`,
-`get_recent_rejections`.
+**Views** (Borsh): `get_state`, `get_suppliers(from: u32, limit: u32)`, `get_intents(from: u64, limit: u32)`.
 
 ## Source map
 
 | File | What |
 |---|---|
-| `src/ledger.rs` | Pure accounting: `cash`, `reserved`, `in_flight`, period counters, invariants |
-| `src/types.rs` | Suppliers, intents, attempts, policy, result shapes |
-| `src/lib.rs` | State, init, upgrade/migrate, shared rule checks and helpers |
-| `src/agent.rs` | `propose_payment` and routing |
-| `src/executor.rs` | Attempts, funding, the transfer callback, sweeps, pruning, `ft_on_transfer` |
+| `src/budget.rs` | Pure: per-day counters, unit conversion, fee bounds |
+| `src/rules.rs` | Pure: the routing rule and the cooldown |
+| `src/json.rs` | Strict flat-JSON reader for the owner's arguments |
+| `src/types.rs` | Policy, suppliers, intents, attempts, results, views |
+| `src/lib.rs` | State, init, upgrade/migrate, raw storage, `start_payout`, `on_paid` |
+| `src/agent.rs` | `propose` |
+| `src/executor.rs` | `create_attempt`, `fund`, `forget` |
 | `src/owner.rs` | Owner methods |
 | `src/views.rs` | Views |
-| `src/hash.rs`, `src/validate.rs`, `src/events.rs` | Term hashes, input validation and fee bounds, NEP-297 events |
-| `src/tests/` | Simulated-chain harness, scenario tests, property tests |
+| `src/validate.rs`, `src/events.rs` | Input checks and encoders; NEP-297 events written by hand |
+| `src/tests/` | Simulated-chain harness, unit tests, property tests, JSON fuzzing, golden Borsh vectors |
+| `tests/sandbox.rs` | The real wasm on a local node |
