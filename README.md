@@ -168,19 +168,23 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
 
 ### Running it for real (owner's machine)
 
+The full flow, with prerequisites, what each step prints and the measured costs, is in
+[docs/deployment.md](docs/deployment.md). In short:
+
 ```bash
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
 pnpm keygen --network mainnet --account executor-1.<you>.near
 pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d --policy deploy/mainnet-policy.json
-pnpm topup --network mainnet --owner <you>.near --amount 20
 pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>
-pnpm executor        # and in another terminal: pnpm bot
+pnpm topup --network mainnet --owner <you>.near --amount 20
+pnpm exec tsx --env-file=.env --env-file=.env.mainnet executor/src/main.ts       # and in another terminal:
+pnpm exec tsx --env-file=.env --env-file=.env.mainnet channels/telegram/src/main.ts
 pnpm status --network mainnet --policy getleash.<you>.near
 ```
 The owner's key is read from the owner's own near-cli credentials and is never configured in a
-service. Every script prints what it will sign, and its NEAR cost, and asks first. Each
-cross-chain payment also costs the contract 0.00125 NEAR to register the 1Click deposit account on
-USDC, and each accepted invoice keeps about 0.0008 NEAR of storage to block duplicates.
+service. Every script prints what it will sign, and its NEAR cost, and asks first. Setup cost 1.424 NEAR
+on mainnet. Each cross-chain payment also costs the contract 0.00125 NEAR to register the 1Click deposit
+account on USDC, and each accepted invoice keeps about 0.0008 NEAR of storage to block duplicates.
 
 ## Repository
 

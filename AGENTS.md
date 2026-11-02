@@ -61,7 +61,7 @@ executor/        cross-chain payout loop over stored intents; mock-1click/ is it
 ingestion/       obligation HMAC, update dedupe, limits; agent/ extraction, checks, TEE verification
 channels/        channel interface + Telegram (grammY); web/ Next.js dashboard
 devkit/          local NEAR node harness ("world") and every TypeScript integration test
-fixtures/        demo invoices; docs/ plan, decisions, audit response, verified facts
+fixtures/        demo invoices; docs/ plan, decisions, audit response, verified facts, deployment runbook
 .agents/skills/  near/agent-skills (do not edit; reinstall with npx skills)
 ```
 
