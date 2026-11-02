@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import type { Tone, TxOutcome } from "@getleash/shared";
 
@@ -86,6 +86,34 @@ export function Fold({ summary, open, children }: { summary: ReactNode; open?: b
       <summary>{summary}</summary>
       <div className="fold-body">{children}</div>
     </details>
+  );
+}
+
+/**
+ * The same action as a terminal command (near-cli), for owners whose key lives in near-cli: copy,
+ * paste, Enter. `onCopied` lets the page watch for the result.
+ */
+export function TerminalOption({ command, owner, open, onCopied }: { command: string; owner: string; open?: boolean; onCopied?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      onCopied?.();
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <Fold open={open} summary={<span className="small">Or sign in a terminal (near-cli)</span>}>
+      <p className="small muted">
+        Paste it into your terminal and press Enter: it signs with the key near-cli keeps for {owner} and sends right away. This page updates by itself.
+      </p>
+      <pre className="cmd">{command}</pre>
+      <button className="ghost" onClick={() => void copy()}>
+        {copied ? "Copied ✓" : "Copy command"}
+      </button>
+    </Fold>
   );
 }
 

@@ -11,7 +11,7 @@
  * or sending, 1Click delivering), the page refreshes itself.
  */
 import Link from "next/link";
-import { type ReactNode, use, useEffect } from "react";
+import { type ReactNode, use, useEffect, useState } from "react";
 
 import {
   assetName,
@@ -30,8 +30,9 @@ import {
   waitReason,
 } from "@getleash/shared";
 
-import { Check, Fold, Loading, Row, StatusChip, type Step, Steps, TxNote } from "@/components/ui";
+import { Check, Fold, Loading, Row, StatusChip, type Step, Steps, TerminalOption, TxNote } from "@/components/ui";
 import { oneclick, policy } from "@/lib/chain";
+import { nearCliCommand } from "@/lib/cli";
 import { EXPLORER, POLICY_ID } from "@/lib/config";
 import { nsToDate, untilText, whenText } from "@/lib/format";
 import { useSupplierNames } from "@/lib/names";
@@ -117,8 +118,15 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
   const { names } = useSupplierNames();
   const { data, error: loadError, reload } = useChain(() => load(intentId), [intentId]);
   const { busy, result, error, run, wallet } = useOwnerAction(data?.state.owner_id, reload);
+  // After the terminal command is copied, watch for its result for a few minutes.
+  const [watching, setWatching] = useState(false);
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setTimeout(() => setWatching(false), 180_000);
+    return () => clearTimeout(timer);
+  }, [watching]);
 
-  const working = !!data && othersAreWorking(data) && !busy;
+  const working = (!!data && othersAreWorking(data) && !busy) || watching;
   useEffect(() => {
     if (!working) return;
     const timer = setInterval(() => void reload(), 4_000);
@@ -190,8 +198,9 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
   const amount = `${money(intent.amount_out, supplier?.decimals ?? d)} ${asset}`.trim();
   const stateWord = paymentState(intent, native, status?.status ?? null);
   const flag = flagText(intent.flag);
-  const decide = (action: OwnerAction, label: string) =>
-    void run(label, "decide", { intent_id: intent.id, action, amount_out: intent.amount_out, supplier_id: intent.supplier_id }, action === "APPROVE" || action === "RETRY" ? 80 : 30);
+  const decideArgs = (action: OwnerAction) => ({ intent_id: intent.id, action, amount_out: intent.amount_out, supplier_id: intent.supplier_id });
+  const decideGas = (action: OwnerAction) => (action === "APPROVE" || action === "RETRY" ? 80 : 30);
+  const decide = (action: OwnerAction, label: string) => void run(label, "decide", decideArgs(action), decideGas(action));
   const waitingFor = (label: string, text: string) => (busy === label ? "Waiting for your wallet…" : text);
   const reject = (
     <button className="quiet" disabled={!!busy} onClick={() => decide("REJECT", "reject")}>
@@ -211,6 +220,8 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
   let lead: ReactNode = null;
   let actions: ReactNode = null;
   let blocked: string[] = [];
+  // The main action, also offered as a terminal command.
+  let primary: { method: string; args: Record<string, unknown>; tgas: number } | null = null;
   switch (intent.status) {
     case "PENDING":
       title = `Pay ${who}?`;
@@ -221,6 +232,7 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
         </>
       );
       blocked = blockers;
+      primary = { method: "decide", args: decideArgs("APPROVE"), tgas: decideGas("APPROVE") };
       actions = (
         <>
           <button className="primary" disabled={!!busy || blocked.length > 0} onClick={() => decide("APPROVE", "approve")}>
@@ -246,6 +258,7 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
           </>
         );
         blocked = [...blockers, ...quoteBlockers];
+        primary = { method: "authorize", args: { intent_id: intent.id, deposit: a.deposit, amount_in: a.amount_in }, tgas: 30 };
         actions = (
           <>
             <button
@@ -293,6 +306,7 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
           </>
         );
         blocked = blockers;
+        primary = { method: "decide", args: decideArgs("RETRY"), tgas: decideGas("RETRY") };
         actions = retry;
       } else {
         title = `On its way to ${who}`;
@@ -309,6 +323,7 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
       title = "Didn't go through";
       lead = "The USDC token refused the transfer, so nothing left your treasury. Fix the cause (for example, the supplier's account is not registered on USDC), then try again.";
       blocked = blockers;
+      primary = { method: "decide", args: decideArgs("RETRY"), tgas: decideGas("RETRY") };
       actions = retry;
       break;
     case "REJECTED":
@@ -357,11 +372,13 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
             You&apos;re connected as {wallet.accountId}; only the owner, {state.owner_id}, can approve.
           </p>
         )}
-        {canAct && wallet.walletId === "near-cli" && (
-          <p className="hint">
-            Signing with NEAR CLI: run the command the wallet shows, choose <code>send</code> when it asks (or add <code>send</code> at the end), then paste the
-            transaction hash back into the wallet window.
-          </p>
+        {canAct && primary && blocked.length === 0 && (
+          <TerminalOption
+            command={nearCliCommand(state.owner_id, primary.method, primary.args, primary.tgas)}
+            owner={state.owner_id}
+            open={wallet.walletId === "near-cli"}
+            onCopied={() => setWatching(true)}
+          />
         )}
         <TxNote result={result} error={error} />
         {pastGrace && (

@@ -139,3 +139,5 @@ ul.rules li { margin: 6px 0; }
   ul.payments .when { display: none; }
   .top nav { order: 3; width: 100%; }
 }
+pre.cmd { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.hero details.fold { margin-top: 14px; background: var(--bg); }

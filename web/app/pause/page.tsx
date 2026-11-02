@@ -1,8 +1,9 @@
 "use client";
 
 /** Pause (PLAN §4.5): one owner signature stops every new payment; the same to resume. */
-import { Fold, Loading, StatusChip, TxNote } from "@/components/ui";
+import { Fold, Loading, StatusChip, TerminalOption, TxNote } from "@/components/ui";
 import { policy } from "@/lib/chain";
+import { nearCliCommand } from "@/lib/cli";
 import { useOwnerAction } from "@/lib/owner-action";
 import { useChain } from "@/lib/use-chain";
 
@@ -34,6 +35,12 @@ export default function PausePage() {
           )}
         </div>
         {!wallet.accountId && <p className="hint">You&apos;ll sign in your wallet, as {data.owner_id}.</p>}
+        <TerminalOption
+          command={nearCliCommand(data.owner_id, "set_paused", { paused: !data.paused }, 30)}
+          owner={data.owner_id}
+          open={wallet.walletId === "near-cli"}
+          onCopied={() => void setTimeout(() => void reload(), 15_000)}
+        />
         <TxNote result={result} error={error} />
       </section>
       <Fold summary="What keeps working while paused">
