@@ -1,0 +1,7 @@
+INVOICE
+From: Acme Packaging Ltd
+Invoice No: INV-1004
+Date: 2026-11-05
+Description: Pallet wrap
+Total: USD 20.00
+Pay to (NEAR): acme.near
