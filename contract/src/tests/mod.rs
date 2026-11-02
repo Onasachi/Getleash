@@ -2,6 +2,7 @@
 //! `panic = "abort"` would break the harness's `catch_unwind`).
 
 pub mod harness;
+mod golden;
 mod json;
 mod props;
 mod unit;

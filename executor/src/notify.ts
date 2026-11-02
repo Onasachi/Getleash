@@ -4,12 +4,12 @@
  */
 export type NoticeKind =
   | "approval_needed"
-  | "attempt_needs_signature"
+  | "authorization_needed"
   | "paid"
   | "delivered"
-  | "returned_funds"
   | "swap_failed"
-  | "needs_reconciliation"
+  | "payout_failed"
+  | "callback_overdue"
   | "quote_rejected"
   | "funding_failed"
   | "paused";

@@ -10,31 +10,23 @@
  *      FunctionCall `new`. No access key is ever added to it;
  *   3. the treasury's storage registration on the token.
  * `verifySetup` then checks the result from chain state alone.
+ *
+ * v2 (docs/decisions.md D-28) costs about 1.4 NEAR in all on mainnet: ~0.86 NEAR of code
+ * storage plus 0.2 NEAR for the contract's records, and the two role accounts.
  */
 import { type Account, type Action, actions, baseDecode, type JsonRpcProvider, PublicKey } from "near-api-js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 
+import { bytesToHex } from "./bytes.ts";
 import { PolicyView } from "./client.ts";
-import { bytesToHex } from "./hash.ts";
 import { parseOutcome, type TxOutcome } from "./outcome.ts";
 import type { Policy } from "./types.ts";
 import { near, tgas } from "./units.ts";
 
-export const AGENT_METHODS = ["propose_payment"] as const;
+export const AGENT_METHODS = ["propose"] as const;
 
-export const EXECUTOR_METHODS = [
-  "create_attempt_native",
-  "create_attempt_crosschain",
-  "register_recipient",
-  "fund_native",
-  "fund_crosschain",
-  "report_delivery",
-  "flag_reconciliation",
-  "cancel_attempt",
-  "sweep",
-  "prune",
-] as const;
+export const EXECUTOR_METHODS = ["create_attempt", "fund", "forget"] as const;
 
 /** NEP-145 registration cost on Circle USDC (min = max, docs/verified-facts.md). */
 export const FT_STORAGE_DEPOSIT = 1_250_000_000_000_000_000_000n;
@@ -58,9 +50,7 @@ export type SetupPlan = {
   executor: RolePlan;
   treasuryToken: string;
   treasuryDecimals: number;
-  hostedMode: boolean;
-  /** null → the contract's conservative defaults (`Policy::defaults`). */
-  policy: Policy | null;
+  policy: Policy;
   wasm: Uint8Array;
   /** NEAR sent to the policy account (code + state storage, registrations). */
   policyBalance: bigint;
@@ -70,12 +60,31 @@ export function sha256Hex(bytes: Uint8Array): string {
   return bytesToHex(sha256(bytes));
 }
 
-/** Enough NEAR to stake the code's storage plus 1.5 NEAR for state and registrations, rounded up to 0.5. */
+/** Enough NEAR to stake the code's storage plus 0.2 NEAR for the contract's records (at most 50
+ *  stored intents of ≈0.003 NEAR each, suppliers and kept invoice ids), rounded up to 0.05. */
 export function suggestedPolicyBalance(wasmBytes: number): bigint {
-  const half = near("0.5");
-  const needed = BigInt(wasmBytes) * YOCTO_PER_BYTE + near("1.5");
-  return ((needed + half - 1n) / half) * half;
+  const step = near("0.05");
+  const needed = BigInt(wasmBytes) * YOCTO_PER_BYTE + near("0.2");
+  return ((needed + step - 1n) / step) * step;
 }
+
+/** The default policy for a first deployment: one tenth of v1's defaults (deploy/mainnet-policy.json). */
+export const DEFAULT_POLICY: Policy = {
+  autonomous_daily_budget: "5000000",
+  approval_threshold: "2500000",
+  daily_cap: "20000000",
+  executor_trust_daily_budget: "0",
+  cooldown_max: "500000",
+  max_fixed_fee: "1500000",
+  max_fee_bps: 100,
+  cooldown_ns: "172800000000000",
+  intent_ttl_ns: "259200000000000",
+  quote_min_validity_ns: "300000000000",
+  funding_margin_ns: "180000000000",
+  callback_grace_ns: "3600000000000",
+  retention_ns: "604800000000000",
+  max_proposals_per_day: 20,
+};
 
 export function defaultRoleIds(ownerId: string, n = 1) {
   return {
@@ -119,14 +128,14 @@ export function createRoleAccount(owner: Account, policyId: string, role: RolePl
 
 /** The D-11 batch: the policy account is created, funded, deployed and initialised with no key. */
 export function deployPolicy(owner: Account, plan: SetupPlan) {
+  // Flat JSON, read by the contract's strict parser (contract/src/json.rs).
   const init = {
     owner_id: plan.ownerId,
     agent_id: plan.agent.accountId,
     executor_id: plan.executor.accountId,
-    treasury_token: plan.treasuryToken,
-    treasury_decimals: plan.treasuryDecimals,
-    hosted_mode: plan.hostedMode,
-    policy: plan.policy,
+    token_id: plan.treasuryToken,
+    token_decimals: plan.treasuryDecimals,
+    ...plan.policy,
   };
   return send(owner, plan.policyId, [
     actions.createAccount(),
@@ -148,15 +157,18 @@ export function registerTreasury(owner: Account, plan: Pick<SetupPlan, "treasury
   ]);
 }
 
-/** Owner top-up through `ft_transfer_call`, the only way the contract credits funds by itself. */
+/** Owner top-up: a plain `ft_transfer` (v2 keeps no ledger; the balance is the token's). */
 export function topUp(owner: Account, plan: Pick<SetupPlan, "treasuryToken" | "policyId">, amount: bigint) {
   return send(owner, plan.treasuryToken, [
-    actions.functionCall(
-      "ft_transfer_call",
-      { receiver_id: plan.policyId, amount: amount.toString(), msg: "" },
-      tgas(100),
-      1n,
-    ),
+    actions.functionCall("ft_transfer", { receiver_id: plan.policyId, amount: amount.toString() }, tgas(30), 1n),
+  ]);
+}
+
+/** Registers a native supplier's account on the treasury token, paid by the owner (the contract
+ *  pays a native transfer only to a registered account). */
+export function registerOnToken(owner: Account, token: string, accountId: string) {
+  return send(owner, token, [
+    actions.functionCall("storage_deposit", { account_id: accountId, registration_only: true }, tgas(30), FT_STORAGE_DEPOSIT),
   ]);
 }
 
@@ -205,7 +217,7 @@ async function checkRole(
 
 export async function verifySetup(
   rpc: JsonRpcProvider,
-  plan: Pick<SetupPlan, "ownerId" | "policyId" | "agent" | "executor" | "treasuryToken" | "hostedMode"> & {
+  plan: Pick<SetupPlan, "ownerId" | "policyId" | "agent" | "executor" | "treasuryToken"> & {
     wasmSha256?: string;
   },
 ): Promise<Check[]> {
@@ -227,20 +239,20 @@ export async function verifySetup(
     });
   }
 
-  const config = await new PolicyView(rpc, plan.policyId).config();
+  const state = await new PolicyView(rpc, plan.policyId).state();
   const roles: Array<[string, string, string]> = [
-    ["owner", config.owner_id, plan.ownerId],
-    ["agent", config.agent_id, plan.agent.accountId],
-    ["executor", config.executor_id, plan.executor.accountId],
-    ["treasury token", config.treasury_token, plan.treasuryToken],
+    ["owner", state.owner_id, plan.ownerId],
+    ["agent", state.agent_id, plan.agent.accountId],
+    ["executor", state.executor_id, plan.executor.accountId],
+    ["treasury token", state.token_id, plan.treasuryToken],
   ];
   for (const [label, actual, expected] of roles) {
     checks.push({ name: `contract ${label} is ${expected}`, ok: actual === expected, detail: actual });
   }
   checks.push({
-    name: `hosted mode is ${plan.hostedMode}`,
-    ok: config.hosted_mode === plan.hostedMode,
-    detail: `hosted_mode=${config.hosted_mode}, executor_trust_daily_budget=${config.policy.executor_trust_daily_budget}`,
+    name: "executor trust budget",
+    ok: true,
+    detail: `${state.policy.executor_trust_daily_budget} per day without the owner (0 = every cross-chain payment owner-signed)`,
   });
 
   checks.push(await checkRole(rpc, plan.agent, plan.policyId, AGENT_METHODS));

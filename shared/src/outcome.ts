@@ -14,7 +14,10 @@ export type TxOutcome<T = unknown> = {
   finalOk: boolean;
   /** Every receipt succeeded. */
   ok: boolean;
+  /** The return value decoded as JSON (or text); null for none. */
   value: T;
+  /** The raw return bytes (Borsh results, D-28); null for none. */
+  bytes: Uint8Array | null;
   logs: string[];
   events: NepEvent[];
   failures: ReceiptFailure[];
@@ -73,19 +76,24 @@ function statusFailure(status: unknown): unknown {
   return undefined;
 }
 
-function decodeSuccess(status: unknown): unknown {
+function successBytes(status: unknown): Uint8Array | null {
   if (status && typeof status === "object" && "SuccessValue" in status) {
     const b64 = (status as { SuccessValue: unknown }).SuccessValue;
     if (typeof b64 !== "string" || b64.length === 0) return null;
-    // atob + TextDecoder work in Node and in the browser (the dashboard parses outcomes too).
-    const text = new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
+    // atob works in Node and in the browser (the dashboard parses outcomes too).
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   }
   return null;
+}
+
+function decodeSuccess(bytes: Uint8Array | null): unknown {
+  if (bytes === null) return null;
+  const text = new TextDecoder().decode(bytes);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 export function parseEvents(logs: string[]): NepEvent[] {
@@ -117,11 +125,13 @@ export function parseOutcome<T = unknown>(raw: unknown): TxOutcome<T> {
     failures.push({ receiptId: o.id, executorId: o.outcome.executor_id ?? "", message, panic: panicCode(message) });
   }
   const finalFailure = statusFailure(tx.status);
+  const bytes = successBytes(tx.status);
   return {
     txHash: tx.transaction_outcome.id,
     finalOk: finalFailure === undefined,
     ok: finalFailure === undefined && failures.length === 0,
-    value: decodeSuccess(tx.status) as T,
+    value: decodeSuccess(bytes) as T,
+    bytes,
     logs,
     events: parseEvents(logs),
     failures,

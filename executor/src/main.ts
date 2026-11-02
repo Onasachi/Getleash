@@ -49,9 +49,9 @@ const account = signingAccount(rpc, executorId, {
 });
 
 const view = new PolicyView(rpc, policyId);
-const config = await view.config();
-if (config.executor_id !== executorId) {
-  console.error(`✗ ${policyId} expects executor ${config.executor_id}, not ${executorId}`);
+const state = await view.state();
+if (state.executor_id !== executorId) {
+  console.error(`✗ ${policyId} expects executor ${state.executor_id}, not ${executorId}`);
   process.exit(1);
 }
 
@@ -69,7 +69,7 @@ const notifier: Notifier =
 const executor = new Executor(
   {
     policyId,
-    originAsset: config.treasury_asset_id,
+    originAsset: `nep141:${state.token_id}`,
     dashboardUrl: process.env.DASHBOARD_URL ?? null,
   },
   {
@@ -78,8 +78,6 @@ const executor = new Executor(
     oneclick,
     notifier,
     journal: new Journal(process.env.EXECUTOR_JOURNAL ?? join(dataDir(network), "executor-journal.jsonl")),
-    isRegistered: async (accountId) =>
-      (await rpc.callFunction({ contractId: config.treasury_token, method: "storage_balance_of", args: { account_id: accountId } })) != null,
     log: (line) => console.log(line),
   },
 );

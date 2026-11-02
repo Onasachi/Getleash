@@ -1,39 +1,39 @@
 /**
- * Typed access to the policy contract, split by role so each service holds only the methods its key
- * can call: `PolicyView` (anyone), `AgentClient`, `ExecutorClient`, `OwnerClient`.
+ * Typed access to the v2 policy contract (docs/decisions.md D-28), split by role so each service
+ * holds only the methods its key can call: `PolicyView` (anyone), `AgentClient`,
+ * `ExecutorClient`, `OwnerClient`.
  *
- * Every view result is validated with the schemas in `types.ts`. Calls return the parsed
- * transaction outcome and throw `ContractCallError` (with the contract's panic code) when the
- * transaction's final status is a failure.
+ * Views and the agent/executor calls are Borsh (decoded strictly in `types.ts`); owner calls are
+ * flat JSON that the owner's wallet shows as signed. Calls return the parsed transaction outcome
+ * and throw `ContractCallError` (with the contract's panic code) when its final status fails.
  */
 import { Account, actions, type Provider } from "near-api-js";
-import { z } from "zod";
 
 import { ContractCallError, parseOutcome, type TxOutcome } from "./outcome.ts";
 import {
-  AssetEntry,
-  Attempt,
-  BudgetsView,
-  ConfigView,
-  Intent,
-  Ledger,
-  OpenWorkItem,
-  Policy,
-  ProposeResult,
-  Rejection,
-  Supplier,
-  SweepResult,
+  decodeIntents,
+  decodeProposeResult,
+  decodeState,
+  decodeSuppliers,
+  decodeU32,
+  encodeCreateAttempt,
+  encodeId,
+  encodeIds,
+  encodePropose,
+  encodeRange,
   type Chain,
-  type InflowEntry,
-  type ReconcileOutcome,
+  type Intent,
+  type OwnerAction,
+  type Policy,
+  type ProposeResult,
   type ReviewFlag,
+  type StateView,
+  type Supplier,
 } from "./types.ts";
 import { ONE_YOCTO, tgas } from "./units.ts";
 
-type Schema<T> = z.ZodType<T>;
-
-const NumberId = z.number().int().nonnegative();
-const OpenIntentIdSchema = NumberId.nullable();
+/** Ids per view page (the contract's MAX_BATCH). */
+export const PAGE = 50;
 
 // ── Views ────────────────────────────────────────────────────────────────────────────────────
 
@@ -43,50 +43,61 @@ export class PolicyView {
     readonly contractId: string,
   ) {}
 
-  private async view<T>(method: string, args: Record<string, unknown>, schema: Schema<T>): Promise<T> {
-    const raw = await this.provider.callFunction({ contractId: this.contractId, method, args });
-    const parsed = schema.safeParse(raw === undefined ? null : raw);
-    if (!parsed.success) {
-      throw new Error(`${this.contractId}.${method} returned an unexpected shape: ${parsed.error.message}`);
-    }
-    return parsed.data;
+  private async raw(method: string, args: Uint8Array = new Uint8Array()): Promise<Uint8Array> {
+    const { result } = await this.provider.callFunctionRaw({ contractId: this.contractId, method, args });
+    return Uint8Array.from(result);
   }
 
-  config() {
-    return this.view("get_config", {}, ConfigView);
+  private async decode<T>(method: string, args: Uint8Array | undefined, decode: (b: Uint8Array) => T): Promise<T> {
+    const bytes = await this.raw(method, args);
+    try {
+      return decode(bytes);
+    } catch (error) {
+      throw new Error(`${this.contractId}.${method} returned an unexpected layout: ${(error as Error).message}`);
+    }
   }
-  policy() {
-    return this.view("get_policy", {}, Policy);
+
+  state(): Promise<StateView> {
+    return this.decode("get_state", undefined, decodeState);
   }
-  ledger() {
-    return this.view("get_ledger", {}, Ledger);
+
+  /** Every supplier (ids are dense from 1). */
+  async suppliers(): Promise<Supplier[]> {
+    const { next_supplier_id } = await this.state();
+    const all: Supplier[] = [];
+    for (let from = 1; from < next_supplier_id; from += PAGE) {
+      all.push(...(await this.decode("get_suppliers", encodeRange(from, PAGE, false), decodeSuppliers)));
+    }
+    return all;
   }
-  budgetsToday() {
-    return this.view("get_budgets_today", {}, BudgetsView);
+
+  async supplier(id: number): Promise<Supplier | null> {
+    const [s] = await this.decode("get_suppliers", encodeRange(id, 1, false), decodeSuppliers);
+    return s?.id === id ? s : null;
   }
-  supplier(supplierId: number) {
-    return this.view("get_supplier", { supplier_id: supplierId }, Supplier.nullable());
+
+  /** Stored intents with ids in `[from, from + limit)` (forgotten ids are skipped). */
+  intents(from: number, limit = PAGE): Promise<Intent[]> {
+    return this.decode("get_intents", encodeRange(from, Math.min(limit, PAGE), true), decodeIntents);
   }
-  suppliers(fromIndex = 0, limit = 256) {
-    return this.view("list_suppliers", { from_index: fromIndex, limit }, Supplier.array());
+
+  async intent(id: number): Promise<Intent | null> {
+    const [i] = await this.intents(id, 1);
+    return i?.id === id ? i : null;
   }
-  assets() {
-    return this.view("list_assets", {}, AssetEntry.array());
+
+  /** Stored intents with ids from `from` up to the newest (several pages if needed). */
+  async intentsSince(from: number, next?: number): Promise<Intent[]> {
+    const end = next ?? (await this.state()).next_intent_id;
+    const all: Intent[] = [];
+    for (let id = Math.max(1, from); id < end; id += PAGE) all.push(...(await this.intents(id, PAGE)));
+    return all;
   }
-  intent(intentId: number) {
-    return this.view("get_intent", { intent_id: intentId }, Intent.nullable());
-  }
-  attempt(attemptId: number) {
-    return this.view("get_attempt", { attempt_id: attemptId }, Attempt.nullable());
-  }
-  obligation(obligationIdHex: string) {
-    return this.view("get_obligation", { obligation_id: obligationIdHex }, OpenIntentIdSchema);
-  }
-  openWork() {
-    return this.view("get_open_work", {}, OpenWorkItem.array());
-  }
-  recentRejections() {
-    return this.view("get_recent_rejections", {}, Rejection.array());
+
+  /** The newest `count` intent ids that are still stored. */
+  async recentIntents(count = PAGE): Promise<Intent[]> {
+    const { next_intent_id } = await this.state();
+    return this.intentsSince(Math.max(1, next_intent_id - count), next_intent_id);
   }
 }
 
@@ -94,17 +105,17 @@ export class PolicyView {
 
 export type CallOptions = { gas?: bigint; deposit?: bigint };
 
-/** Gas per method, sized from the sandbox runs with headroom. FC-key allowances pay for this. */
+/** Gas per method. A payout needs at least 60 TGas (the contract checks; 60 is proven on a real
+ *  node). Attach no more than needed: NEAR checks the signer's balance against the attached gas
+ *  at a worst-case price (≈0.001 NEAR per TGas, docs/verified-facts.md), so a role account must
+ *  hold about 0.07 NEAR spendable to send a 70 TGas call, although it burns far less. */
 export const GAS = {
-  propose: tgas(50),
-  createAttempt: tgas(50),
-  register: tgas(50),
-  /** The contract requires at least 60 TGas so the transfer and its callback both fit. */
-  fund: tgas(100),
-  small: tgas(30),
-  housekeeping: tgas(150),
-  owner: tgas(50),
-  ownerTransfer: tgas(100),
+  propose: tgas(70),
+  createAttempt: tgas(30),
+  fund: tgas(80),
+  forget: tgas(80),
+  owner: tgas(30),
+  ownerPayout: tgas(80),
   upgrade: tgas(300),
 } as const;
 
@@ -115,11 +126,7 @@ class Caller {
   ) {}
 
   /** Signs and sends one function call; throws ContractCallError if the final status failed. */
-  async call<T = unknown>(
-    method: string,
-    args: Record<string, unknown> | Uint8Array,
-    opts: Required<CallOptions>,
-  ): Promise<TxOutcome<T>> {
+  async call<T = unknown>(method: string, args: Record<string, unknown> | Uint8Array, opts: Required<CallOptions>): Promise<TxOutcome<T>> {
     const raw = await this.account.signAndSendTransaction({
       receiverId: this.contractId,
       actions: [actions.functionCall(method, args, opts.gas, opts.deposit)],
@@ -134,207 +141,97 @@ class Caller {
   }
 }
 
-function parsed<T>(outcome: TxOutcome, schema: Schema<T>, method: string): TxOutcome<T> {
-  const result = schema.safeParse(outcome.value);
-  if (!result.success) throw new Error(`${method} returned an unexpected shape: ${result.error.message}`);
-  return { ...outcome, value: result.data };
+function borshValue<T>(outcome: TxOutcome, decode: (b: Uint8Array) => T, method: string): TxOutcome<T> {
+  if (!outcome.bytes) throw new Error(`${method} returned nothing`);
+  return { ...outcome, value: decode(outcome.bytes) };
 }
 
-/** The agent's only power: propose. No amount of model output becomes anything else on-chain. */
+/** The agent's only power: propose. No model output becomes anything on-chain but the flag. */
 export class AgentClient extends Caller {
-  async propose(p: {
-    obligationId: string;
-    supplierId: number;
-    amountOut: bigint | string;
-    reviewFlag: ReviewFlag | null;
-  }) {
-    const out = await this.call(
-      "propose_payment",
-      {
-        obligation_id: p.obligationId,
-        supplier_id: p.supplierId,
-        amount_out: p.amountOut.toString(),
-        review_flag: p.reviewFlag,
-      },
-      { gas: GAS.propose, deposit: 0n },
-    );
-    return parsed(out, ProposeResult, "propose_payment");
+  async propose(p: { obligationId: string; supplierId: number; amountOut: bigint; reviewFlag: ReviewFlag | null }): Promise<TxOutcome<ProposeResult>> {
+    const outcome = await this.call("propose", encodePropose(p), { gas: GAS.propose, deposit: 0n });
+    return borshValue(outcome, decodeProposeResult, "propose");
   }
 }
 
-/** Executor methods. Funding takes an attempt id only (AGENTS.md hard rule). */
+/** The executor: cross-chain attempts, funding by id only, and housekeeping. */
 export class ExecutorClient extends Caller {
-  async createAttemptNative(intentId: number) {
-    const out = await this.call("create_attempt_native", { intent_id: intentId }, { gas: GAS.createAttempt, deposit: 0n });
-    return parsed(out, NumberId, "create_attempt_native");
+  createAttempt(p: { intentId: number; depositAddress: string; amountIn: bigint; deadlineNs: bigint }) {
+    return this.call("create_attempt", encodeCreateAttempt({ intentId: p.intentId, deposit: p.depositAddress, amountIn: p.amountIn, deadlineNs: p.deadlineNs }), {
+      gas: GAS.createAttempt,
+      deposit: 0n,
+    });
   }
 
-  async createAttemptCrosschain(p: {
-    intentId: number;
-    depositAddress: string;
-    amountIn: bigint | string;
-    quoteDeadlineNs: bigint | string;
-    quoteRef: string;
-  }) {
-    const out = await this.call(
-      "create_attempt_crosschain",
-      {
-        intent_id: p.intentId,
-        deposit_address: p.depositAddress,
-        amount_in: p.amountIn.toString(),
-        quote_deadline: p.quoteDeadlineNs.toString(),
-        quote_ref: p.quoteRef,
-      },
-      { gas: GAS.createAttempt, deposit: 0n },
-    );
-    return parsed(out, NumberId, "create_attempt_crosschain");
+  fund(intentId: number) {
+    return this.call("fund", encodeId(intentId), { gas: GAS.fund, deposit: 0n });
   }
 
-  registerRecipient(attemptId: number) {
-    return this.call("register_recipient", { attempt_id: attemptId }, { gas: GAS.register, deposit: 0n });
-  }
-
-  fundNative(attemptId: number) {
-    return this.call("fund_native", { attempt_id: attemptId }, { gas: GAS.fund, deposit: 0n });
-  }
-
-  fundCrosschain(attemptId: number) {
-    return this.call("fund_crosschain", { attempt_id: attemptId }, { gas: GAS.fund, deposit: 0n });
-  }
-
-  reportDelivery(attemptId: number, deliveredAmount: bigint | string, destTx: string) {
-    return this.call(
-      "report_delivery",
-      { attempt_id: attemptId, delivered_amount: deliveredAmount.toString(), dest_tx: destTx },
-      { gas: GAS.small, deposit: 0n },
-    );
-  }
-
-  flagReconciliation(attemptId: number) {
-    return this.call("flag_reconciliation", { attempt_id: attemptId }, { gas: GAS.small, deposit: 0n });
-  }
-
-  cancelAttempt(attemptId: number) {
-    return this.call("cancel_attempt", { attempt_id: attemptId }, { gas: GAS.small, deposit: 0n });
-  }
-
-  async sweep(limit = 20) {
-    const out = await this.call("sweep", { limit }, { gas: GAS.housekeeping, deposit: 0n });
-    return parsed(out, SweepResult, "sweep");
-  }
-
-  async prune(limit = 20) {
-    const out = await this.call("prune", { limit }, { gas: GAS.housekeeping, deposit: 0n });
-    return parsed(out, NumberId, "prune");
+  async forget(intentIds: number[]): Promise<TxOutcome<number>> {
+    const outcome = await this.call("forget", encodeIds(intentIds), { gas: GAS.forget, deposit: 0n });
+    return borshValue(outcome, decodeU32, "forget");
   }
 }
 
-/** Owner methods: each attaches exactly 1 yoctoNEAR, so a wallet must confirm it. */
+/** Owner calls: flat JSON with exactly 1 yoctoNEAR (needs a full-access key). */
 export class OwnerClient extends Caller {
-  private owner<T = unknown>(method: string, args: Record<string, unknown> | Uint8Array, gas: bigint = GAS.owner) {
-    return this.call<T>(method, args, { gas, deposit: ONE_YOCTO });
+  private owner(method: string, args: Record<string, unknown>, gas: bigint = GAS.owner) {
+    return this.call(method, args, { gas, deposit: ONE_YOCTO });
   }
 
-  approve(intentId: number, expectedIntentHash: string) {
-    return this.owner("approve", { intent_id: intentId, expected_intent_hash: expectedIntentHash });
+  /** The decision names the intent's terms, as the wallet will show them. */
+  decide(intent: Pick<Intent, "id" | "amount_out" | "supplier_id">, action: OwnerAction) {
+    const payout = action === "APPROVE" || action === "RETRY";
+    return this.owner(
+      "decide",
+      { intent_id: intent.id, action, amount_out: intent.amount_out, supplier_id: intent.supplier_id },
+      payout ? GAS.ownerPayout : GAS.owner,
+    );
   }
-  reject(intentId: number) {
-    return this.owner("reject", { intent_id: intentId });
+
+  /** Signs for exactly this deposit and amount (as shown by 1Click to the owner). */
+  authorize(intentId: number, deposit: string, amountIn: string) {
+    return this.owner("authorize", { intent_id: intentId, deposit, amount_in: amountIn });
   }
-  cancel(intentId: number) {
-    return this.owner("cancel", { intent_id: intentId });
+
+  async addSupplier(p: { chain: Chain; asset_id: string; recipient: string; decimals: number }): Promise<TxOutcome<number>> {
+    const outcome = await this.owner("add_supplier", p);
+    return borshValue(outcome, decodeU32, "add_supplier");
   }
-  async amendIntent(intentId: number, amountOut: bigint | string) {
-    const out = await this.owner("amend_intent", { intent_id: intentId, amount_out: amountOut.toString() });
-    return parsed(out, NumberId, "amend_intent");
+
+  updateSupplier(p: { supplier_id: number; chain: Chain; asset_id: string; recipient: string; decimals: number }) {
+    return this.owner("update_supplier", p);
   }
-  authorizeAttempt(attemptId: number, expectedAttemptHash: string) {
-    return this.owner("authorize_attempt", { attempt_id: attemptId, expected_attempt_hash: expectedAttemptHash });
-  }
-  resolveReconciliation(attemptId: number, outcome: ReconcileOutcome) {
-    return this.owner("resolve_reconciliation", { attempt_id: attemptId, outcome });
-  }
-  reconcileInflows(entries: InflowEntry[]) {
-    return this.owner("reconcile_inflows", { entries }, GAS.ownerTransfer);
-  }
-  addAsset(p: { assetId: string; chain: Chain; decimals: number; maxFixedFee: bigint | string }) {
-    return this.owner("add_asset", {
-      asset_id: p.assetId,
-      chain: p.chain,
-      decimals: p.decimals,
-      max_fixed_fee: p.maxFixedFee.toString(),
-    });
-  }
-  setAsset(assetId: string, maxFixedFee: bigint | string, enabled: boolean) {
-    return this.owner("set_asset", { asset_id: assetId, max_fixed_fee: maxFixedFee.toString(), enabled });
-  }
-  async addSupplier(p: {
-    chain: Chain;
-    assetId: string;
-    recipient: string;
-    perPaymentCap: bigint | string;
-    monthlyCap: bigint | string;
-  }) {
-    const out = await this.owner("add_supplier", {
-      chain: p.chain,
-      asset_id: p.assetId,
-      recipient: p.recipient,
-      per_payment_cap: p.perPaymentCap.toString(),
-      monthly_cap: p.monthlyCap.toString(),
-    });
-    return parsed(out, NumberId, "add_supplier");
-  }
-  updateSupplier(supplierId: number, chain: Chain, assetId: string, recipient: string) {
-    return this.owner("update_supplier", { supplier_id: supplierId, chain, asset_id: assetId, recipient });
-  }
-  setSupplierCaps(supplierId: number, perPaymentCap: bigint | string, monthlyCap: bigint | string) {
-    return this.owner("set_supplier_caps", {
-      supplier_id: supplierId,
-      per_payment_cap: perPaymentCap.toString(),
-      monthly_cap: monthlyCap.toString(),
-    });
-  }
-  verifySupplier(supplierId: number, revision: number) {
-    return this.owner("verify_supplier", { supplier_id: supplierId, revision });
-  }
+
   setSupplierActive(supplierId: number, active: boolean) {
     return this.owner("set_supplier_active", { supplier_id: supplierId, active });
   }
+
   setPolicy(policy: Policy) {
-    return this.owner("set_policy", { policy });
+    return this.owner("set_policy", policy);
   }
-  setHostedMode(hostedMode: boolean) {
-    return this.owner("set_hosted_mode", { hosted_mode: hostedMode });
+
+  setPaused(paused: boolean) {
+    return this.owner("set_paused", { paused });
   }
-  pause() {
-    return this.owner("pause", {});
+
+  setRoles(agentId: string, executorId: string) {
+    return this.owner("set_roles", { agent_id: agentId, executor_id: executorId });
   }
-  unpause() {
-    return this.owner("unpause", {});
+
+  withdraw(amount: bigint) {
+    return this.owner("withdraw", { amount: amount.toString() }, GAS.ownerPayout);
   }
-  rotateAgent(newAgentId: string) {
-    return this.owner("rotate_agent", { new_agent_id: newAgentId });
+
+  withdrawNear(amountYocto: bigint) {
+    return this.owner("withdraw_near", { amount: amountYocto.toString() });
   }
-  rotateExecutor(newExecutorId: string) {
-    return this.owner("rotate_executor", { new_executor_id: newExecutorId }, GAS.ownerTransfer);
+
+  forget(intentIds: number[]) {
+    return this.call("forget", encodeIds(intentIds), { gas: GAS.forget, deposit: ONE_YOCTO });
   }
-  withdraw(amount: bigint | string) {
-    return this.owner("withdraw", { amount: amount.toString() }, GAS.ownerTransfer);
-  }
-  withdrawNear(amount: bigint | string) {
-    return this.owner("withdraw_near", { amount: amount.toString() }, GAS.ownerTransfer);
-  }
-  sweep(limit = 20) {
-    return this.owner("sweep", { limit }, GAS.housekeeping);
-  }
-  flagReconciliation(attemptId: number) {
-    return this.owner("flag_reconciliation", { attempt_id: attemptId });
-  }
-  cancelAttempt(attemptId: number) {
-    return this.owner("cancel_attempt", { attempt_id: attemptId });
-  }
-  /** The transaction input is the raw wasm; the contract deploys it and runs `migrate`. */
+
   upgrade(wasm: Uint8Array) {
-    return this.owner("upgrade", wasm, GAS.upgrade);
+    return this.call("upgrade", wasm, { gas: GAS.upgrade, deposit: ONE_YOCTO });
   }
 }

@@ -1,8 +1,8 @@
 /**
  * A complete local GetLeash deployment for integration tests and the offline demo:
- * a NEAR sandbox node, the mock USDC token, the policy contract set up through the real setup
- * functions (keyless policy account, function-call-key role accounts), the Tron USDT asset, and
- * mock-1click settling against the same node.
+ * a NEAR sandbox node, the mock USDC token, the v2 policy contract set up through the real setup
+ * functions (keyless policy account, function-call-key role accounts), and mock-1click settling
+ * against the same node.
  */
 import type { Account } from "near-api-js";
 import { KeyPair } from "near-api-js";
@@ -25,12 +25,11 @@ import {
   OwnerClient,
   type Policy,
   PolicyView,
+  registerOnToken,
   registerTreasury,
   suggestedPolicyBalance,
-  tgas,
   topUp,
 } from "@getleash/shared";
-import { actions } from "near-api-js";
 
 import { type Devnet, ensureWasm, startDevnet, USDC } from "./sandbox.ts";
 
@@ -43,36 +42,32 @@ export const TRON_RECIPIENT = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
 const SECOND = 1_000_000_000n;
 const DAY = 86_400n * SECOND;
 
-/** The demo/test policy: the contract defaults, no cooldown (sandbox time barely moves), and a
- *  small executor-trust budget (self-hosted mode). */
+/** The demo/test policy: v1's default amounts, no cooldown (sandbox time barely moves), and a
+ *  small executor-trust budget (self-hosted). `trust: false` → every cross-chain payment needs
+ *  the owner ("hosted mode" is just a trust budget of 0, D-28). */
 export function worldPolicy(overrides: Partial<Policy> = {}): Policy {
   return {
     autonomous_daily_budget: (50n * USDC).toString(),
     approval_threshold: (25n * USDC).toString(),
     daily_cap: (200n * USDC).toString(),
-    monthly_cap: (2000n * USDC).toString(),
     executor_trust_daily_budget: (5n * USDC).toString(),
-    unverified_cumulative_budget: (10n * USDC).toString(),
-    test_payment_max: (USDC / 2n).toString(),
+    cooldown_max: (USDC / 2n).toString(),
+    max_fixed_fee: (3n * USDC / 2n).toString(),
     max_fee_bps: 100,
-    new_supplier_cooldown_ns: "0",
+    cooldown_ns: "0",
     intent_ttl_ns: (3n * DAY).toString(),
     quote_min_validity_ns: (300n * SECOND).toString(),
     funding_margin_ns: (180n * SECOND).toString(),
-    reconcile_grace_ns: (600n * SECOND).toString(),
-    retention_ns: (30n * DAY).toString(),
-    max_open_intents: 50,
+    callback_grace_ns: (3_600n * SECOND).toString(),
+    retention_ns: (7n * DAY).toString(),
     max_proposals_per_day: 100,
-    max_attempts_per_day: 100,
-    max_registrations_per_day: 20,
     ...overrides,
   };
 }
 
 export type WorldOptions = {
   policy?: Partial<Policy>;
-  hostedMode?: boolean;
-  /** USDC credited with ft_transfer_call after setup (base units). */
+  /** USDC sent to the treasury after setup (base units). */
   topUp?: bigint;
   /** Tron withdrawal fee charged by the mock (USDT base units). */
   tronWithdrawFee?: bigint;
@@ -93,18 +88,9 @@ export type World = {
   mock: MockOneClick;
   oneclick: OneClickClient;
   isRegistered(accountId: string): Promise<boolean>;
-  /** Token balance the contract has not recognised (returned funds, stray transfers): balance − cash.
-   *  Momentarily includes a transfer whose funding callback has not run yet. */
-  unreconciled(): Promise<bigint>;
-  addSupplier(p: {
-    chain: Chain;
-    recipient: string;
-    assetId?: string;
-    perPaymentCap?: bigint;
-    monthlyCap?: bigint;
-    verify?: boolean;
-    register?: boolean;
-  }): Promise<number>;
+  /** The treasury's USDC balance (v2 keeps no ledger: this is the token's number). */
+  balance(): Promise<bigint>;
+  addSupplier(p: { chain: Chain; recipient: string; assetId?: string; register?: boolean }): Promise<number>;
   makeExecutor(
     cfg?: Partial<ExecutorConfig>,
     deps?: { notifier?: Notifier; journal?: Journal; nowMs?: () => number },
@@ -123,20 +109,17 @@ export async function startWorld(opts: WorldOptions = {}): Promise<World> {
     const plan = {
       ownerId: net.owner.id,
       policyId: ids.policyId,
-      agent: { accountId: ids.agentId, publicKey: agentKey.getPublicKey().toString(), balance: near("1"), allowance: near("0.5") },
+      // The mainnet amounts (scripts/src/setup.ts defaults), so the tests run on the same budget.
+      agent: { accountId: ids.agentId, publicKey: agentKey.getPublicKey().toString(), balance: near("0.15"), allowance: near("0.5") },
       executor: {
         accountId: ids.executorId,
         publicKey: executorKey.getPublicKey().toString(),
-        balance: near("2"),
+        balance: near("0.2"),
         allowance: near("1"),
       },
       treasuryToken: net.token.id,
       treasuryDecimals: 6,
-      hostedMode: opts.hostedMode ?? false,
-      policy: worldPolicy({
-        ...(opts.hostedMode ? { executor_trust_daily_budget: "0" } : {}),
-        ...opts.policy,
-      }),
+      policy: worldPolicy(opts.policy),
       wasm,
       policyBalance: suggestedPolicyBalance(wasm.length),
     };
@@ -150,7 +133,6 @@ export async function startWorld(opts: WorldOptions = {}): Promise<World> {
 
     const view = new PolicyView(net.rpc, plan.policyId);
     const owner = new OwnerClient(ownerAccount, plan.policyId);
-    await owner.addAsset({ assetId: TRON_USDT, chain: "TRON", decimals: 6, maxFixedFee: 1_500_000n });
 
     const agentAccount = net.as(ids.agentId, agentKey.toString());
     const executorAccount = net.as(ids.executorId, executorKey.toString());
@@ -197,31 +179,19 @@ export async function startWorld(opts: WorldOptions = {}): Promise<World> {
       mock,
       oneclick,
       isRegistered,
-      unreconciled: async () => {
-        const ledger = await view.ledger();
-        return (await net.ftBalance(plan.policyId)) - BigInt(ledger.cash);
-      },
+      balance: () => net.ftBalance(plan.policyId),
       addSupplier: async (p) => {
+        // A native payout reaches only an account registered on the token; the owner pays that.
         if (p.register && p.chain === "NEAR" && !(await isRegistered(p.recipient))) {
-          await ownerAccount.signAndSendTransaction({
-            receiverId: net.token.id,
-            actions: [actions.functionCall("storage_deposit", { account_id: p.recipient }, tgas(30), near("0.00125"))],
-          });
+          await registerOnToken(ownerAccount, net.token.id, p.recipient);
         }
-        const id = (
-          await owner.addSupplier({
-            chain: p.chain,
-            assetId: p.assetId ?? (p.chain === "NEAR" ? `nep141:${net.token.id}` : TRON_USDT),
-            recipient: p.recipient,
-            perPaymentCap: p.perPaymentCap ?? 100n * USDC,
-            monthlyCap: p.monthlyCap ?? 1_000n * USDC,
-          })
-        ).value;
-        if (p.verify ?? true) {
-          const supplier = await view.supplier(id);
-          await owner.verifySupplier(id, supplier!.revision);
-        }
-        return id;
+        const out = await owner.addSupplier({
+          chain: p.chain,
+          asset_id: p.assetId ?? (p.chain === "NEAR" ? `nep141:${net.token.id}` : TRON_USDT),
+          recipient: p.recipient,
+          decimals: 6,
+        });
+        return out.value;
       },
       makeExecutor: (cfg = {}, deps = {}) => {
         const notifier = deps.notifier instanceof MemoryNotifier ? deps.notifier : new MemoryNotifier();
@@ -234,7 +204,6 @@ export async function startWorld(opts: WorldOptions = {}): Promise<World> {
             oneclick,
             notifier: deps.notifier ?? notifier,
             journal,
-            isRegistered,
             ...(deps.nowMs ? { nowMs: deps.nowMs } : {}),
             log,
           },
