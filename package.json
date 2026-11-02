@@ -22,7 +22,7 @@
     "services": "tsx scripts/src/services.ts",
     "devnet": "tsx scripts/src/devnet.ts",
     "mock:1click": "tsx scripts/src/mock-1click.ts",
-    "render:env": "tsx scripts/src/render-env.ts",
+    "deploy:env": "tsx scripts/src/deploy-env.ts",
     "dashboard": "pnpm --filter @getleash/web dev"
   },
   "devDependencies": {

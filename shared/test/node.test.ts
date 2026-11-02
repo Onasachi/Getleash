@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { JsonRpcProvider, KeyPair } from "near-api-js";
 import { describe, expect, it } from "vitest";
 
-import { DeliveredNotices, noticeKey, readKeyFile, signingAccount } from "../src/node.ts";
+import { DeliveredNotices, loadServiceDirectory, noticeKey, readKeyFile, signingAccount } from "../src/node.ts";
 
 const rpc = new JsonRpcProvider({ url: "http://127.0.0.1:9" }); // never contacted: no call is made
 const dir = mkdtempSync(join(tmpdir(), "getleash-keys-"));
@@ -83,5 +83,20 @@ describe("delivered notices", () => {
     expect(reader.has("approval:9")).toBe(false);
     appendFileSync(path, `val:9"}\n`);
     expect(reader.has("approval:9")).toBe(true);
+  });
+});
+
+describe("service directory", () => {
+  it("prefers GETLEASH_DIRECTORY_BASE64 over the file, for hosts without the owner's files", () => {
+    const path = join(dir, "directory.json");
+    writeFileSync(path, JSON.stringify({ suppliers: [{ supplier_id: 1, name: "From the file", currency: "USD" }] }));
+    expect(loadServiceDirectory(path).suppliers[0]!.name).toBe("From the file");
+    const encoded = Buffer.from(JSON.stringify({ suppliers: [{ supplier_id: 1, name: "From the variable", currency: "USD" }] })).toString("base64");
+    process.env.GETLEASH_DIRECTORY_BASE64 = encoded;
+    try {
+      expect(loadServiceDirectory(path).suppliers[0]!.name).toBe("From the variable");
+    } finally {
+      delete process.env.GETLEASH_DIRECTORY_BASE64;
+    }
   });
 });

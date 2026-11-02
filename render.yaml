@@ -1,13 +1,14 @@
-# Render Blueprint for the GetLeash services (docs/deployment.md, "Run the services on Render").
+# Render Blueprint for the GetLeash services (docs/deployment.md, "Host the services and the dashboard").
+# The dashboard runs elsewhere (Vercel); this is the executor and the Telegram bot.
 #
 # The owner key never goes here: setup, seeding and top-ups are signed on the owner's machine. The worker
 # holds only the agent's and the executor's function-call keys, which NEAR limits to their own methods
 # (propose; create_attempt, fund, forget). Values marked `sync: false` are secrets or belong to one
-# deployment: `pnpm render:env --network mainnet` writes them to files to paste into Render.
+# deployment: `pnpm deploy:env --network mainnet` writes them to .env.render, to paste into Render.
 services:
-  # The executor and the Telegram bot in one always-on process group (scripts/src/services.ts), sharing one
-  # disk: the executor's journal, the bot's update log, the encrypted invoice store and the record that
-  # sends each owner notice once. Background workers have no free plan.
+  # Both services in one always-on process group (scripts/src/services.ts starts either again if it
+  # stops), sharing one disk: the executor's journal, the bot's update log, the encrypted invoice store
+  # and the record that sends each owner notice once. Background workers have no free plan.
   - type: worker
     name: getleash-services
     runtime: node
@@ -24,9 +25,6 @@ services:
         value: 23.4.0
       - key: GETLEASH_DATA_DIR
         value: /var/data
-      # Supplier names: upload .data/<network>/directory.json as a secret file named directory.json.
-      - key: GETLEASH_DIRECTORY
-        value: /etc/secrets/directory.json
       - { key: NEAR_NETWORK, sync: false }
       - { key: OWNER_ACCOUNT_ID, sync: false }
       - { key: POLICY_CONTRACT_ID, sync: false }
@@ -42,24 +40,7 @@ services:
       - { key: TELEGRAM_ALLOWED_CHAT_IDS, sync: false }
       - { key: TENANT_SECRET, sync: false }
       - { key: INVOICE_STORE_KEY, sync: false }
-      # The dashboard's public address, for the links in Telegram (set it once the dashboard is up).
+      # Supplier names (the directory `pnpm seed` writes), which the agent matches invoices against.
+      - { key: GETLEASH_DIRECTORY_BASE64, sync: false }
+      # The dashboard's public address, for the links in Telegram.
       - { key: DASHBOARD_URL, sync: false }
-
-  # The dashboard: reads the chain in the visitor's browser; owner actions are signed in the owner's
-  # wallet. The free plan sleeps when idle (the first visit after a quiet spell takes about a minute);
-  # starter keeps it awake. NEXT_PUBLIC_* values are built in, so change them with a new deploy.
-  - type: web
-    name: getleash-dashboard
-    runtime: node
-    plan: free
-    branch: feature/getleash-core
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @getleash/web build
-    startCommand: pnpm --filter @getleash/web start
-    envVars:
-      - key: NODE_VERSION
-        value: 23.4.0
-      - key: GETLEASH_DIRECTORY
-        value: /etc/secrets/directory.json
-      - { key: NEXT_PUBLIC_NEAR_NETWORK, sync: false }
-      - { key: NEXT_PUBLIC_POLICY_CONTRACT_ID, sync: false }
-      - { key: DASHBOARD_SESSION_SECRET, sync: false }

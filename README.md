@@ -181,8 +181,8 @@ pnpm exec tsx --env-file=.env --env-file=.env.mainnet executor/src/main.ts      
 pnpm exec tsx --env-file=.env --env-file=.env.mainnet channels/telegram/src/main.ts
 pnpm status --network mainnet --policy getleash.<you>.near
 ```
-To run the executor, the bot and the dashboard on Render instead, see "Run the services on Render" in
-the same document (`render.yaml`, `pnpm render:env`). The owner's key is read from the owner's own
+To host them instead (the executor and the bot on Render, the dashboard on Vercel), see "Host the
+services and the dashboard" in the same document (`render.yaml`, `pnpm deploy:env`). The owner's key is read from the owner's own
 near-cli credentials and is never configured in a service. Every script prints what it will sign, and its NEAR cost, and asks first. Setup cost 1.424 NEAR
 on mainnet. Each cross-chain payment also costs the contract 0.00125 NEAR to register the 1Click deposit
 account on USDC, and each accepted invoice keeps about 0.0008 NEAR of storage to block duplicates.
