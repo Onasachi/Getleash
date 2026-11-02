@@ -131,7 +131,7 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
 ```bash
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
 pnpm keygen --network mainnet --account executor-1.<you>.near
-pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 <published hash>
+pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 <published hash> --policy deploy/mainnet-policy.json
 pnpm topup --network mainnet --owner <you>.near --amount 20
 pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>
 pnpm executor        # and in another terminal: pnpm bot
