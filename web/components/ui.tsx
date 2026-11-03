@@ -1,15 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import type { Tone, TxOutcome } from "@getleash/shared";
 
 import { EXPLORER, NETWORK, POLICY_ID } from "@/lib/config";
+import { startTelegramMiniApp } from "@/lib/telegram";
 import { useWallet } from "@/lib/wallet";
 
 export function Shell({ children }: { children: ReactNode }) {
   const { accountId, connect, disconnect } = useWallet();
+  useEffect(() => startTelegramMiniApp(), []);
   return (
     <>
       <header className="top">

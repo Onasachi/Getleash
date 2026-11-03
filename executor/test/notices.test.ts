@@ -96,7 +96,7 @@ describe("owner notices shared with the bot", () => {
     expect(notifier.kinds()).toEqual(["approval_needed", "payout_failed"]);
     // Plain words, with the owner's own limit; without a directory the supplier is named by its address.
     expect(notifier.notices[0]!.text).toBe(
-      "👋 bob.testnet asks for 3.00 USDC. It needs your OK because it is above the 2.50 USDC the agent may pay on its own (payment #3). Review and approve:",
+      "👋 bob.testnet asks for 3.00 USDC. It needs your OK because it is above the 2.50 USDC the agent may pay on its own (payment #3).",
     );
     await executor.tick();
     expect(notifier.notices).toHaveLength(2);

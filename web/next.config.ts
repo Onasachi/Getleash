@@ -13,7 +13,9 @@ const config: NextConfig = {
       {
         source: "/(.*)",
         headers: [
-          { key: "X-Frame-Options", value: "DENY" },
+          // No page may frame the dashboard except Telegram's web client, which shows Mini Apps in a frame
+          // (the bot's buttons open payment pages inside Telegram). Telegram's apps use their own webview.
+          { key: "Content-Security-Policy", value: "frame-ancestors 'self' https://web.telegram.org" },
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "X-Content-Type-Options", value: "nosniff" },
         ],

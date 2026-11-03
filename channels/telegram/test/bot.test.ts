@@ -11,6 +11,7 @@ import { UpdateLog } from "@getleash/ingestion";
 import type { IntentStatus, PolicyView } from "@getleash/shared";
 
 import { coveredNotices, parseIdList, TelegramChannel } from "../src/bot.ts";
+import { linkButton, TelegramNotifier } from "../src/notifier.ts";
 
 const OWNER = 1001;
 const CHAT = 2002;
@@ -37,9 +38,11 @@ function setup(
     fileSize?: number;
     outcome?: Partial<AgentOutcome>;
     ownerChatId?: string;
+    dashboardUrl?: string;
+    refuseButtons?: boolean;
   } = {},
 ) {
-  const sent: Array<{ chatId: string | number; text: string }> = [];
+  const sent: Array<{ chatId: string | number; text: string; other?: Record<string, unknown> }> = [];
   const processed: string[] = [];
   const downloads: string[] = [];
   const delivered: string[] = [];
@@ -65,8 +68,9 @@ function setup(
   } as unknown as PolicyView;
   const channel = new TelegramChannel({
     api: {
-      sendMessage: async (chatId, text) => {
-        sent.push({ chatId, text });
+      sendMessage: async (chatId, text, other) => {
+        if (overrides.refuseButtons && other?.reply_markup) throw new Error("Bad Request: BUTTON_TYPE_INVALID");
+        sent.push({ chatId, text, other });
         return {};
       },
       getFile: async (fileId) => ({ file_path: `documents/${fileId}.pdf`, file_size: overrides.fileSize ?? 1000 }),
@@ -81,7 +85,7 @@ function setup(
     agent,
     view,
     directory: () => ({ suppliers: [] }),
-    dashboardUrl: "https://getleash.example",
+    dashboardUrl: overrides.dashboardUrl ?? "https://getleash.example",
     ownerChatId: overrides.ownerChatId ?? null,
     delivered: { add: (keys: readonly string[]) => void delivered.push(...keys) },
   });
@@ -142,7 +146,11 @@ describe("Telegram channel", () => {
     const inOwnerChat = setup({ outcome: pending, ownerChatId: String(CHAT) });
     await inOwnerChat.channel.handle(message(509, { text: "INVOICE\nTotal: USD 3" }));
     expect(inOwnerChat.sent.at(-1)!.text).toContain("Acme asks for 18.00. It needs your OK because it is above what the agent may pay on its own (payment #2).");
-    expect(inOwnerChat.sent.at(-1)!.text).toContain("Review and approve: https://getleash.example/intent/2");
+    // The page opens inside Telegram (a Mini App button), so the address is not in the text.
+    expect(inOwnerChat.sent.at(-1)!.text).not.toContain("https://");
+    expect(inOwnerChat.sent.at(-1)!.other?.reply_markup).toEqual({
+      inline_keyboard: [[{ text: "Review and approve", web_app: { url: "https://getleash.example/intent/2" } }]],
+    });
     expect(inOwnerChat.delivered).toEqual(["approval:2"]);
 
     // Invoices from any other approved chat leave the owner's notices to the executor.
@@ -171,5 +179,51 @@ describe("Telegram channel", () => {
     // Still in flight, or cross-chain: the executor's later notices carry news the reply did not.
     expect(coveredNotices(proposed("PAYING", null))).toEqual([]);
     expect(coveredNotices(proposed("APPROVED", null))).toEqual([]);
+  });
+
+  it("links become Mini App buttons in private chats, link buttons in groups, and text when needed", async () => {
+    const pending = { status: "proposed", intentStatus: "PENDING", result: { accepted: true, intent_id: 7, status: "PENDING", route: "ABOVE_THRESHOLD", reason: null } } as const;
+    expect(linkButton("-100123", "https://getleash.example/intent/7", "Review and approve")).toEqual({
+      inline_keyboard: [[{ text: "Review and approve", url: "https://getleash.example/intent/7" }]],
+    });
+    // Telegram opens Mini Apps over https only: a local dashboard keeps the address in the text.
+    const local = setup({ outcome: pending, dashboardUrl: "http://localhost:3000" });
+    await local.channel.handle(message(511, { text: "INVOICE\nTotal: USD 3" }));
+    expect(local.sent.at(-1)!.text).toContain("http://localhost:3000/intent/7");
+    expect(local.sent.at(-1)!.other?.reply_markup).toBeUndefined();
+    // If Telegram refuses the button, the reply still goes out, with the address in the text.
+    const refused = setup({ outcome: pending, refuseButtons: true });
+    await refused.channel.handle(message(512, { text: "INVOICE\nTotal: USD 3" }));
+    expect(refused.sent.at(-1)!.text).toContain("https://getleash.example/intent/7");
+    // Refusals carry no button: there is nothing to approve.
+    const plain = setup();
+    await plain.channel.handle(message(513, { text: "INVOICE\nTotal: USD 3" }));
+    expect(plain.sent.at(-1)!.other?.reply_markup).toBeUndefined();
+  });
+});
+
+describe("Telegram notifier (executor notices)", () => {
+  function fakeTelegram(status: (body: Record<string, unknown>) => number) {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      return new Response("{}", { status: status(body) });
+    }) as unknown as typeof fetch;
+    return { bodies, fetchImpl };
+  }
+
+  it("sends the link as a Mini App button named after the notice", async () => {
+    const telegram = fakeTelegram(() => 200);
+    await new TelegramNotifier("token", "1001", telegram.fetchImpl).notify({ kind: "authorization_needed", text: "Ready to send.", link: "https://getleash.example/intent/3" });
+    expect(telegram.bodies).toHaveLength(1);
+    expect(telegram.bodies[0]!.text).toBe("Ready to send.");
+    expect(telegram.bodies[0]!.reply_markup).toEqual({ inline_keyboard: [[{ text: "Confirm the transfer", web_app: { url: "https://getleash.example/intent/3" } }]] });
+  });
+
+  it("falls back to the link in the text when Telegram refuses the button", async () => {
+    const telegram = fakeTelegram((body) => (body.reply_markup ? 400 : 200));
+    await new TelegramNotifier("token", "1001", telegram.fetchImpl).notify({ kind: "approval_needed", text: "Needs your OK.", link: "https://getleash.example/intent/2" });
+    expect(telegram.bodies.map((b) => b.text)).toEqual(["Needs your OK.", "Needs your OK.\nhttps://getleash.example/intent/2"]);
   });
 });
