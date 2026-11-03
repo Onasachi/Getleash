@@ -171,8 +171,10 @@ Vercel deployment.
 
 - **Approve, without leaving Telegram:** the bot's "Review and approve" button opens the payment page
   inside Telegram (a Mini App; the dashboard needs an https address). Its main button asks your wallet to
-  sign: HOT Wallet runs inside Telegram too (https://t.me/hot_wallet/app), so import the owner account
-  there once (its recovery phrase or private key, typed into HOT Wallet only) and approving is two taps.
+  sign: HOT Wallet runs inside Telegram too, and inside Telegram the dashboard goes to it directly. Send
+  the bot `/wallet` once: "Open HOT Wallet" opens it, where you import the owner account (its recovery
+  phrase, typed into HOT Wallet only), and "Check my wallet" connects it and confirms it signs as the
+  owner, with NEAR for fees, without sending anything. After that, approving is two taps.
   The bot never approves anything itself: owner calls attach 1 yoctoNEAR, which only a full-access key,
   your wallet's, can sign. Outside Telegram, any NEAR wallet the dashboard offers works (Meteor, HOT,
   Intear, Ledger), and with near-cli the page offers the ready-to-run command.

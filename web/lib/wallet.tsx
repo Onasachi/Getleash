@@ -6,9 +6,10 @@
  */
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
-import { parseOutcome, type TxOutcome } from "@getleash/shared";
+import { HOT_WALLET_ID, parseOutcome, type TxOutcome } from "@getleash/shared";
 
 import { NETWORK, POLICY_ID } from "./config";
+import { inTelegram } from "./telegram";
 
 type Connector = import("@hot-labs/near-connect").NearConnector;
 
@@ -16,7 +17,7 @@ type WalletState = {
   accountId: string | null;
   /** The near-connect wallet in use, e.g. "near-cli" or "meteor-wallet". */
   walletId: string | null;
-  /** Opens the wallet picker; resolves to the connected account (null if the owner closed it). */
+  /** Opens the wallet picker (inside Telegram, HOT Wallet directly); resolves to the connected account (null if the owner closed it). */
   connect: () => Promise<string | null>;
   disconnect: () => Promise<void>;
   /** Signs an owner call with 1 yoctoNEAR attached. */
@@ -63,11 +64,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback(async () => {
-    const wallet = await connector.current?.connect();
-    const accounts = (await wallet?.getAccounts()) ?? [];
+    const c = connector.current;
+    if (!c) return null;
+    // Inside Telegram only HOT Wallet runs in Telegram itself (near-connect routes it there), so the
+    // list of wallets is skipped. Elsewhere the owner picks any wallet.
+    await c.whenManifestLoaded.catch(() => undefined);
+    const hot = inTelegram() && c.availableWallets.some((w) => w.manifest.id === HOT_WALLET_ID);
+    const wallet = await c.connect(hot ? { walletId: HOT_WALLET_ID } : {});
+    const accounts = await wallet.getAccounts();
     const account = accounts[0]?.accountId ?? null;
     setAccountId(account);
-    setWalletId(wallet?.manifest.id ?? null);
+    setWalletId(wallet.manifest.id);
     return account;
   }, []);
 

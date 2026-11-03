@@ -5,8 +5,16 @@
  */
 import type { InvoiceInput } from "@getleash/ingestion";
 
-/** `action` names the link's button where the channel has buttons ("Review and approve"). */
-export type Notice = { text: string; link?: string | undefined; action?: string | undefined };
+/**
+ * `action` names the link's button where the channel has buttons ("Review and approve"); `buttons` are
+ * further links offered as buttons (/wallet offers two). Channels without buttons put links in the text.
+ */
+export type Notice = {
+  text: string;
+  link?: string | undefined;
+  action?: string | undefined;
+  buttons?: ReadonlyArray<{ text: string; url: string }> | undefined;
+};
 
 export type Received =
   | { kind: "invoice"; input: InvoiceInput; replyTo: string }
