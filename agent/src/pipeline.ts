@@ -12,6 +12,7 @@ import {
   type AgentClient,
   ContractCallError,
   type Directory,
+  isRateLimited,
   type IntentStatus,
   type PolicyView,
   type ProposeResult,
@@ -71,7 +72,8 @@ export class InvoiceAgent {
       const matched = decision.action === "propose" ? decision.supplierId : null;
       outcome = await this.act(input, extracted, decision, suppliers.find((s) => s.id === matched) ?? null);
     } catch (error) {
-      const code = error instanceof ContractCallError ? error.code : (error as Error).message;
+      const busy = isRateLimited(error);
+      const code = error instanceof ContractCallError ? error.code : busy ? "RPC_RATE_LIMITED" : (error as Error).message;
       outcome = {
         key: input.key,
         status: "failed",
@@ -83,7 +85,9 @@ export class InvoiceAgent {
         obligationId: null,
         badge: extracted ? BADGE_LABEL[extracted.verification.badge] : BADGE_LABEL.VERIFICATION_UNAVAILABLE,
         model: extracted?.model ?? null,
-        summary: `could not process the invoice: ${code}`,
+        summary: busy
+          ? "The NEAR network connection was busy (rate-limited), even after retrying, so nothing was proposed or paid. Send the invoice again in a minute."
+          : `could not process the invoice: ${code}`,
         notices: [{ key: `failed-${input.key}`, text: `Invoice ${input.key} could not be processed (${code}).` }],
       };
     }

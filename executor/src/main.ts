@@ -13,8 +13,9 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { TelegramNotifier } from "@getleash/channel-telegram/notifier";
-import { ExecutorClient, NETWORKS, networkId, OneClickClient, PolicyView, provider } from "@getleash/shared";
+import { ExecutorClient, NETWORKS, networkId, OneClickClient, PolicyView, provider, serviceRpcUrls } from "@getleash/shared";
 import {
+  dashboardUrlFromEnv,
   dataDir,
   DeliveredNotices,
   directoryPath,
@@ -47,7 +48,7 @@ function env(name: string, fallback?: string): string {
 }
 
 const network = networkId(process.env.NEAR_NETWORK);
-const rpc = provider(process.env.NEAR_RPC_URL ?? NETWORKS[network].rpcUrl);
+const rpc = provider(serviceRpcUrls(network, process.env.NEAR_RPC_URL));
 const policyId = env("POLICY_CONTRACT_ID");
 const executorId = env("EXECUTOR_ACCOUNT_ID");
 const keyFile = process.env.EXECUTOR_KEY_FILE ?? keyFilePath(network, executorId);
@@ -85,7 +86,7 @@ const executor = new Executor(
     policyId,
     quietStart,
     originAsset: `nep141:${state.token_id}`,
-    dashboardUrl: process.env.DASHBOARD_URL ?? null,
+    dashboardUrl: dashboardUrlFromEnv(),
   },
   {
     view,
@@ -106,7 +107,7 @@ const executor = new Executor(
   },
 );
 
-console.log(`executor ${executorId} → ${policyId} on ${network}${values.mock ? " (mock 1Click)" : ""}`);
+console.log(`executor ${executorId} → ${policyId} on ${network}${values.mock ? " (mock 1Click)" : ""}, dashboard ${dashboardUrlFromEnv() ?? "not set"}`);
 if (quietStart) console.log("no journal yet: the first pass records what is already true without notifying");
 if (values.once) {
   const report = await executor.tick();
@@ -114,5 +115,7 @@ if (values.once) {
 } else {
   process.on("SIGINT", () => executor.stop());
   process.on("SIGTERM", () => executor.stop());
-  await executor.run(Number(values.interval ?? process.env.EXECUTOR_INTERVAL_MS ?? 5_000));
+  // Every 10 s: each pass makes about four RPC calls, and the public RPCs limit how many a shared host
+  // address (Render's) may make.
+  await executor.run(Number(values.interval ?? process.env.EXECUTOR_INTERVAL_MS ?? 10_000));
 }

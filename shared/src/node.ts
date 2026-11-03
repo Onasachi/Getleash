@@ -137,6 +137,16 @@ export function loadServiceDirectory(path: string): Directory {
   return Directory.parse(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")));
 }
 
+/**
+ * The dashboard's public address from DASHBOARD_URL, for the links in Telegram. An address typed without
+ * a scheme ("www.getleash.xyz") gets https://, since Telegram makes buttons from https links only.
+ */
+export function dashboardUrlFromEnv(value = process.env.DASHBOARD_URL): string | null {
+  const trimmed = value?.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 export function saveDirectory(path: string, directory: Directory): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${JSON.stringify(Directory.parse(directory), null, 2)}\n`, { mode: 0o600 });

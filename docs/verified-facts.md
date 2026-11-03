@@ -269,6 +269,12 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   actions })` accepting `{ type: "FunctionCall", params: { methodName, args, gas, deposit } }`, and
   `wallet.signMessage({ message, recipient, nonce })` returning `{ accountId, publicKey, signature }`
   (signature base64). Not yet exercised with a real wallet.
+- Public mainnet RPCs (checked 2026-11-03): FastNEAR (`rpc.mainnet.fastnear.com`) turned the bot on Render
+  away with HTTP 429 and the body `{"jsonrpc": "2.0", "error": {"code": -429, "message": "Rate limits
+  exceeded. ..."}, "id": "1"}`; near-api-js 7.4.0 retries only HTTP 500, 503 and 408 (installed source,
+  `retryConfig`), so the error reached the owner. A view call answered on `rpc.mainnet.near.org` and
+  `near.drpc.org` (both allow browser requests); `near.lava.build` answered HTTP 410 "This endpoint has been
+  discontinued"; `1rpc.io/near` does not offer `query`. `rpc.testnet.near.org` answered `status`.
 - HOT Wallet in Telegram (checked 2026-11-03): near-connect's manifest lists `hot-wallet` as the only wallet
   with a Telegram Mini App (`platform.tga` = `https://t.me/hot_wallet/app`); `t.me/hot_wallet` is titled
   "HOT Wallet". `connector.connect({ walletId: "hot-wallet" })` skips the wallet list: in a desktop browser
