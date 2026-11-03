@@ -45,7 +45,8 @@ services:
       - { key: TELEGRAM_ALLOWED_CHAT_IDS, sync: false }
       - { key: TENANT_SECRET, sync: false }
       - { key: INVOICE_STORE_KEY, sync: false }
-      # Supplier names (the directory `pnpm seed` writes), which the agent matches invoices against.
+      # Supplier names from `pnpm seed`, which the agent matches invoices against. Suppliers added in
+      # Telegram (/addsupplier, /invite) need no change here: the bot keeps their names on the disk.
       - { key: GETLEASH_DIRECTORY_BASE64, sync: false }
       # The dashboard's public address, for the links in Telegram.
       - { key: DASHBOARD_URL, sync: false }

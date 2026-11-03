@@ -8,12 +8,15 @@ import type { InvoiceInput } from "@getleash/ingestion";
 /**
  * `action` names the link's button where the channel has buttons ("Review and approve"); `buttons` are
  * further links offered as buttons (/wallet offers two). Channels without buttons put links in the text.
+ * `ask` marks a question whose answer comes as a reply (/addsupplier asks for a name and an address);
+ * Telegram opens a reply box with it as the placeholder. A question carries no links.
  */
 export type Notice = {
   text: string;
   link?: string | undefined;
   action?: string | undefined;
   buttons?: ReadonlyArray<{ text: string; url: string }> | undefined;
+  ask?: string | undefined;
 };
 
 export type Received =

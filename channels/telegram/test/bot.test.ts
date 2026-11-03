@@ -75,6 +75,7 @@ function setup(
         return {};
       },
       getFile: async (fileId) => ({ file_path: `documents/${fileId}.pdf`, file_size: overrides.fileSize ?? 1000 }),
+      getMe: async () => ({ username: "GetLeashBot" }),
     },
     updateLog: new UpdateLog(null),
     allowedUsers: parseIdList(String(OWNER)),
@@ -166,6 +167,19 @@ describe("Telegram channel", () => {
     await channel.handle(message(508, { text: "INVOICE\nFrom: Acme\nInvoice No: 1001\nTotal: USD 18" }));
     expect(sent.at(-1)!.text).toContain("⛔ Not paid: this invoice was already paid, or is already waiting for you (OBLIGATION_OPEN_OR_PAID).");
     expect(sent.at(-1)!.text).toContain("Inference: Verification unavailable");
+  });
+
+  it("an invoice from someone not on the list says how to add them, without offering the invoice's own address", async () => {
+    const { channel, sent } = setup({
+      outcome: {
+        result: { accepted: false, intent_id: null, status: null, route: null, reason: "UNKNOWN_SUPPLIER" },
+        decision: { action: "propose", supplierId: 0, supplierName: "Global Freight Solutions", amountOut: 45_000_000n, invoiceNumber: "GFS7781", reviewFlag: null, flags: [], notes: [] },
+      },
+    });
+    await channel.handle(message(517, { text: "INVOICE\nFrom: Global Freight Solutions\nInvoice No: GFS-7781\nTotal: USDT 45.00" }));
+    expect(sent.at(-1)!.text).toContain("⛔ Not paid: the supplier is not on your approved list (UNKNOWN_SUPPLIER). That was 45.00 to Global Freight Solutions.");
+    expect(sent.at(-1)!.text).toContain("add them first: /addsupplier with their name and the address they gave you themselves (an invoice can be faked)");
+    expect(sent.at(-1)!.other?.reply_markup).toBeUndefined();
   });
 
   it("a reply in the owner's chat stands in for the executor's notice of the same news", async () => {

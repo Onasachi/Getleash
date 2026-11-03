@@ -47,6 +47,11 @@ export function openTelegramLink(url: string): void {
   postEvent("web_app_open_tg_link", { path_full: pathname + search });
 }
 
+/** Closes the Mini App, back to the chat (inside Telegram only). */
+export function closeMiniApp(): void {
+  if (inTelegram()) postEvent("web_app_close");
+}
+
 export function startTelegramMiniApp(): void {
   if (typeof window === "undefined" || !launchedFromTelegram()) return;
   postEvent("web_app_ready");

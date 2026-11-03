@@ -37,6 +37,12 @@ wallet would fix the speed and make the fraud worse: one prompt injection and th
 - The **dashboard** (Next.js) reads the chain from the owner's browser and, before offering a
   signature for a cross-chain payment, fetches 1Click's own record of the deposit address and
   compares it field by field with what the contract committed.
+- **Suppliers are added from Telegram**: `/addsupplier Acme acme.near`, or `/invite`, a one-time link
+  through which the supplier sends its own address. The bot checks the address (Tron checksum, that the
+  NEAR account exists, not already listed) and replies with a button. The button opens the dashboard's page,
+  where the owner's wallet signs `add_supplier` with those exact terms. The bot then saves the name in
+  the off-chain directory. It never offers to add the address an unknown supplier's invoice asks to be
+  paid at (docs/decisions.md D-29).
 - The **owner's wallet** holds every power that matters: approvals, supplier changes, policy,
   pause, role rotation, withdrawals, upgrades. Each owner call needs 1 yoctoNEAR, so it needs a
   wallet confirmation, and its JSON arguments name what is signed: `decide` repeats the intent's
@@ -61,22 +67,22 @@ Settlement trust that remains: during a cross-chain swap, funds sit briefly with
 | Data | Where | Protection | Not protected against |
 |---|---|---|---|
 | Invoice files and contents | Telegram → bot → OCR → inference → encrypted store | AES-256-GCM at rest; inference in a TEE, verified per response | Telegram cloud chats are not end-to-end encrypted; a compromise of the running bot process (which holds the key) |
-| Supplier names and contacts | Off-chain directory | Shown only in the private view, after a NEP-413 signature by the owner | Server compromise |
+| Supplier names and contacts | Off-chain directory: the services' disk (names added in Telegram) and `GETLEASH_DIRECTORY_BASE64` (names from `pnpm seed`); never in a link | Shown only in the private view, after a NEP-413 signature by the owner, and in the bot's allowlisted chats | Server compromise; Telegram cloud chats are not end-to-end encrypted |
 | Invoice identity | On-chain keyed HMAC | Not guessable without `TENANT_SECRET` | Leak of `TENANT_SECRET` |
 | Amounts, destination addresses, timing | On-chain | **Public** | Anyone; stated plainly |
 | Refusal reasons | Event logs (enum codes) | No model text on-chain, so no exfiltration channel | — |
 
-## Status (2 Nov 2026)
+## Status (3 Nov 2026)
 
 | Part | State |
 |---|---|
 | Policy contract v2 (`contract/`) | **Implemented.** Rewritten lean to fit a ~1.5 NEAR mainnet deployment (docs/decisions.md D-28): the release wasm is 83,900 B instead of 370,399 B. 47 Rust tests (unit tests named after PLAN §9 rows, property tests including random walks over the whole contract, a fuzzed JSON parser, golden Borsh vectors) plus a real-node test. v1, with full on-chain accounting, is tagged `v1-full-contract`. |
 | Setup and owner scripts (`scripts/`, `shared/`) | **Implemented.** Keyless policy account in one owner transaction; role accounts with function-call keys only; top-up, seeding, status, rotation. Tested on a local node. |
 | Executor + mock 1Click (`executor/`, `mock-1click/`) | **Implemented.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes. Tested on a local node. |
-| Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands. Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram: unit tests with a fake Bot API, and the live bot on testnet (next rows). |
-| Dashboard (`web/`) | **Implemented.** In plain words: the treasury, "Needs you" with one button per payment, and a payment page that says who gets what and why it needs you (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record), with the checks and raw terms one click away; pause; NEP-413 private view with supplier names. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs). |
+| Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands, adding suppliers from Telegram (`/addsupplier`, `/invite`; unit tests, not yet run live). Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram: unit tests with a fake Bot API, and the live bot on testnet (next rows). |
+| Dashboard (`web/`) | **Implemented.** In plain words: the treasury, "Needs you" with one button per payment, and a payment page that says who gets what and why it needs you (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record), with the checks and raw terms one click away; pause; a page that checks a new supplier's address and adds it with one wallet signature (`/suppliers/new`, opened from the bot); NEP-413 private view with supplier names. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs); the add-supplier page was checked read-only against mainnet. |
 | Testnet rehearsal | **Done 2 Nov** with the release wasm at `getleash.getleash-owner.testnet` and Circle's testnet USDC. Four invoices sent to the live bot, read by NEAR AI Cloud: 1.80 paid inside the agent's call; the same invoice re-sent as a reworded reminder, refused on-chain (`OBLIGATION_OPEN_OR_PAID`); 3.00 held (`ABOVE_THRESHOLD`) and paid when the owner approved it from the dashboard; 1.00 USDT to a Tron address, quoted by mock-1click (`pnpm mock:1click`; nothing reaches Tron), its deposit authorized by the owner and funded by the executor, with the contract registering the deposit account on USDC and paying it in one receipt. Gas and NEAR per step: `docs/verified-facts.md`. |
-| Mainnet deployment | **Deployed 2 Nov** at `getleash.onanikes.near`: 0 access keys, code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release wasm below), the one-tenth limits of `deploy/mainnet-policy.json`. Setup cost the owner 1.424 NEAR. One supplier added (in its 2-day cooldown until 4 Nov). First payment on 3 Nov: 0.50 USDC to that supplier, approved by the owner because of the cooldown (`propose` tx `AkcfngL6HZCe7ReW8TAquWCsDbr6pzZAqMsbc1cJtwk8`, `decide` tx `DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye`); 4.41 USDC left in the treasury. |
+| Mainnet deployment | **Deployed 2 Nov** at `getleash.onanikes.near`: 0 access keys, code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release wasm below), the one-tenth limits of `deploy/mainnet-policy.json`. Setup cost the owner 1.424 NEAR. One supplier added (in its 2-day cooldown until 4 Nov). First payment on 3 Nov: 0.50 USDC to that supplier, approved by the owner because of the cooldown (`propose` tx `AkcfngL6HZCe7ReW8TAquWCsDbr6pzZAqMsbc1cJtwk8`, `decide` tx `DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye`). The second, the same day, was approved from Telegram: the bot's button opened the payment page inside Telegram and the owner signed in HOT Wallet (`decide` tx `Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9`); 3.91 USDC left in the treasury. |
 | `demo-getleash` panel | Not yet. |
 
 ## Try it
@@ -99,11 +105,13 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 67 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
+   → `Tests 100 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
    parsing, 1Click quote checks (against the shape of a live quote), obligation ids, input limits,
    the Telegram channel (replayed update processed once, allowlist, size limits, replies in plain
-   words with the enum code kept, payment pages and `/wallet` as Mini App buttons), owner notices
-   sent once between the bot and the executor,
+   words with the enum code kept, payment pages and `/wallet` as Mini App buttons), adding suppliers
+   from Telegram (details read without a model, bad or unknown addresses refused, one-time invites that
+   strangers get no answer from, the name saved once the supplier is on-chain), supplier matching by
+   address, owner notices sent once between the bot and the executor,
    near-cli-rs key files, the plain-language wording shared by the dashboard and Telegram, and the
    TEE verification policy (stale, invalid or missing evidence never earns a "verified" badge).
 
@@ -176,7 +184,7 @@ The full flow, with prerequisites, what each step prints and the measured costs,
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
 pnpm keygen --network mainnet --account executor-1.<you>.near
 pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d --policy deploy/mainnet-policy.json
-pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>
+pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>   # or later, one by one: /addsupplier in Telegram
 pnpm topup --network mainnet --owner <you>.near --amount 20
 pnpm exec tsx --env-file=.env --env-file=.env.mainnet executor/src/main.ts       # and in another terminal:
 pnpm exec tsx --env-file=.env --env-file=.env.mainnet channels/telegram/src/main.ts

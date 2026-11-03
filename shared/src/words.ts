@@ -36,6 +36,18 @@ export function assetName(supplier: Pick<Supplier, "chain" | "asset_id">, tokenI
   return ASSET_NAMES[supplier.asset_id] ?? `${supplier.asset_id} (${supplier.chain})`;
 }
 
+/** A time in UTC for reading: "Thu 5 Nov, 18:50 UTC" (nanoseconds, as the contract keeps time). */
+export function utcTime(ns: bigint | string): string {
+  const date = new Date(Number(BigInt(ns) / 1_000_000n));
+  const text = date.toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return `${text} UTC`;
+}
+
+/** Where a supplier is paid, for reading: "USDC at acme.near", "USDT on Tron at T…". */
+export function paidAt(payee: { chain: string; recipient: string }): string {
+  return payee.chain === "TRON" ? `USDT on Tron at ${payee.recipient}` : `USDC at ${payee.recipient}`;
+}
+
 /** Long addresses (Tron, 64-hex implicit accounts) shortened for reading; named NEAR accounts in full. */
 export function shortAddress(address: string): string {
   const long = /^[0-9a-f]{64}$/.test(address) || (!address.includes(".") && address.length > 24);

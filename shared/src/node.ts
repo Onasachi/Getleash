@@ -15,6 +15,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -24,7 +25,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { Account, KeyPair, KeyPairSigner, type JsonRpcProvider, type KeyPairString } from "near-api-js";
 import { z } from "zod";
 
-import { Directory } from "./directory.ts";
+import { Directory, mergeDirectories } from "./directory.ts";
 import type { NetworkId } from "./networks.ts";
 
 /**
@@ -128,13 +129,16 @@ export function loadDirectory(path: string): Directory {
 }
 
 /**
- * The directory as a service reads it: from GETLEASH_DIRECTORY_BASE64 (the directory JSON, base64) when
- * set, for hosts that do not have the owner's files (Render, Vercel); otherwise from the file at `path`.
+ * The directory as a service reads it: the suppliers in GETLEASH_DIRECTORY_BASE64 (the directory `pnpm
+ * seed` writes, as base64, for hosts that do not have the owner's files: Render, Vercel), then those in
+ * the file at `path` that the variable does not name. The bot saves suppliers added in Telegram to that
+ * file, on the service's disk, so they need no change to the variable.
  */
 export function loadServiceDirectory(path: string): Directory {
+  const file = loadDirectory(path);
   const encoded = process.env.GETLEASH_DIRECTORY_BASE64;
-  if (!encoded) return loadDirectory(path);
-  return Directory.parse(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")));
+  if (!encoded) return file;
+  return mergeDirectories(Directory.parse(JSON.parse(Buffer.from(encoded, "base64").toString("utf8"))), file);
 }
 
 /**
@@ -148,8 +152,15 @@ export function dashboardUrlFromEnv(value = process.env.DASHBOARD_URL): string |
 }
 
 export function saveDirectory(path: string, directory: Directory): void {
+  writePrivateJson(path, Directory.parse(directory));
+}
+
+/** Writes JSON readable by this user only (0600), whole: through a temporary file renamed over the old one. */
+export function writePrivateJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(Directory.parse(directory), null, 2)}\n`, { mode: 0o600 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
 }
 
 // ── Owner notices sent by more than one service ─────────────────────────────────────────────

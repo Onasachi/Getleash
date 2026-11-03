@@ -13,6 +13,14 @@ import { inTelegram } from "./telegram";
 
 type Connector = import("@hot-labs/near-connect").NearConnector;
 
+/** One function call, as its own transaction. */
+export type Call = { receiverId: string; method: string; args: Record<string, unknown>; tgas: number; deposit: string };
+
+const functionCall = (c: Pick<Call, "method" | "args" | "tgas" | "deposit">) => ({
+  type: "FunctionCall" as const,
+  params: { methodName: c.method, args: c.args, gas: `${c.tgas}000000000000`, deposit: c.deposit },
+});
+
 type WalletState = {
   accountId: string | null;
   /** The near-connect wallet in use, e.g. "near-cli" or "meteor-wallet". */
@@ -22,6 +30,8 @@ type WalletState = {
   disconnect: () => Promise<void>;
   /** Signs an owner call with 1 yoctoNEAR attached. */
   ownerCall: (method: string, args: Record<string, unknown>, tgas?: number) => Promise<TxOutcome>;
+  /** Signs several calls with one confirmation where the wallet can, else one after another; outcomes in order. */
+  sendCalls: (calls: readonly Call[]) => Promise<TxOutcome[]>;
   signMessage: (message: string, recipient: string, nonce: Uint8Array) => Promise<{ accountId: string; publicKey: string; signature: string }>;
 };
 
@@ -87,11 +97,20 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const ownerCall = useCallback(async (method: string, args: Record<string, unknown>, tgas = 30) => {
     if (!connector.current) throw new Error("wallet not ready");
     const wallet = await connector.current.wallet();
-    const raw = await wallet.signAndSendTransaction({
-      receiverId: POLICY_ID,
-      actions: [{ type: "FunctionCall", params: { methodName: method, args, gas: `${tgas}000000000000`, deposit: "1" } }],
-    });
+    const raw = await wallet.signAndSendTransaction({ receiverId: POLICY_ID, actions: [functionCall({ method, args, tgas, deposit: "1" })] });
     return parseOutcome(raw);
+  }, []);
+
+  const sendCalls = useCallback(async (calls: readonly Call[]) => {
+    if (!connector.current) throw new Error("wallet not ready");
+    const wallet = await connector.current.wallet();
+    const transactions = calls.map((c) => ({ receiverId: c.receiverId, actions: [functionCall(c)] }));
+    if (transactions.length > 1 && wallet.manifest.features?.signAndSendTransactions) {
+      return (await wallet.signAndSendTransactions({ transactions })).map((raw) => parseOutcome(raw));
+    }
+    const outcomes: TxOutcome[] = [];
+    for (const transaction of transactions) outcomes.push(parseOutcome(await wallet.signAndSendTransaction(transaction)));
+    return outcomes;
   }, []);
 
   const signMessage = useCallback(async (message: string, recipient: string, nonce: Uint8Array) => {
@@ -100,7 +119,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return wallet.signMessage({ message, recipient, nonce });
   }, []);
 
-  return <WalletContext.Provider value={{ accountId, walletId, connect, disconnect, ownerCall, signMessage }}>{children}</WalletContext.Provider>;
+  return <WalletContext.Provider value={{ accountId, walletId, connect, disconnect, ownerCall, sendCalls, signMessage }}>{children}</WalletContext.Provider>;
 }
 
 export function useWallet(): WalletState {
