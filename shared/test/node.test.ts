@@ -87,14 +87,17 @@ describe("delivered notices", () => {
 });
 
 describe("service directory", () => {
-  it("prefers GETLEASH_DIRECTORY_BASE64 over the file, for hosts without the owner's files", () => {
+  it("reads GETLEASH_DIRECTORY_BASE64 (pnpm seed's suppliers), plus the suppliers the bot saved in the file", () => {
     const path = join(dir, "directory.json");
-    writeFileSync(path, JSON.stringify({ suppliers: [{ supplier_id: 1, name: "From the file", currency: "USD" }] }));
-    expect(loadServiceDirectory(path).suppliers[0]!.name).toBe("From the file");
+    writeFileSync(
+      path,
+      JSON.stringify({ suppliers: [{ supplier_id: 1, name: "From the file", currency: "USD" }, { supplier_id: 2, name: "Added in Telegram", currency: "USDC" }] }),
+    );
+    expect(loadServiceDirectory(path).suppliers.map((s) => s.name)).toEqual(["From the file", "Added in Telegram"]);
     const encoded = Buffer.from(JSON.stringify({ suppliers: [{ supplier_id: 1, name: "From the variable", currency: "USD" }] })).toString("base64");
     process.env.GETLEASH_DIRECTORY_BASE64 = encoded;
     try {
-      expect(loadServiceDirectory(path).suppliers[0]!.name).toBe("From the variable");
+      expect(loadServiceDirectory(path).suppliers.map((s) => s.name)).toEqual(["From the variable", "Added in Telegram"]);
     } finally {
       delete process.env.GETLEASH_DIRECTORY_BASE64;
     }

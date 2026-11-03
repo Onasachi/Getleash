@@ -15,6 +15,7 @@
     "@getleash/channel-core": "workspace:*",
     "@getleash/ingestion": "workspace:*",
     "@getleash/shared": "workspace:*",
-    "grammy": "1.46.0"
+    "grammy": "1.46.0",
+    "zod": "4.6.7"
   }
 }

@@ -1,5 +1,7 @@
 /**
- * Adds suppliers from a JSON file and records their names in the private off-chain directory.
+ * Adds suppliers from a JSON file and records their names in the private off-chain directory, for
+ * adding several at once from the owner's machine. One at a time, the bot does the same from Telegram
+ * (/addsupplier, /invite) with the owner signing in a wallet.
  * New suppliers start in cooldown: until it ends, every payment to them waits for the owner, who
  * can approve at most `cooldown_max` (a test payment). Native NEAR suppliers are registered on the
  * treasury token here (paid by the owner), because the contract pays only registered accounts.
@@ -22,6 +24,7 @@ import { z } from "zod";
 import {
   CHAINS,
   defaultRoleIds,
+  type DirectoryEntry,
   durationText,
   InvoiceCurrency,
   isNative,
@@ -81,7 +84,7 @@ await confirm(
 const account = ownerAccount(common, ownerId, values["owner-key-file"] as string | undefined);
 const owner = new OwnerClient(account, policyId);
 const path = directoryPath(common.network);
-const directory = loadDirectory(path);
+const added: DirectoryEntry[] = [];
 for (const s of fresh) {
   if (isNative(s, state.token_id)) {
     const registered = await common.rpc.callFunction({ contractId: state.token_id, method: "storage_balance_of", args: { account_id: s.recipient } });
@@ -92,8 +95,7 @@ for (const s of fresh) {
   }
   step(`adding supplier ${s.name}`);
   const id = (await owner.addSupplier({ chain: s.chain, asset_id: s.asset_id, recipient: s.recipient, decimals: s.decimals })).value;
-  directory.suppliers = directory.suppliers.filter((d) => d.supplier_id !== id);
-  directory.suppliers.push({
+  added.push({
     supplier_id: id,
     name: s.name,
     aliases: s.aliases,
@@ -104,5 +106,8 @@ for (const s of fresh) {
   });
   ok(`supplier ${id}: ${s.name}`);
 }
-saveDirectory(path, directory);
+// Read again just before writing: a bot on this machine may have saved names meanwhile (onboarding.ts).
+const directory = loadDirectory(path);
+const ids = new Set(added.map((d) => d.supplier_id));
+saveDirectory(path, { suppliers: [...directory.suppliers.filter((d) => !ids.has(d.supplier_id)), ...added] });
 ok(`directory written to ${path} (private; git-ignored)`);

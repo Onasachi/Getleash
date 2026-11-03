@@ -26,6 +26,7 @@ import {
 } from "@getleash/shared/node";
 
 import { parseIdList, startBot, TelegramChannel, telegramDownloader } from "./bot.ts";
+import { SupplierOnboarding } from "./onboarding.ts";
 
 const { values } = parseArgs({ options: { offline: { type: "boolean", default: false } } });
 
@@ -66,12 +67,13 @@ const extractor = apiKey
 
 const dir = dataDir(network);
 const directoryFile = directoryPath(network);
+const directory = () => loadServiceDirectory(directoryFile);
 const agent = new InvoiceAgent({
   extractor,
   view,
   agent: new AgentClient(account, policyId),
   tenantSecret: parseTenantSecret(process.env.TENANT_SECRET),
-  directory: () => loadServiceDirectory(directoryFile),
+  directory,
   store: new InvoiceStore(join(dir, "invoices"), parseStoreKey(process.env.INVOICE_STORE_KEY)),
   dashboardUrl,
   log: (line) => console.log(line),
@@ -87,11 +89,14 @@ startBot(token, (bot) =>
     download: telegramDownloader(token),
     agent,
     view,
-    directory: () => loadServiceDirectory(directoryFile),
+    directory,
     dashboardUrl,
     ownerChatId: process.env.TELEGRAM_OWNER_CHAT_ID ?? null,
     delivered: new DeliveredNotices(ownerNoticesPath(network)),
+    // Suppliers added in Telegram: their names go to the directory file on this machine's disk.
+    onboarding: new SupplierOnboarding({ statePath: join(dir, "supplier-onboarding.json"), directoryPath: directoryFile, directory, view }),
     log: (line) => console.log(line),
   }),
 );
 console.log(`agent ${agentId} → ${policyId} on ${network}, extractor ${extractor.name}, dashboard ${dashboardUrl ?? "not set"}`);
+console.log(`supplier names: ${directory().suppliers.length}; names added in Telegram are kept in ${directoryFile}`);

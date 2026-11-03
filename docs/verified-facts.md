@@ -108,6 +108,12 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
   owner (route `SUPPLIER_COOLDOWN`), who approved it at 09:42:24Z (`decide`, tx
   `DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye`). Intent 1 is `PAID`; `chisolu.near` holds 0.50 USDC and
   the treasury 4.41 USDC.
+- First payment approved from Telegram, 2026-11-03: invoice CH-0002 for 0.50 USDC, proposed at 14:20:02Z
+  (tx `5UQddBayhgRd7qQafDRvdEtGUmdkc6WCQ8WHwTfNegR1`, route `SUPPLIER_COOLDOWN`). The owner tapped the
+  bot's "Review and approve" button, which opened the payment page as a Mini App, and signed `decide` in
+  HOT Wallet at 14:20:55Z (tx `Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9`); the bot then replied "✅ Paid
+  Chisolu 0.50 USDC (payment #2)". Intent 2 is `PAID`; `chisolu.near` holds 1.00 USDC and the treasury
+  3.91 USDC.
 
 ## near-cli-rs (checked 2026-11-02, version 0.30.1)
 
@@ -280,11 +286,29 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   "HOT Wallet". `connector.connect({ walletId: "hot-wallet" })` skips the wallet list: in a desktop browser
   with simulated Telegram launch data, HOT's own "Scan in HOT Wallet" screen came up directly, offering
   "Open via Telegram". Inside a Mini App near-connect opens t.me links through Telegram
-  (`web_app_open_tg_link`). Not yet exercised on a phone.
+  (`web_app_open_tg_link`). Used for real on 2026-11-03: the owner approved payment #2 this way (above).
+- `@hot-labs/near-connect` 0.12.0 also has `wallet.signAndSendTransactions({ transactions: [{ receiverId,
+  actions }] })`, returning one outcome per transaction, and each wallet's manifest declares
+  `features.signAndSendTransactions` (installed types). The add-supplier page sends its two calls
+  (`storage_deposit`, `add_supplier`) that way when the wallet declares it, else one after another. Not yet
+  exercised with a real wallet.
 - near-api-js 7.4.0 `verifyMessage` (NEP-413) requires the signing key to be a **FullAccess** key of
   the account, then checks the signature (installed source).
 - Next.js 16.4 dev server blocks its dev resources for origins other than `localhost` unless listed
   in `allowedDevOrigins`; open the dev dashboard at `http://localhost:…`.
+
+## Telegram Bot API (checked 2026-11-03)
+
+- `ForceReply` (https://core.telegram.org/bots/api#forcereply): `force_reply` (type True) "shows reply
+  interface to the user, as if they had manually selected the bot's message and tapped 'Reply'";
+  `input_field_placeholder` is optional, 1-64 characters. `sendMessage` accepts it as `reply_markup`. The bot
+  asks /addsupplier's and an invite's questions this way, and reads the answer from `reply_to_message`.
+- Deep links (https://core.telegram.org/bots/features#deep-linking): `https://t.me/<bot>?start=<parameter>`,
+  where "A-Z, a-z, 0-9, _ and - are allowed" and "the parameter can be up to 64 characters long". Opening
+  one sends the bot `/start <parameter>` in a private chat. Invites are `join_` and 22 base64url characters.
+- Share links (https://core.telegram.org/api/links#share-links): `t.me/share/url?url=<url>&text=<text>` opens
+  a chat picker and puts the URL, then the text on a new line, in the chosen chat's text field. /invite's
+  "Share the invite" button is one.
 
 ## Skill vs live-doc conflicts
 

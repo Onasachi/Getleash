@@ -83,7 +83,8 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
    → registers each NEAR supplier on USDC, adds each supplier, writes `.data/mainnet/directory.json`.
    **Each new supplier starts a 2-day cooldown** (`cooldown_ns` in `deploy/mainnet-policy.json`): until
    it ends, every payment to it waits for you and is capped at 0.50 USDC. Add suppliers at least two days
-   before you need larger payments. Running `pnpm seed` again adds only the new entries.
+   before you need larger payments. Running `pnpm seed` again adds only the new entries. Once the bot runs,
+   you can add suppliers from Telegram instead, one at a time (see "Day to day").
 
 4. **Treasury:**
    ```bash
@@ -162,9 +163,12 @@ function-call keys.
 6. The worker's logs show `executor executor-1.you.near → getleash.you.near on mainnet` and
    `@<your bot> is listening`. Then send the first test invoice (step 8).
 
-After `pnpm seed` adds a supplier, run `pnpm deploy:env` again and update `GETLEASH_DIRECTORY_BASE64` on
-both hosts. The dashboard's private view shows supplier names, not invoice records: those stay encrypted
-on the worker's disk. `NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new
+Suppliers added in Telegram need no change on either host: the bot keeps their names in
+`/var/data/<network>/directory.json` on its disk, and its startup log says how many names it has. After
+`pnpm seed` adds a supplier, run `pnpm deploy:env` again and update `GETLEASH_DIRECTORY_BASE64` on both
+hosts. The dashboard's private view shows the names in that variable, not invoice records: those stay
+encrypted on the worker's disk. A supplier added in Telegram appears there as "supplier #N" with its
+address. `NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new
 Vercel deployment.
 
 ## Day to day
@@ -185,7 +189,18 @@ Vercel deployment.
   ```bash
   near contract call-function as-transaction getleash.you.near withdraw json-args '{"amount":"4910000"}' prepaid-gas '30 Tgas' attached-deposit '1 yoctoNEAR' sign-as you.near network-config mainnet sign-with-keychain send
   ```
-- **Add a supplier:** add it to the suppliers file and run `pnpm seed` again; it starts its own cooldown.
+- **Add a supplier, from Telegram:** send the bot `/addsupplier Acme Packaging acme.near` (a NEAR account is
+  paid in USDC, a Tron address `T…` in USDT), or just `/addsupplier` and answer its question. The bot checks
+  the address and replies with an "Add Acme Packaging" button. That button opens a page that checks again
+  and asks your wallet to sign: one confirmation registers a NEAR account on USDC if needed (0.00125 NEAR)
+  and adds the supplier. A few seconds later the bot says "✅ Acme Packaging is on your list now" and when
+  its 2-day cooldown ends. Use an address the supplier gave you directly: the bot never offers to add the
+  address an invoice asks to be paid at.
+- **Let the supplier send their details:** `/invite Acme Packaging` gives a one-time link (7 days) to send
+  them through a chat you already use with them. They open it in Telegram and send their address. You get
+  their answer, with their Telegram name, and the same "Add" button; they hear when you've added them.
+- **Add several at once:** add them to the suppliers file and run `pnpm seed` again; each starts its own
+  cooldown.
 - **Replace a service key:** `pnpm keygen --network mainnet --account executor-2.you.near`, then
   `pnpm rotate --network mainnet --owner you.near --role executor --n 2 --public-key ed25519:…`.
 

@@ -4,7 +4,7 @@
  * and the on-chain supplier records. The model never picks a supplier id, an address or an id.
  */
 import { compactForm, normaliseInvoiceNumber } from "@getleash/ingestion";
-import { type DirectoryEntry, type ReviewFlag, type Supplier, toUnits } from "@getleash/shared";
+import { type DirectoryEntry, InvoiceCurrency, nameTokens, type ReviewFlag, type Supplier, toUnits } from "@getleash/shared";
 
 import type { ExtractResult } from "./extract.ts";
 
@@ -36,17 +36,6 @@ export type Decision =
   | { action: "ignore"; reason: "NOT_AN_INVOICE" | "UNSUPPORTED_CURRENCY"; notes: string[] };
 
 const FLAG_ORDER: ReviewFlag[] = ["ADDRESS_MISMATCH", "UNCERTAIN_MATCH", "AMBIGUOUS_EXTRACTION", "UNUSUAL_AMOUNT"];
-
-const SUFFIXES = new Set(["ltd", "limited", "inc", "llc", "plc", "co", "company", "corp", "corporation", "gmbh", "sa", "bv", "the"]);
-
-export function nameTokens(name: string): string[] {
-  return name
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .split(" ")
-    .filter((t) => t.length > 0 && !SUFFIXES.has(t));
-}
 
 function similarity(a: string[], b: string[]): number {
   const A = new Set(a);
@@ -110,6 +99,27 @@ export function matchSupplier(
   return { kind: "matched", entry: scored[0]!.d, certain: false, via: "fuzzy" };
 }
 
+/**
+ * The on-chain supplier with no directory entry (added from the dashboard, or its name never saved)
+ * whose exact address the invoice shows, in the model's reading and in the document text itself. Only
+ * that address can ever be paid, so this is as safe as a match on payment details on file.
+ */
+function unnamedSupplier(result: ExtractResult, ctx: RuleContext, currency: string): DirectoryEntry | null {
+  const named = new Set(ctx.directory.map((d) => d.supplier_id));
+  const shown = new Set(result.extraction.payment_details.map((p) => compact(p.value)));
+  const text = compact(result.sourceText);
+  const hits = ctx.suppliers.filter((s) => !named.has(s.id) && shown.has(compact(s.recipient)) && text.includes(compact(s.recipient)));
+  if (hits.length !== 1) return null;
+  const supplier = hits[0]!;
+  return {
+    supplier_id: supplier.id,
+    name: `supplier #${supplier.id}`,
+    aliases: [],
+    payment_details: [supplier.recipient],
+    currency: InvoiceCurrency.parse(currency),
+  };
+}
+
 export type RuleContext = {
   directory: DirectoryEntry[];
   suppliers: Supplier[];
@@ -155,7 +165,9 @@ export function decide(result: ExtractResult, ctx: RuleContext): Decision {
       notes: [`could be any of: ${match.candidates.map((c) => c.name).join(", ")}`],
     };
   }
-  if (match.kind === "none") {
+  // A supplier on-chain without a name in the directory is still found by its exact address.
+  const unnamed = match.kind === "none" ? unnamedSupplier(result, ctx, currency) : null;
+  if (match.kind === "none" && !unnamed) {
     notes.push(`supplier ${JSON.stringify(x.supplier_name)} is not in the directory`);
     return {
       action: "propose",
@@ -168,11 +180,12 @@ export function decide(result: ExtractResult, ctx: RuleContext): Decision {
       notes,
     };
   }
-  const entry = match.entry;
-  if (!match.certain) {
+  const entry = match.kind === "matched" ? match.entry : unnamed!;
+  if (match.kind === "matched" && !match.certain) {
     flags.add("UNCERTAIN_MATCH");
     notes.push(`matched "${x.supplier_name}" to "${entry.name}" by name similarity only`);
   }
+  if (unnamed) notes.push(`matched to supplier #${entry.supplier_id} by its address on file; it has no name in the directory yet`);
 
   const onChain = ctx.suppliers.find((s) => s.id === entry.supplier_id);
   const known = new Set([...entry.payment_details, ...(onChain ? [onChain.recipient] : [])].map(compact));
@@ -199,7 +212,7 @@ export function decide(result: ExtractResult, ctx: RuleContext): Decision {
   return {
     action: "propose",
     supplierId: entry.supplier_id,
-    supplierName: entry.name,
+    supplierName: unnamed ? null : entry.name,
     amountOut: toUnits(x.total_amount, decimals),
     invoiceNumber,
     reviewFlag: ordered[0] ?? null,

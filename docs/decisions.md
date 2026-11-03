@@ -255,3 +255,36 @@ D-16 (no reconciliation on-chain), D-12 (registration happens inside the cross-c
 (the owner approves the test payment and signs its deposit), D-17 (hashes are gone; Borsh as
 above), D-20 (refusals are not stored), D-22 (no sweep; the executor re-quotes), D-26 (the intent
 page replaces the approve, attempt and reconcile pages).
+
+**D-29 · Suppliers are added from Telegram, and the bot keeps their names.**
+Adding a supplier took a JSON file, `pnpm seed` on the owner's machine, and the directory pasted into
+both hosts as `GETLEASH_DIRECTORY_BASE64`. Now it takes one message and one signature:
+- **Two ways in.** The owner sends `/addsupplier <name> <address>`, or `/invite [name]` for a one-time
+  link the supplier opens in Telegram and answers with its own address. An invite works for the first
+  Telegram user who opens it, for 7 days and 5 unusable answers, and is stored as the SHA-256 of its
+  token. A supplier who opened one gets answers about that invite only; every other message from outside
+  the allowlist stays unanswered.
+- **Checked, then signed by the owner.** Details are read by deterministic code, not a model. The bot
+  checks the address: Tron checksum; that a named NEAR account exists; not the contract, the token, a
+  role account or the USDT contract; not already on the list. It keeps the request and gives the owner a
+  button to `/suppliers/new?to=<address>`. That page checks again in the browser, and the owner's wallet
+  signs `storage_deposit` on USDC (when the account is not registered) and `add_supplier` with exactly
+  those terms. The bot signs nothing; the contract is unchanged.
+- **The name stays with the bot.** It never travels in the page's link, so it is not in Telegram's button
+  or the dashboard host's logs. The bot watches the chain for the request's address: every 10 s for 15
+  minutes, then every minute, for 7 days. When the supplier appears, the bot saves the name to the
+  directory file on its disk and tells the owner, and the supplier if it came through an invite. A name
+  another supplier already goes by, as the agent compares names, gets `#<id>`: two suppliers with one name
+  would make every invoice in that name ambiguous.
+- **Where names are read from.** The services read `GETLEASH_DIRECTORY_BASE64` (the suppliers `pnpm seed`
+  added, which win for an id both have) plus the directory file. On a host without a disk, names added in
+  Telegram are lost at a restart. Payments still find the supplier: an on-chain supplier with no directory
+  entry is matched by its exact address, when the invoice prints it and the model read it. Only that
+  address can be paid, so this is as safe as matching payment details on file. `/addsupplier` names it
+  again without a signature.
+- **Not offered.** The bot does not offer to add the address that an invoice from an unknown supplier asks
+  to be paid at. That is the classic invoice fraud (fixture 05). The reply tells the owner to get the
+  address from the supplier directly, or to send an invite.
+
+Amends D-26 (the bot also writes the directory file) and PLAN §4.3 step 4 (an unnamed on-chain supplier
+is matched by its exact address).
