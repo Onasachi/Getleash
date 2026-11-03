@@ -169,8 +169,13 @@ Vercel deployment.
 
 ## Day to day
 
-- **Approve:** the Telegram link opens the payment with one button. A browser wallet (Meteor, HOT, Intear,
-  MyNearWallet) approves in one tap; with near-cli, the page offers the ready-to-run command.
+- **Approve, without leaving Telegram:** the bot's "Review and approve" button opens the payment page
+  inside Telegram (a Mini App; the dashboard needs an https address). Its main button asks your wallet to
+  sign: HOT Wallet runs inside Telegram too (https://t.me/hot_wallet/app), so import the owner account
+  there once (its recovery phrase or private key, typed into HOT Wallet only) and approving is two taps.
+  The bot never approves anything itself: owner calls attach 1 yoctoNEAR, which only a full-access key,
+  your wallet's, can sign. Outside Telegram, any NEAR wallet the dashboard offers works (Meteor, HOT,
+  Intear, Ledger), and with near-cli the page offers the ready-to-run command.
 - **Pause everything:** dashboard → Pause, one signature. Unpausing works the same way.
 - **Top up:** `pnpm topup --network mainnet --owner you.near --amount <USDC>`.
 - **Withdraw** (only the owner can, the money goes only to the owner, and it works while paused). The

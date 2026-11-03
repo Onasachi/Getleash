@@ -232,7 +232,7 @@ export class Executor {
         await this.notifyOnce({
           key: noticeKey.approval(id),
           kind: "approval_needed",
-          text: `👋 ${this.who(supplier)} asks for ${this.amount(intent, supplier, state)}. It needs your OK because ${waitReason(intent.route, state.policy, d)} (payment #${id}).${native ? "" : ` Sending it costs at most ${money(intent.max_in, d)} USDC, fees included.`} Review and approve:`,
+          text: `👋 ${this.who(supplier)} asks for ${this.amount(intent, supplier, state)}. It needs your OK because ${waitReason(intent.route, state.policy, d)} (payment #${id}).${native ? "" : ` Sending it costs at most ${money(intent.max_in, d)} USDC, fees included.`}`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -245,7 +245,7 @@ export class Executor {
           await this.notifyOnce({
             key: `overdue:${id}:${intent.since}`,
             kind: "callback_overdue",
-            text: `⚠️ Payment #${id} to ${this.who(supplier)} has not confirmed after ${durationText(state.policy.callback_grace_ns)}. Check the transfer, then mark it paid or failed:`,
+            text: `⚠️ Payment #${id} to ${this.who(supplier)} has not confirmed after ${durationText(state.policy.callback_grace_ns)}. Check the transfer, then mark it paid or failed.`,
             link: this.link(`/intent/${id}`),
             intentId: id,
           });
@@ -269,7 +269,7 @@ export class Executor {
         await this.notifyOnce({
           key: noticeKey.failed(id, intent.since),
           kind: "payout_failed",
-          text: `⚠️ Payment #${id} to ${this.who(supplier)} didn't go through: the USDC token refused the transfer, so nothing left your treasury. Fix the cause (for example, register the payee on USDC), then retry:`,
+          text: `⚠️ Payment #${id} to ${this.who(supplier)} didn't go through: the USDC token refused the transfer, so nothing left your treasury. Fix the cause (for example, register the payee on USDC), then retry.`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -292,7 +292,7 @@ export class Executor {
         await this.notifyOnce({
           key: `stuck:${id}:${this.deps.journal.failuresFor(id)}`,
           kind: "funding_failed",
-          text: `⚠️ Payment #${id} to ${this.who(supplier)}: getting a quote or sending failed ${this.deps.journal.failuresFor(id)} times, so the executor stopped trying. Retry or reject it:`,
+          text: `⚠️ Payment #${id} to ${this.who(supplier)}: getting a quote or sending failed ${this.deps.journal.failuresFor(id)} times, so the executor stopped trying. Retry or reject it.`,
           link: this.link(`/intent/${id}`),
           intentId: id,
         });
@@ -312,7 +312,7 @@ export class Executor {
     await this.notifyOnce({
       key: `authorize:${id}:${attempt.deposit}`,
       kind: "authorization_needed",
-      text: `✍️ Ready to send ${this.amount(intent, supplier, state)} to ${this.who(supplier)} (payment #${id}). It costs ${money(attempt.amount_in, state.token_decimals)} USDC from your treasury${BigInt(attempt.amount_in) > BigInt(intent.value) ? `, ${money(BigInt(attempt.amount_in) - BigInt(intent.value), state.token_decimals)} of it in fees` : ""}. Confirm the transfer:`,
+      text: `✍️ Ready to send ${this.amount(intent, supplier, state)} to ${this.who(supplier)} (payment #${id}). It costs ${money(attempt.amount_in, state.token_decimals)} USDC from your treasury${BigInt(attempt.amount_in) > BigInt(intent.value) ? `, ${money(BigInt(attempt.amount_in) - BigInt(intent.value), state.token_decimals)} of it in fees` : ""}.`,
       link: this.link(`/intent/${id}`),
       intentId: id,
     });
@@ -425,7 +425,7 @@ export class Executor {
         await this.notifyOnce({
           key: `swap:${payout}`,
           kind: "swap_failed",
-          text: `↩️ Payment #${intent.id} to ${this.who(supplier)} was not delivered (1Click: ${status.status}${details.refundReason ? `, ${details.refundReason}` : ""}); ${money(returned, d)} USDC came back to your treasury. Today's budgets are not given back. Retry it to pay again:`,
+          text: `↩️ Payment #${intent.id} to ${this.who(supplier)} was not delivered (1Click: ${status.status}${details.refundReason ? `, ${details.refundReason}` : ""}); ${money(returned, d)} USDC came back to your treasury. Today's budgets are not given back. Retry it to pay again.`,
           link: this.link(`/intent/${intent.id}`),
           intentId: intent.id,
         });
@@ -437,7 +437,7 @@ export class Executor {
       await this.notifyOnce({
         key: `swap_timeout:${payout}`,
         kind: "swap_failed",
-        text: `⚠️ Payment #${intent.id} to ${this.who(supplier)}: no result from 1Click after ${durationText(BigInt(this.cfg.statusTimeoutMs) * 1_000_000n)} (${status ? `last status ${status.status}` : "unreachable"}). Check the deposit ${attempt.deposit}:`,
+        text: `⚠️ Payment #${intent.id} to ${this.who(supplier)}: no result from 1Click after ${durationText(BigInt(this.cfg.statusTimeoutMs) * 1_000_000n)} (${status ? `last status ${status.status}` : "unreachable"}). Check the deposit ${attempt.deposit}.`,
         link: this.link(`/intent/${intent.id}`),
         intentId: intent.id,
       });

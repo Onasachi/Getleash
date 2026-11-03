@@ -20,6 +20,8 @@ import { checkFile, type InvoiceFile, LIMITS, LimitError, Semaphore, type Update
 import { assetName, type Directory, FLAGS, money, moneyRounded, type Policy, type PolicyView, REFUSALS, waitReason } from "@getleash/shared";
 import { type DeliveredNotices, noticeKey } from "@getleash/shared/node";
 
+import { linkButton } from "./notifier.ts";
+
 /** The subset of the Bot API the channel uses (grammY's `bot.api` provides it; tests fake it). */
 export interface BotApi {
   sendMessage(chatId: string | number, text: string, other?: Record<string, unknown>): Promise<unknown>;
@@ -132,10 +134,19 @@ export class TelegramChannel implements Channel<Update> {
     };
   }
 
+  /** A link becomes a button (a Mini App in private chats, see notifier.ts); if Telegram refuses it, the link goes in the text. */
   async send(chatId: string, notice: Notice): Promise<void> {
-    await this.deps.api.sendMessage(chatId, notice.link ? `${notice.text}\n${notice.link}` : notice.text, {
-      link_preview_options: { is_disabled: true },
-    });
+    const options = { link_preview_options: { is_disabled: true } };
+    const button = linkButton(chatId, notice.link, notice.action);
+    if (button) {
+      try {
+        await this.deps.api.sendMessage(chatId, notice.text, { ...options, reply_markup: button });
+        return;
+      } catch (error) {
+        this.deps.log?.(`[telegram] button refused (${(error as Error).message}); sending the link as text`);
+      }
+    }
+    await this.deps.api.sendMessage(chatId, notice.link ? `${notice.text}\n${notice.link}` : notice.text, options);
   }
 
   private allowed(message: Message): boolean {
@@ -165,7 +176,7 @@ export class TelegramChannel implements Channel<Update> {
     }
     const outcome = await this.jobs.run(() => this.deps.agent.process(received.input));
     const limits = outcome.intentStatus === "PENDING" ? await this.limits() : undefined;
-    await this.send(received.replyTo, { text: this.describe(outcome, limits) });
+    await this.send(received.replyTo, this.describe(outcome, limits));
     // Recorded only after the reply went out: if it failed, the executor's notice still comes.
     if (this.deps.delivered && received.replyTo === this.deps.ownerChatId) {
       this.deps.delivered.add(coveredNotices(outcome), "telegram");
@@ -183,7 +194,7 @@ export class TelegramChannel implements Channel<Update> {
     }
   }
 
-  describe(outcome: AgentOutcome, limits?: Policy): string {
+  describe(outcome: AgentOutcome, limits?: Policy): Notice {
     const r = outcome.result;
     const proposed = outcome.decision?.action === "propose" ? outcome.decision : null;
     const who = proposed ? (proposed.supplierName ?? `supplier #${proposed.supplierId}`) : null;
@@ -192,6 +203,7 @@ export class TelegramChannel implements Channel<Update> {
     const id = r?.intent_id;
     const link = id != null ? this.link(`/intent/${id}`) : null;
     const lines: string[] = [];
+    let action: string | undefined;
     switch (outcome.status) {
       case "proposed": {
         switch (outcome.intentStatus) {
@@ -206,11 +218,11 @@ export class TelegramChannel implements Channel<Update> {
             break;
           case "FAILED":
             lines.push(`⚠️ ${amount} to ${who} was approved, but the USDC token refused the transfer, so nothing left your treasury (payment #${id}).`);
-            if (link) lines.push(`Retry it here: ${link}`);
+            action = "Retry the payment";
             break;
           default:
             lines.push(`👋 ${who} asks for ${amount}. It needs your OK because ${waitReason(r?.route ?? "ABOVE_THRESHOLD", limits)} (payment #${id}).`);
-            if (link) lines.push(`Review and approve: ${link}`);
+            action = "Review and approve";
         }
         if (proposed?.flags.length) {
           lines.push(`⚠️ Please check: ${proposed.notes.length ? proposed.notes.join("; ") : proposed.flags.map((f) => FLAGS[f]).join("; ")}.`);
@@ -229,7 +241,8 @@ export class TelegramChannel implements Channel<Update> {
         lines.push(`⚠️ ${outcome.summary}`);
     }
     lines.push(`Inference: ${outcome.badge}${outcome.model ? ` (${outcome.model})` : ""}`);
-    return lines.join("\n");
+    // Only payments that need the owner carry the page as a button.
+    return { text: lines.join("\n"), link: action && link ? link : undefined, action };
   }
 
   private async command(name: string): Promise<string> {

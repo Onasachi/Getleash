@@ -5,7 +5,8 @@
  */
 import type { InvoiceInput } from "@getleash/ingestion";
 
-export type Notice = { text: string; link?: string | undefined };
+/** `action` names the link's button where the channel has buttons ("Review and approve"). */
+export type Notice = { text: string; link?: string | undefined; action?: string | undefined };
 
 export type Received =
   | { kind: "invoice"; input: InvoiceInput; replyTo: string }

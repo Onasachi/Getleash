@@ -59,7 +59,7 @@ export function ownerAccount(common: Common, ownerId: string, keyFile?: string):
   if (!existsSync(path)) {
     fail(
       `no key for ${ownerId} at ${path}.\n  Import your wallet with near-cli-rs and save it to the legacy keychain:\n` +
-        `  near account import-account using-web-wallet network-config ${common.network}\n` +
+        `  near account import-account   (then: seed phrase or private key, ${common.network}, legacy keychain)\n` +
         `  or pass --owner-key-file <path to a {account_id, public_key, private_key} file>\n` +
         `  (near-cli-rs files without account_id work when named <account>.json or <account>/ed25519_<key>.json).`,
     );
