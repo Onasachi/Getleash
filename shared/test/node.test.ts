@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { JsonRpcProvider, KeyPair } from "near-api-js";
 import { describe, expect, it } from "vitest";
 
-import { DeliveredNotices, loadServiceDirectory, noticeKey, readKeyFile, signingAccount } from "../src/node.ts";
+import { dashboardUrlFromEnv, DeliveredNotices, loadServiceDirectory, noticeKey, readKeyFile, signingAccount } from "../src/node.ts";
 
 const rpc = new JsonRpcProvider({ url: "http://127.0.0.1:9" }); // never contacted: no call is made
 const dir = mkdtempSync(join(tmpdir(), "getleash-keys-"));
@@ -98,5 +98,14 @@ describe("service directory", () => {
     } finally {
       delete process.env.GETLEASH_DIRECTORY_BASE64;
     }
+  });
+});
+
+describe("dashboard address", () => {
+  it("adds https:// to an address typed without one, since Telegram makes buttons from https links only", () => {
+    expect(dashboardUrlFromEnv("www.getleash.xyz")).toBe("https://www.getleash.xyz");
+    expect(dashboardUrlFromEnv(" https://www.getleash.xyz/ ")).toBe("https://www.getleash.xyz");
+    expect(dashboardUrlFromEnv("http://localhost:3000")).toBe("http://localhost:3000");
+    expect(dashboardUrlFromEnv("  ")).toBeNull();
   });
 });

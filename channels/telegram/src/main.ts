@@ -13,8 +13,9 @@ import { parseArgs } from "node:util";
 
 import { InvoiceAgent, InvoiceStore, NearAiExtractor, networkVerifiers, OfflineExtractor, parseStoreKey } from "@getleash/agent";
 import { parseTenantSecret, UpdateLog } from "@getleash/ingestion";
-import { AgentClient, NETWORKS, networkId, PolicyView, provider } from "@getleash/shared";
+import { AgentClient, networkId, PolicyView, provider, serviceRpcUrls } from "@getleash/shared";
 import {
+  dashboardUrlFromEnv,
   dataDir,
   DeliveredNotices,
   directoryPath,
@@ -38,7 +39,8 @@ function env(name: string): string {
 }
 
 const network = networkId(process.env.NEAR_NETWORK);
-const rpc = provider(process.env.NEAR_RPC_URL ?? NETWORKS[network].rpcUrl);
+const rpc = provider(serviceRpcUrls(network, process.env.NEAR_RPC_URL));
+const dashboardUrl = dashboardUrlFromEnv();
 const policyId = env("POLICY_CONTRACT_ID");
 const agentId = env("AGENT_ACCOUNT_ID");
 const keyFile = process.env.AGENT_KEY_FILE ?? keyFilePath(network, agentId);
@@ -71,7 +73,7 @@ const agent = new InvoiceAgent({
   tenantSecret: parseTenantSecret(process.env.TENANT_SECRET),
   directory: () => loadServiceDirectory(directoryFile),
   store: new InvoiceStore(join(dir, "invoices"), parseStoreKey(process.env.INVOICE_STORE_KEY)),
-  dashboardUrl: process.env.DASHBOARD_URL ?? null,
+  dashboardUrl,
   log: (line) => console.log(line),
 });
 
@@ -86,10 +88,10 @@ startBot(token, (bot) =>
     agent,
     view,
     directory: () => loadServiceDirectory(directoryFile),
-    dashboardUrl: process.env.DASHBOARD_URL ?? null,
+    dashboardUrl,
     ownerChatId: process.env.TELEGRAM_OWNER_CHAT_ID ?? null,
     delivered: new DeliveredNotices(ownerNoticesPath(network)),
     log: (line) => console.log(line),
   }),
 );
-console.log(`agent ${agentId} → ${policyId} on ${network}, extractor ${extractor.name}`);
+console.log(`agent ${agentId} → ${policyId} on ${network}, extractor ${extractor.name}, dashboard ${dashboardUrl ?? "not set"}`);
