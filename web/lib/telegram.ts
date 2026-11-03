@@ -32,6 +32,21 @@ function postEvent(eventType: string, eventData: object = {}) {
   if (window.parent !== window) window.parent.postMessage(JSON.stringify({ eventType, eventData }), "https://web.telegram.org"); // Web
 }
 
+/** Whether the page runs as a Telegram Mini App (opened from one of the bot's buttons). */
+export function inTelegram(): boolean {
+  return typeof window !== "undefined" && launchedFromTelegram();
+}
+
+/** Opens a t.me link (such as HOT Wallet's Mini App) through Telegram, which a Mini App has to ask for; outside Telegram, in a new tab. */
+export function openTelegramLink(url: string): void {
+  if (!inTelegram()) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const { pathname, search } = new URL(url);
+  postEvent("web_app_open_tg_link", { path_full: pathname + search });
+}
+
 export function startTelegramMiniApp(): void {
   if (typeof window === "undefined" || !launchedFromTelegram()) return;
   postEvent("web_app_ready");

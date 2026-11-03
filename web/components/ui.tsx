@@ -22,6 +22,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <Link href="/">Payments</Link>
           <Link href="/private">Suppliers &amp; invoices</Link>
           <Link href="/pause">Pause</Link>
+          <Link href="/wallet">Wallet</Link>
         </nav>
         <span className="spacer" />
         {NETWORK !== "mainnet" && <span className="net">{NETWORK}</span>}

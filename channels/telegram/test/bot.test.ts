@@ -8,10 +8,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import { UpdateLog } from "@getleash/ingestion";
-import type { IntentStatus, PolicyView } from "@getleash/shared";
+import type { Intent, IntentStatus, PolicyView } from "@getleash/shared";
 
 import { coveredNotices, parseIdList, TelegramChannel } from "../src/bot.ts";
-import { linkButton, TelegramNotifier } from "../src/notifier.ts";
+import { telegramMessage, TelegramNotifier } from "../src/notifier.ts";
 
 const OWNER = 1001;
 const CHAT = 2002;
@@ -40,6 +40,7 @@ function setup(
     ownerChatId?: string;
     dashboardUrl?: string;
     refuseButtons?: boolean;
+    intents?: Array<Partial<Intent>>;
   } = {},
 ) {
   const sent: Array<{ chatId: string | number; text: string; other?: Record<string, unknown> }> = [];
@@ -62,8 +63,8 @@ function setup(
     },
   } as unknown as InvoiceAgent;
   const view = {
-    state: async () => ({ token_decimals: 6, policy: { cooldown_ns: "0" } }),
-    recentIntents: async () => [],
+    state: async () => ({ owner_id: "owner.near", paused: false, token_decimals: 6, policy: { cooldown_ns: "0" } }),
+    recentIntents: async () => overrides.intents ?? [],
     suppliers: async () => [],
   } as unknown as PolicyView;
   const channel = new TelegramChannel({
@@ -84,7 +85,7 @@ function setup(
     },
     agent,
     view,
-    directory: () => ({ suppliers: [] }),
+    directory: () => ({ suppliers: [{ supplier_id: 1, name: "Acme" }] }) as never,
     dashboardUrl: overrides.dashboardUrl ?? "https://getleash.example",
     ownerChatId: overrides.ownerChatId ?? null,
     delivered: { add: (keys: readonly string[]) => void delivered.push(...keys) },
@@ -126,12 +127,38 @@ describe("Telegram channel", () => {
     expect(result).toBe("ignored:LIMIT");
   });
 
-  it("answers commands only in approved chats and replies with links", async () => {
+  it("answers commands only in approved chats, with buttons for the pages they point to", async () => {
     const { channel, sent } = setup();
     expect(await channel.handle(message(506, { text: "/pending" }))).toBe("command:pending");
     expect(sent.at(-1)!.text).toBe("Nothing is waiting for you.");
     expect(await channel.handle(message(507, { text: "/pause" }))).toBe("command:pause");
-    expect(sent.at(-1)!.text).toContain("https://getleash.example/pause");
+    expect(sent.at(-1)!.other?.reply_markup).toEqual({ inline_keyboard: [[{ text: "Pause payments", web_app: { url: "https://getleash.example/pause" } }]] });
+
+    const waiting = setup({ intents: [{ id: 4, status: "PENDING", supplier_id: 1, value: "500000", attempt: null }, { id: 3, status: "PAID", supplier_id: 1, value: "1", attempt: null }] });
+    await waiting.channel.handle(message(514, { text: "/pending" }));
+    expect(waiting.sent.at(-1)!.text).toBe("• Acme · 0.50: needs your OK (payment #4)");
+    expect(waiting.sent.at(-1)!.other?.reply_markup).toEqual({
+      inline_keyboard: [[{ text: "Payment #4: Acme · 0.50", web_app: { url: "https://getleash.example/intent/4" } }]],
+    });
+  });
+
+  it("/wallet opens HOT Wallet in Telegram and the page that checks it signs as the owner", async () => {
+    const { channel, sent } = setup();
+    expect(await channel.handle(message(515, { text: "/wallet" }))).toBe("command:wallet");
+    expect(sent.at(-1)!.text).toContain("signed in your NEAR wallet, as owner.near");
+    expect(sent.at(-1)!.text).toContain("Never send that phrase in a chat");
+    // HOT Wallet is another bot's Mini App: a t.me link button, which Telegram opens itself.
+    expect(sent.at(-1)!.other?.reply_markup).toEqual({
+      inline_keyboard: [
+        [{ text: "Open HOT Wallet", url: "https://t.me/hot_wallet/app" }],
+        [{ text: "Check my wallet", web_app: { url: "https://getleash.example/wallet" } }],
+      ],
+    });
+    // With a local dashboard the check page cannot be a button; its address goes in the text.
+    const local = setup({ dashboardUrl: "http://localhost:3000" });
+    await local.channel.handle(message(516, { text: "/wallet" }));
+    expect(local.sent.at(-1)!.text).toContain("Check my wallet: http://localhost:3000/wallet");
+    expect(local.sent.at(-1)!.other?.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open HOT Wallet", url: "https://t.me/hot_wallet/app" }]] });
   });
 
   it("reply to an invoice says why in plain words, with the enum code and the badge, not model text", async () => {
@@ -183,13 +210,14 @@ describe("Telegram channel", () => {
 
   it("links become Mini App buttons in private chats, link buttons in groups, and text when needed", async () => {
     const pending = { status: "proposed", intentStatus: "PENDING", result: { accepted: true, intent_id: 7, status: "PENDING", route: "ABOVE_THRESHOLD", reason: null } } as const;
-    expect(linkButton("-100123", "https://getleash.example/intent/7", "Review and approve")).toEqual({
-      inline_keyboard: [[{ text: "Review and approve", url: "https://getleash.example/intent/7" }]],
+    expect(telegramMessage("-100123", "Needs your OK.", [{ text: "Review and approve", url: "https://getleash.example/intent/7" }])).toEqual({
+      text: "Needs your OK.",
+      reply_markup: { inline_keyboard: [[{ text: "Review and approve", url: "https://getleash.example/intent/7" }]] },
     });
     // Telegram opens Mini Apps over https only: a local dashboard keeps the address in the text.
     const local = setup({ outcome: pending, dashboardUrl: "http://localhost:3000" });
     await local.channel.handle(message(511, { text: "INVOICE\nTotal: USD 3" }));
-    expect(local.sent.at(-1)!.text).toContain("http://localhost:3000/intent/7");
+    expect(local.sent.at(-1)!.text).toContain("Review and approve: http://localhost:3000/intent/7");
     expect(local.sent.at(-1)!.other?.reply_markup).toBeUndefined();
     // If Telegram refuses the button, the reply still goes out, with the address in the text.
     const refused = setup({ outcome: pending, refuseButtons: true });
@@ -224,6 +252,6 @@ describe("Telegram notifier (executor notices)", () => {
   it("falls back to the link in the text when Telegram refuses the button", async () => {
     const telegram = fakeTelegram((body) => (body.reply_markup ? 400 : 200));
     await new TelegramNotifier("token", "1001", telegram.fetchImpl).notify({ kind: "approval_needed", text: "Needs your OK.", link: "https://getleash.example/intent/2" });
-    expect(telegram.bodies.map((b) => b.text)).toEqual(["Needs your OK.", "Needs your OK.\nhttps://getleash.example/intent/2"]);
+    expect(telegram.bodies.map((b) => b.text)).toEqual(["Needs your OK.", "Needs your OK.\nReview and approve: https://getleash.example/intent/2"]);
   });
 });

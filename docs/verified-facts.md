@@ -103,6 +103,11 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
 - `pnpm seed` added supplier 1 (`chisolu.near`, native USDC; the owner registered it on USDC for 0.00125
   NEAR), whose 2-day cooldown ends 2026-11-04T21:49:22Z. `pnpm topup --amount 4.91` moved 4.91 USDC into the
   treasury (tx `6rxAqroYRBpzbkXPUw67HyhhSn7G52jNqzphqSJ6Vq5t`). Both together cost the owner 0.0019 NEAR.
+- First payment, 2026-11-03: invoice CH-0001 for 0.50 USDC from Chisolu, sent to the bot on Render. The
+  agent proposed it at 09:41:59Z (tx `AkcfngL6HZCe7ReW8TAquWCsDbr6pzZAqMsbc1cJtwk8`); it waited for the
+  owner (route `SUPPLIER_COOLDOWN`), who approved it at 09:42:24Z (`decide`, tx
+  `DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye`). Intent 1 is `PAID`; `chisolu.near` holds 0.50 USDC and
+  the treasury 4.41 USDC.
 
 ## near-cli-rs (checked 2026-11-02, version 0.30.1)
 
@@ -264,6 +269,12 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   actions })` accepting `{ type: "FunctionCall", params: { methodName, args, gas, deposit } }`, and
   `wallet.signMessage({ message, recipient, nonce })` returning `{ accountId, publicKey, signature }`
   (signature base64). Not yet exercised with a real wallet.
+- HOT Wallet in Telegram (checked 2026-11-03): near-connect's manifest lists `hot-wallet` as the only wallet
+  with a Telegram Mini App (`platform.tga` = `https://t.me/hot_wallet/app`); `t.me/hot_wallet` is titled
+  "HOT Wallet". `connector.connect({ walletId: "hot-wallet" })` skips the wallet list: in a desktop browser
+  with simulated Telegram launch data, HOT's own "Scan in HOT Wallet" screen came up directly, offering
+  "Open via Telegram". Inside a Mini App near-connect opens t.me links through Telegram
+  (`web_app_open_tg_link`). Not yet exercised on a phone.
 - near-api-js 7.4.0 `verifyMessage` (NEP-413) requires the signing key to be a **FullAccess** key of
   the account, then checks the signature (installed source).
 - Next.js 16.4 dev server blocks its dev resources for origins other than `localhost` unless listed

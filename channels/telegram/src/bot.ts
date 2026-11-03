@@ -17,10 +17,10 @@ import type { Update } from "grammy/types";
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import type { Channel, Notice, Received } from "@getleash/channel-core";
 import { checkFile, type InvoiceFile, LIMITS, LimitError, Semaphore, type UpdateLog } from "@getleash/ingestion";
-import { assetName, type Directory, FLAGS, money, moneyRounded, type Policy, type PolicyView, REFUSALS, waitReason } from "@getleash/shared";
+import { assetName, type Directory, FLAGS, HOT_WALLET_TELEGRAM, money, moneyRounded, type Policy, type PolicyView, REFUSALS, waitReason } from "@getleash/shared";
 import { type DeliveredNotices, noticeKey } from "@getleash/shared/node";
 
-import { linkButton } from "./notifier.ts";
+import { type LinkButton, noticeLinks, telegramMessage } from "./notifier.ts";
 
 /** The subset of the Bot API the channel uses (grammY's `bot.api` provides it; tests fake it). */
 export interface BotApi {
@@ -64,6 +64,15 @@ export function coveredNotices(outcome: AgentOutcome): string[] {
       return [];
   }
 }
+
+/** The bot's commands, for /help and Telegram's command menu. */
+export const COMMANDS = [
+  { command: "pending", description: "Payments waiting for you" },
+  { command: "status", description: "Your treasury and what was spent today" },
+  { command: "suppliers", description: "Who can be paid" },
+  { command: "wallet", description: "Set up the wallet you approve payments with" },
+  { command: "pause", description: "Stop every payment at once" },
+] as const;
 
 export function parseIdList(value: string | undefined): Set<string> {
   return new Set(
@@ -134,19 +143,20 @@ export class TelegramChannel implements Channel<Update> {
     };
   }
 
-  /** A link becomes a button (a Mini App in private chats, see notifier.ts); if Telegram refuses it, the link goes in the text. */
+  /** Links become buttons (GetLeash pages as a Mini App in private chats, see notifier.ts); if Telegram refuses them, the links go in the text. */
   async send(chatId: string, notice: Notice): Promise<void> {
     const options = { link_preview_options: { is_disabled: true } };
-    const button = linkButton(chatId, notice.link, notice.action);
-    if (button) {
+    const links = noticeLinks(notice);
+    const message = telegramMessage(chatId, notice.text, links);
+    if (message.reply_markup) {
       try {
-        await this.deps.api.sendMessage(chatId, notice.text, { ...options, reply_markup: button });
+        await this.deps.api.sendMessage(chatId, message.text, { ...options, reply_markup: message.reply_markup });
         return;
       } catch (error) {
-        this.deps.log?.(`[telegram] button refused (${(error as Error).message}); sending the link as text`);
+        this.deps.log?.(`[telegram] buttons refused (${(error as Error).message}); sending the links as text`);
       }
     }
-    await this.deps.api.sendMessage(chatId, notice.link ? `${notice.text}\n${notice.link}` : notice.text, options);
+    await this.deps.api.sendMessage(chatId, telegramMessage(chatId, notice.text, links, false).text, options);
   }
 
   private allowed(message: Message): boolean {
@@ -162,8 +172,7 @@ export class TelegramChannel implements Channel<Update> {
       if (!this.deps.updateLog.claim(`telegram-${update.update_id}`)) return "duplicate";
       const message = update.message!;
       if (!this.allowed(message)) return "not_allowed";
-      const reply = await this.command(command);
-      await this.send(String(message.chat.id), { text: reply });
+      await this.send(String(message.chat.id), await this.command(command));
       return `command:${command}`;
     }
     const received = await this.receive(update);
@@ -245,62 +254,87 @@ export class TelegramChannel implements Channel<Update> {
     return { text: lines.join("\n"), link: action && link ? link : undefined, action };
   }
 
-  private async command(name: string): Promise<string> {
+  private async command(name: string): Promise<Notice> {
     const view = this.deps.view;
     switch (name) {
       case "start":
       case "help":
-        return [
-          "Send me an invoice (a PDF, a photo or pasted text). I pay it if it fits the rules you set on-chain, and ask you when it doesn't.",
-          "/pending: payments waiting for you",
-          "/status: your treasury and what was spent today",
-          "/suppliers: who can be paid",
-          "/pause: stop every payment at once",
-        ].join("\n");
+        return {
+          text: [
+            "Send me an invoice (a PDF, a photo or pasted text). I pay it if it fits the rules you set on-chain, and ask you when it doesn't.",
+            ...(name === "start" ? ["New here? Start with /wallet: it sets up the wallet you approve payments with, inside Telegram."] : []),
+            ...COMMANDS.map((c) => `/${c.command}: ${c.description.charAt(0).toLowerCase()}${c.description.slice(1)}`),
+          ].join("\n"),
+        };
       case "status": {
         const state = await view.state();
         const balance = await view.treasuryBalance(state.token_id);
         const d = state.token_decimals;
         const b = state.budgets;
         const p = state.policy;
-        return [
-          `${state.paused ? "⏸ Payments are paused.\n" : ""}💰 Treasury: ${moneyRounded(balance, d)} USDC`,
-          `Sent today: ${moneyRounded(b.outflow, d)} of ${moneyRounded(p.daily_cap, d)} USDC`,
-          `Paid by the agent on its own today: ${moneyRounded(b.autonomous, d)} of ${moneyRounded(p.autonomous_daily_budget, d)} USDC`,
-          `Payments above ${money(p.approval_threshold, d)} USDC wait for you.${state.paying ? ` ${state.paying} payment(s) on the way.` : ""}`,
-        ].join("\n");
+        return {
+          text: [
+            `${state.paused ? "⏸ Payments are paused.\n" : ""}💰 Treasury: ${moneyRounded(balance, d)} USDC`,
+            `Sent today: ${moneyRounded(b.outflow, d)} of ${moneyRounded(p.daily_cap, d)} USDC`,
+            `Paid by the agent on its own today: ${moneyRounded(b.autonomous, d)} of ${moneyRounded(p.autonomous_daily_budget, d)} USDC`,
+            `Payments above ${money(p.approval_threshold, d)} USDC wait for you.${state.paying ? ` ${state.paying} payment(s) on the way.` : ""}`,
+          ].join("\n"),
+        };
       }
       case "pending": {
         const [state, intents] = await Promise.all([view.state(), view.recentIntents(50)]);
         const names = new Map(this.deps.directory().suppliers.map((s) => [s.supplier_id, s.name]));
-        const lines = intents
-          .filter((i) => i.status === "PENDING" || i.status === "FAILED" || (i.status === "APPROVED" && i.attempt !== null && !i.attempt.authorized))
-          .map((i) => {
-            const who = names.get(i.supplier_id) ?? `supplier #${i.supplier_id}`;
-            const what = i.status === "PENDING" ? "needs your OK" : i.status === "FAILED" ? "didn't go through; retry?" : "ready to send; confirm the transfer";
-            return `• ${who} · ${money(i.value, state.token_decimals)}: ${what} ${this.link(`/intent/${i.id}`) ?? ""}`;
-          });
-        return lines.length ? lines.join("\n") : "Nothing is waiting for you.";
+        const lines: string[] = [];
+        const buttons: LinkButton[] = [];
+        for (const i of intents) {
+          const waiting = i.status === "PENDING" || i.status === "FAILED" || (i.status === "APPROVED" && i.attempt !== null && !i.attempt.authorized);
+          if (!waiting) continue;
+          const who = names.get(i.supplier_id) ?? `supplier #${i.supplier_id}`;
+          const amount = money(i.value, state.token_decimals);
+          const what = i.status === "PENDING" ? "needs your OK" : i.status === "FAILED" ? "didn't go through; retry?" : "ready to send; confirm the transfer";
+          lines.push(`• ${who} · ${amount}: ${what} (payment #${i.id})`);
+          const link = this.link(`/intent/${i.id}`);
+          if (link) buttons.push({ text: `Payment #${i.id}: ${who} · ${amount}`, url: link });
+        }
+        return lines.length ? { text: lines.join("\n"), buttons } : { text: "Nothing is waiting for you." };
       }
       case "suppliers": {
         const [state, suppliers] = await Promise.all([view.state(), view.suppliers()]);
         const names = new Map(this.deps.directory().suppliers.map((s) => [s.supplier_id, s.name]));
         const now = BigInt(Date.now()) * 1_000_000n;
-        return (
-          suppliers
-            .map((s) => {
-              const cooldown = now < BigInt(s.changed_at) + BigInt(state.policy.cooldown_ns) ? " (details changed recently: payments wait for you)" : "";
-              return `• ${names.get(s.id) ?? `supplier #${s.id}`}: ${assetName(s, state.token_id)} to ${s.recipient}${cooldown}${s.active ? "" : " (switched off)"}`;
-            })
-            .join("\n") || "No suppliers yet."
-        );
+        return {
+          text:
+            suppliers
+              .map((s) => {
+                const cooldown = now < BigInt(s.changed_at) + BigInt(state.policy.cooldown_ns) ? " (details changed recently: payments wait for you)" : "";
+                return `• ${names.get(s.id) ?? `supplier #${s.id}`}: ${assetName(s, state.token_id)} to ${s.recipient}${cooldown}${s.active ? "" : " (switched off)"}`;
+              })
+              .join("\n") || "No suppliers yet.",
+        };
       }
-      case "pause":
-        return this.link("/pause")
-          ? `Stop every payment at once (one signature in your wallet): ${this.link("/pause")}`
-          : 'Pause from your wallet: call set_paused {"paused": true} on the contract with 1 yoctoNEAR.';
+      case "wallet": {
+        // Signing stays in the owner's wallet: the bot only points to it and to the page that checks it.
+        const owner = (await view.state()).owner_id;
+        const check = this.link("/wallet");
+        return {
+          text: [
+            `🔑 Payments you approve are signed in your NEAR wallet, as ${owner}. GetLeash never holds that key.`,
+            `1. Open HOT Wallet: it runs inside Telegram. The first time, choose to import a wallet and enter the recovery phrase of ${owner}. Never send that phrase in a chat, this one included.`,
+            ...(check ? [`2. Check my wallet: it connects HOT Wallet and shows whether it signs as ${owner}. Connecting pays nothing.`] : []),
+          ].join("\n"),
+          buttons: [{ text: "Open HOT Wallet", url: HOT_WALLET_TELEGRAM }, ...(check ? [{ text: "Check my wallet", url: check }] : [])],
+        };
+      }
+      case "pause": {
+        const link = this.link("/pause");
+        if (!link) return { text: 'Pause from your wallet: call set_paused {"paused": true} on the contract with 1 yoctoNEAR.' };
+        const paused = (await view.state()).paused;
+        return paused
+          ? { text: "⏸ Payments are paused. One signature in your wallet resumes them.", link, action: "Resume payments" }
+          : { text: "One signature in your wallet stops every payment at once.", link, action: "Pause payments" };
+      }
       default:
-        return "Unknown command. /help lists them.";
+        return { text: "Unknown command. /help lists them." };
     }
   }
 }
@@ -318,6 +352,9 @@ export function startBot(token: string, makeChannel: (bot: Bot) => TelegramChann
     }
   });
   bot.catch((error) => log(`[telegram] ${error.message}`));
+  // The menu Telegram shows when the owner types "/".
+  const menu = [...COMMANDS.map(({ command, description }) => ({ command, description })), { command: "help", description: "What I can do" }];
+  bot.api.setMyCommands(menu).catch((error: Error) => log(`[telegram] could not set the command menu: ${error.message}`));
   void bot.start({ allowed_updates: ["message"], onStart: (me) => log(`[telegram] @${me.username} is listening`) });
   return bot;
 }
