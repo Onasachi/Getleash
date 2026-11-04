@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { Account, actions, JsonRpcProvider, KeyPair, KeyPairSigner, type KeyPairString } from "near-api-js";
 import { GenesisAccount, Sandbox } from "near-sandbox";
 
-import { near, parseOutcome, tgas } from "@getleash/shared";
+import { FACTORY_ID, FACTORY_WASM, near, nearApiActions, parseOutcome, releaseStoreTransaction, tgas } from "@getleash/shared";
 
 import { MOCK_FT_WASM, POLICY_WASM, REPO_ROOT } from "./paths.ts";
 
@@ -141,4 +141,27 @@ async function setUp(
     },
     stop: () => sandbox.tearDown(),
   };
+}
+
+/**
+ * GetLeash's release store, as the operator publishes it (D-31): under the operator's account, which this
+ * devnet must have (the installer is built for release-8eaccbf1.onanikes.near).
+ */
+export async function publishStore(net: Devnet): Promise<void> {
+  const tx = releaseStoreTransaction(ensureWasm().policy);
+  const operator = net.accounts[tx.receiverId.slice(tx.receiverId.indexOf(".") + 1)];
+  if (!operator) throw new Error(`the devnet needs the operator's account to publish ${tx.receiverId}`);
+  const outcome = parseOutcome(await operator.account.signAndSendTransaction({ receiverId: tx.receiverId, actions: nearApiActions(tx.actions), throwOnFailure: false }));
+  if (!outcome.ok) throw new Error(`release store: ${JSON.stringify(outcome.failures)}`);
+}
+
+/** GetLeash's factory, as the operator publishes it (D-32): its code at FACTORY_ID, then its only key deleted. */
+export async function publishFactory(net: Devnet): Promise<void> {
+  const factory = net.accounts[FACTORY_ID];
+  if (!factory) throw new Error(`the devnet needs ${FACTORY_ID} to publish the factory`);
+  const key = KeyPair.fromString(factory.privateKey as KeyPairString).getPublicKey();
+  const outcome = parseOutcome(
+    await factory.account.signAndSendTransaction({ receiverId: FACTORY_ID, actions: [actions.deployContract(FACTORY_WASM), actions.deleteKey(key)], throwOnFailure: false }),
+  );
+  if (!outcome.finalOk) throw new Error(`factory: ${JSON.stringify(outcome.failures)}`);
 }

@@ -43,14 +43,17 @@ wallet would fix the speed and make the fraud worse: one prompt injection and th
   where the owner's wallet signs `add_supplier` with those exact terms. The bot then saves the name in
   the off-chain directory. It never offers to add the address an unknown supplier's invoice asks to be
   paid at (docs/decisions.md D-29).
-- **Other businesses set up their own GetLeash from the same bot** (D-30): they send `/start`, tap "Set up
-  GetLeash", and on the dashboard's `/setup` page their own wallet signs the setup CLI's transactions:
-  their own keyless contract, agent and executor accounts holding only keys the bot generated for them,
-  and the USDC registration (about 1.43 NEAR; the wallet needs about 1.50 while it signs, and the rest
-  comes back). A wallet request can't carry the 84 KB release (HOT Wallet's connector would take hours to
-  encode it), so the contract gets a 1.9 KB installer that copies the release from GetLeash's store on
-  NEAR, deploys it only if its SHA-256 is the release's, and initialises it with the owner's arguments
-  (D-31). The bot signs each setup link with its agent key, which the page checks against the
+- **Other businesses set up their own GetLeash from the same bot** (D-30, D-32): they send `/start`, tap
+  "Set up GetLeash", and on the dashboard's `/setup` page their own wallet makes one call to GetLeash's
+  factory (`getleash.near`, keyless), sending 1.404 NEAR (about 1.43 NEAR in all; the wallet needs about
+  1.491 while it signs, and the rest comes back). For that wallet as owner the factory creates their own
+  keyless contract (`<their account, dots made dashes>.getleash.near`), agent and executor accounts
+  holding only keys the bot generated for them, and the USDC registration. HOT Wallet shows a deployment
+  or a new key in a wallet's request as a "dangerous request" to type CONFIRM for, and a call that sends
+  NEAR with no warning, so the wallet signs only that call (D-32). The contract gets the 84 KB release
+  from a 1.9 KB installer that copies it from GetLeash's store on NEAR, deploys it only if its SHA-256 is
+  the release's, and initialises it with the owner as owner (D-31: no wallet request can carry the release,
+  HOT Wallet's connector would take hours to encode it). The bot signs each setup link with its agent key, which the page checks against the
   chain. Their wallet signs a claim naming the setup and their Telegram account. The page's Finish then
   sends a one-time code through Telegram to the real bot's chat, from the account using the page, and they
   tap START. The bot serves a business only when the claim and the code both come from the account the setup
@@ -96,7 +99,7 @@ Settlement trust that remains: during a cross-chain swap, funds sit briefly with
 | Setup and owner scripts (`scripts/`, `shared/`) | **Implemented.** Keyless policy account in one owner transaction; role accounts with function-call keys only; top-up, seeding, status, rotation. Tested on a local node. |
 | Executor + mock 1Click (`executor/`, `mock-1click/`) | **Implemented.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes. Tested on a local node. |
 | Agent, ingestion, Telegram (`agent/`, `ingestion/`, `channels/`) | **Implemented.** NEAR AI Cloud extraction with TEE verification badges, deterministic checks, obligation HMAC, update dedupe, limits, bot commands, adding suppliers from Telegram (`/addsupplier`, `/invite`; unit tests, not yet run live), other businesses setting up their own GetLeash from the bot (D-30: unit tests, and the page's exact transactions on a local node; not yet run live). Checked live against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Telegram: unit tests with a fake Bot API, and the live bot on testnet (next rows). |
-| Dashboard (`web/`) | **Implemented.** In plain words: the treasury, "Needs you" with one button per payment, and a payment page that says who gets what and why it needs you (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record), with the checks and raw terms one click away; pause; a page that checks a new supplier's address and adds it with one wallet signature (`/suppliers/new`, opened from the bot); a page where another business's wallet sets up its own GetLeash (`/setup`, opened from the bot), and every page for a hosted business's contract (`?c=`), with a warning when that contract does not run the release; NEP-413 private view with supplier names. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs); the add-supplier and setup pages were checked read-only against mainnet. On 4 Nov a HOT Wallet in Telegram (Android) signed a setup's claim on mainnet, but HOT's connector never showed the setup itself (it can't encode the 84 KB release in time, D-31); the setup through the installer has not been signed on mainnet yet. |
+| Dashboard (`web/`) | **Implemented.** In plain words: the treasury, "Needs you" with one button per payment, and a payment page that says who gets what and why it needs you (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record), with the checks and raw terms one click away; pause; a page that checks a new supplier's address and adds it with one wallet signature (`/suppliers/new`, opened from the bot); a page where another business's wallet sets up its own GetLeash (`/setup`, opened from the bot), and every page for a hosted business's contract (`?c=`), with a warning when that contract does not run the release; NEP-413 private view with supplier names. Checked against a local node, and on testnet with the owner signing through near-connect's "NEAR CLI" wallet (near-cli-rs); the add-supplier and setup pages were checked read-only against mainnet. On 4 Nov a HOT Wallet in Telegram (Android) signed a setup's claim on mainnet, but HOT's connector never showed the setup itself (it can't encode the 84 KB release in time, D-31); with the installer HOT showed it, as a "dangerous request" (any deployment is one to HOT, D-32), and the owner rejected it. The one call to the factory has not been signed on mainnet yet. |
 | Testnet rehearsal | **Done 2 Nov** with the release wasm at `getleash.getleash-owner.testnet` and Circle's testnet USDC. Four invoices sent to the live bot, read by NEAR AI Cloud: 1.80 paid inside the agent's call; the same invoice re-sent as a reworded reminder, refused on-chain (`OBLIGATION_OPEN_OR_PAID`); 3.00 held (`ABOVE_THRESHOLD`) and paid when the owner approved it from the dashboard; 1.00 USDT to a Tron address, quoted by mock-1click (`pnpm mock:1click`; nothing reaches Tron), its deposit authorized by the owner and funded by the executor, with the contract registering the deposit account on USDC and paying it in one receipt. Gas and NEAR per step: `docs/verified-facts.md`. |
 | Mainnet deployment | **Deployed 2 Nov** at `getleash.onanikes.near`: 0 access keys, code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release wasm below), the one-tenth limits of `deploy/mainnet-policy.json`. Setup cost the owner 1.424 NEAR. One supplier added (in its 2-day cooldown until 4 Nov). First payment on 3 Nov: 0.50 USDC to that supplier, approved by the owner because of the cooldown (`propose` tx `AkcfngL6HZCe7ReW8TAquWCsDbr6pzZAqMsbc1cJtwk8`, `decide` tx `DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye`). The second, the same day, was approved from Telegram: the bot's button opened the payment page inside Telegram and the owner signed in HOT Wallet (`decide` tx `Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9`); 3.91 USDC left in the treasury. |
 | `demo-getleash` panel | Not yet. |
@@ -121,7 +124,7 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 160 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
+   → `Tests 163 passed`: the Borsh layout against golden vectors written by the Rust types, outcome
    parsing, 1Click quote checks (against the shape of a live quote), obligation ids, input limits,
    the Telegram channel (replayed update processed once, allowlist, size limits, replies in plain
    words with the enum code kept, payment pages and `/wallet` as Mini App buttons), adding suppliers
@@ -135,9 +138,10 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    can't pass for a username; the bot serves a business once, only after
    the chain shows its contract with the keys generated for it, answers each business only in its owner's
    chat, routes invites across businesses, keeps their keys 0600, and replays updates a restart
-   interrupted), the installer and its store (the bytes are their pinned build, built for this release and
-   this store; a whole setup's wallet request stays under 25,000 characters, where deploying the release
-   took 960,000; the wallet is asked for the gas NEAR holds while it signs), supplier matching by address,
+   interrupted), the installer, its store and the factory (the bytes are their pinned build, built for this
+   release, this store, USDC and the default limits; a whole setup is one call to the factory under 1,000
+   characters, with nothing HOT Wallet calls dangerous, where deploying the release took 960,000; the wallet
+   is asked for the gas NEAR holds while it signs), supplier matching by address,
    owner notices sent once between the bot and the executor,
    near-cli-rs key files, the plain-language wording shared by the dashboard and Telegram, and the
    TEE verification policy (stale, invalid or missing evidence never earns a "verified" badge).
@@ -147,7 +151,7 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    ```bash
    pnpm test:sandbox
    ```
-   → `Tests 30 passed` in about a minute, with the mainnet role balances. The setup test creates
+   → `Tests 37 passed` in about a minute, with the mainnet role balances. The setup test creates
    the policy account in one owner transaction and checks it has **no access keys**, that the role
    accounts hold exactly one function-call key, and that the protocol refuses those keys for other
    methods, other contracts, deposits and transfers; a native supplier is paid inside the agent's
@@ -164,7 +168,13 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    runs the release; too little gas leaves the installer, and installing again works; the store is set once and gives the
    release to anyone; installing leaves the release, initialised with the owner's arguments and nothing of
    the installer; a store holding other code installs nothing; and a wallet holding what the page asks for
-   completes the whole setup, while one holding only its cost runs out at the contract.
+   completes the whole setup, while one holding only its cost runs out at the contract. The factory tests
+   (D-32) publish the factory keyless and make one call per business: the bot's own check passes on the
+   result (the release, no keys, the caller as owner, the roles with only their keys, USDC), the NEAR lands
+   where it should, a second setup for the same name, a name ending like a role account's, a wrong deposit
+   and bad keys are refused with the NEAR given back, a name someone registered on USDC first still sets
+   up, only the recorded owner can retry an install, and a wallet holding the first live wallet's 1.498
+   NEAR completes the setup.
 
 4. **The whole pipeline, offline.**
    ```bash
@@ -208,11 +218,12 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    (NEAR shows it as code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2`). The wasm records
    its source commit and build image (NEP-330); a deployed contract returns them from the
    `contract_source_metadata` view. Rebuilding at any other commit gives a different hash, because
-   the commit is part of that record. The 30 integration tests and the offline demo pass with this
-   exact file. The installer that hosted setups deploy (`contract/bootstrap`, D-31) is 1,932 bytes, sha256
-   `cfd051b8791ab61bf06dfba5abd41739b18b2efa019c831619895b814381f09c`, and the release store's code 1,368
-   bytes, sha256 `60b5b24dc8b199e1b0a30e4e7e840d964384f6be83eb6b1dc2e1cc733f50eb61`: `pnpm build:installer
-   --check` rebuilds both with the pinned toolchain and compares.
+   the commit is part of that record. The 37 integration tests and the offline demo pass with this
+   exact file. The hosted setups' contracts (`contract/bootstrap`, D-31, D-32): the installer is 1,932
+   bytes, sha256 `cfd051b8791ab61bf06dfba5abd41739b18b2efa019c831619895b814381f09c`; the factory 7,921
+   bytes, sha256 `5de21f5bb8b9e0fbeb9a9650687abab82ae535082c0a29de69fc140197279228`; the release store's
+   code 1,368 bytes, sha256 `60b5b24dc8b199e1b0a30e4e7e840d964384f6be83eb6b1dc2e1cc733f50eb61`.
+   `pnpm build:installer --check` rebuilds them with the pinned toolchain and compares.
 
 ### Running it for real (owner's machine)
 
@@ -241,9 +252,9 @@ account on USDC, and each accepted invoice keeps about 0.0008 NEAR of storage to
 
 ```
 contract/          NEAR policy contract v2 (Rust, near-sdk 5.29): src/budget.rs and src/rules.rs are pure, src/json.rs reads the owner's JSON strictly
-  bootstrap/       the installer hosted setups deploy and the release store it copies from (raw wasm, no near-sdk; D-31)
+  bootstrap/       the factory hosted setups call, the installer it deploys and the release store it copies from (raw wasm, no near-sdk; D-31, D-32)
 shared/            Borsh types and decoders, role-scoped clients, 1Click client, setup flow, address checks
-scripts/           owner CLIs: keygen, setup:owner, topup, seed, status, rotate, publish:release; demo:mock, devnet, build:installer
+scripts/           owner CLIs: keygen, setup:owner, topup, seed, status, rotate, publish:release, publish:factory; demo:mock, devnet, build:installer
 executor/          deterministic cross-chain payout loop, journal, owner notices
 mock-1click/       local 1Click stand-in that settles real (mock) tokens on a local node
 ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer

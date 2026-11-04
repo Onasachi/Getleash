@@ -14,6 +14,7 @@
     "setup:owner": "tsx scripts/src/setup.ts",
     "build:installer": "tsx scripts/src/build-installer.ts",
     "publish:release": "tsx scripts/src/publish-release.ts",
+    "publish:factory": "tsx scripts/src/publish-factory.ts",
     "topup": "tsx scripts/src/topup.ts",
     "seed": "tsx scripts/src/seed.ts",
     "status": "tsx scripts/src/status.ts",

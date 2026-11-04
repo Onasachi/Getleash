@@ -1,8 +1,8 @@
 /**
- * A hosted setup on a real local node (docs/decisions.md D-30, D-31): the exact transactions the
- * dashboard's /setup page asks a business's wallet to sign (hostedSetupTransactions, the same list the page
- * converts with walletActions: the contract through the installer, which copies the release from the
- * operator's release store), signed here with the owner's key, produce a contract the bot accepts with its
+ * A hosted setup on a real local node (docs/decisions.md D-30, D-31, D-32): the exact call the dashboard's
+ * /setup page asks a business's wallet to sign (hostedSetupTransaction: one call to the factory, which
+ * creates the role accounts and the contract through the installer, which copies the release from the
+ * operator's release store), signed here with the owner's key, produces a contract the bot accepts with its
  * own check (checkHostedSetup against the published release). Before that, and for anyone else's keys, the
  * check fails without throwing. The setup page's check of a setup link reads the signing agent's keys
  * from the chain the same way, and accepts only what that agent's key signed.
@@ -12,14 +12,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   checkHostedSetup,
+  FACTORY_BUILD,
+  FACTORY_ID,
   hostedSetupPlan,
-  hostedSetupTransactions,
+  hostedSetupTransaction,
   nearApiActions,
   parseOutcome,
   PolicyView,
   RELEASE_STORE_ID,
   RELEASE_WASM_SHA256,
-  releaseStoreTransaction,
   setupLinkSigned,
   type SetupPlan,
   type SetupTarget,
@@ -28,7 +29,7 @@ import {
   storeHoldsRelease,
 } from "@getleash/shared";
 
-import { type Devnet, ensureWasm, startDevnet } from "../src/sandbox.ts";
+import { type Devnet, ensureWasm, publishFactory, publishStore, startDevnet } from "../src/sandbox.ts";
 
 describe("a hosted setup on a local node", () => {
   let net: Devnet;
@@ -37,14 +38,14 @@ describe("a hosted setup on a local node", () => {
   const agentKey = KeyPair.fromRandom("ed25519");
   const executorKey = KeyPair.fromRandom("ed25519");
 
-  // The installer copies the release from the operator's store (D-31), so the operator is on this devnet too.
+  // The factory (D-32) and the installer's store (D-31) are the operator's, with USDC's id built in, so this
+  // devnet has the operator, the factory's account and its token at USDC's id.
   const operator = RELEASE_STORE_ID.slice(RELEASE_STORE_ID.indexOf(".") + 1);
 
   beforeAll(async () => {
-    net = await startDevnet({ extra: ["acme.near", "oneclick.near", "mallory.near", operator] });
-    const store = releaseStoreTransaction(ensureWasm().policy);
-    const published = parseOutcome(await net.accounts[operator]!.account.signAndSendTransaction({ receiverId: store.receiverId, actions: nearApiActions(store.actions), throwOnFailure: false }));
-    if (!published.ok) throw new Error(`release store: ${JSON.stringify(published.failures)}`);
+    net = await startDevnet({ token: FACTORY_BUILD.token, extra: ["acme.near", "oneclick.near", "mallory.near", operator, FACTORY_ID] });
+    await publishStore(net);
+    await publishFactory(net);
     plan = hostedSetupPlan({
       ownerId: net.owner.id,
       agentPublicKey: agentKey.getPublicKey().toString(),
@@ -74,11 +75,10 @@ describe("a hosted setup on a local node", () => {
     expect(checks.some((c) => !c.ok)).toBe(true);
   });
 
-  it("the page's transactions, signed by the owner, make a contract the bot serves", async () => {
-    for (const tx of hostedSetupTransactions(plan)) {
-      const outcome = parseOutcome(await net.owner.account.signAndSendTransaction({ receiverId: tx.receiverId, actions: nearApiActions(tx.actions), throwOnFailure: false }));
-      expect(outcome.ok, `${tx.receiverId}: ${outcome.failures.map((f) => f.panic ?? f.message).join("; ")}`).toBe(true);
-    }
+  it("the page's one call, signed by the owner, makes a contract the bot serves", async () => {
+    const tx = hostedSetupTransaction(plan);
+    const outcome = parseOutcome(await net.owner.account.signAndSendTransaction({ receiverId: tx.receiverId, actions: nearApiActions(tx.actions), throwOnFailure: false }));
+    expect(outcome.ok, `${tx.receiverId}: ${outcome.failures.map((f) => f.panic ?? f.message).join("; ")}`).toBe(true);
     const checks = await checkHostedSetup(net.rpc, target, net.token.id);
     for (const check of checks) expect(check.ok, `${check.name}: ${check.detail}`).toBe(true);
     expect(checks.map((c) => c.name)).toEqual(

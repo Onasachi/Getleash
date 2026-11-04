@@ -1,34 +1,30 @@
 /**
- * Hosted GetLeash (docs/decisions.md D-30): one service, the operator's, runs the agent and the executor
- * for many businesses. Each business still gets its own contract, created by its own wallet with the
- * same transactions as the setup CLI (setup.ts), owned by that wallet, holding its own treasury and
- * limits. The service holds only the two function-call keys it generated for that business: it can
- * propose payments to suppliers the owner added and fund cross-chain payments the owner approved, within
- * the contract's limits. It can never add a supplier, change a limit or withdraw.
+ * Hosted GetLeash (docs/decisions.md D-30, D-32): one service, the operator's, runs the agent and the
+ * executor for many businesses. Each business still gets its own contract, owned by its own wallet,
+ * holding its own treasury and limits: its wallet makes one call to the factory, which creates the contract
+ * (keyless, the release, through the installer) and the two role accounts under the factory's account. The
+ * service holds only the two function-call keys it generated for that business: it can propose payments to
+ * suppliers the owner added and fund cross-chain payments the owner approved, within the contract's limits.
+ * It can never add a supplier, change a limit or withdraw.
  */
-import { base64Decode, type Provider } from "near-api-js";
+import { base64Decode, PublicKey, type Provider } from "near-api-js";
 import { verifyMessage } from "near-api-js/nep413";
 import { z } from "zod";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { fromBase64Url, hexToBytes, toBase64Url } from "./bytes.ts";
-import { installerPolicyTransaction } from "./installer.ts";
+import { bytesToHex, fromBase64Url, hexToBytes, toBase64Url } from "./bytes.ts";
+import { FACTORY_CREATE_GAS, FACTORY_ID, FACTORY_RECORD, signingReserve } from "./installer.ts";
 import {
-  AGENT_METHODS,
   type Check,
   DEFAULT_POLICY,
-  defaultRoleIds,
-  EXECUTOR_METHODS,
   FT_STORAGE_DEPOSIT,
   RELEASE_WASM_BYTES,
   RELEASE_WASM_SHA256,
-  roleAccountTransaction,
   type SetupPlan,
   type SetupTransaction,
   sha256Hex,
   suggestedPolicyBalance,
-  treasuryTransaction,
   verifySetup,
 } from "./setup.ts";
 import { near } from "./units.ts";
@@ -39,26 +35,43 @@ export const HOSTED_ROLES = {
   executor: { balance: near("0.2"), allowance: near("1") },
 } as const;
 
-/** Network fees for the four setup transactions: about 0.023 NEAR on mainnet (docs/deployment.md, Costs). */
+/** Network fees for a setup through the factory: the gas it burns (0.0237 NEAR measured), most of it for creating three accounts (D-32). */
 export const SETUP_GAS = near("0.025");
 
 export const ED25519_PUBLIC_KEY = /^ed25519:[1-9A-HJ-NP-Za-km-z]{43,44}$/;
 
-const NAMED_ACCOUNT = /^(?:[a-z\d]+[-_])*[a-z\d]+(?:\.(?:[a-z\d]+[-_])*[a-z\d]+)+$/;
+const ACCOUNT = /^(?:[a-z\d]+[-_])*[a-z\d]+(?:\.(?:[a-z\d]+[-_])*[a-z\d]+)*$/;
 
 /**
- * Whether GetLeash can be set up under this account: a named account with a dot (acme.near, acme.tg),
- * short enough for `executor-1.<account>` to stay within NEAR's 64 characters. An implicit account
- * (64 hex characters) cannot create sub-accounts.
+ * A hosted business's accounts, named by the factory after the owner's account (D-32): its dots made dashes,
+ * under the factory's account. onasachi.tg → onasachi-tg.getleash.near, onasachi-tg-agent.getleash.near and
+ * onasachi-tg-executor.getleash.near.
  */
-export function canHostUnder(accountId: string): boolean {
-  return accountId.length <= 64 - "executor-1.".length && NAMED_ACCOUNT.test(accountId);
+export function hostedIds(ownerId: string): { policyId: string; agentId: string; executorId: string } {
+  const name = ownerId.replaceAll(".", "-");
+  return { policyId: `${name}.${FACTORY_ID}`, agentId: `${name}-agent.${FACTORY_ID}`, executorId: `${name}-executor.${FACTORY_ID}` };
 }
 
 /**
- * The setup a hosted business's wallet signs: the CLI's defaults, the service's two public keys, the
- * operator's token. It carries no code: the contract gets the release through the installer (D-31,
- * hostedSetupTransactions), and its NEAR is sized for the release.
+ * Whether GetLeash can be set up for this account: any NEAR account short enough for its executor's name
+ * (`<name>-executor.getleash.near`) to stay within NEAR's 64 characters, so named accounts up to 41, whose
+ * name doesn't end like a role account's (the factory refuses `-agent` and `-executor`, so no contract is
+ * ever named like another setup's agent or executor).
+ */
+export function canHost(accountId: string): boolean {
+  return (
+    ACCOUNT.test(accountId) &&
+    accountId.length >= 2 &&
+    hostedIds(accountId).executorId.length <= 64 &&
+    !/[.-](agent|executor)$/.test(accountId)
+  );
+}
+
+/**
+ * The setup a hosted business's wallet asks the factory for: the CLI's defaults, the service's two public
+ * keys, the operator's token, accounts named under the factory. It carries no code: the contract gets the
+ * release through the installer (D-31), and its NEAR is sized for the release. It is what the bot checks the
+ * result against; the factory has the same values built in.
  */
 export function hostedSetupPlan(input: {
   ownerId: string;
@@ -66,7 +79,7 @@ export function hostedSetupPlan(input: {
   executorPublicKey: string;
   token: { token_id: string; token_decimals: number };
 }): SetupPlan {
-  const ids = defaultRoleIds(input.ownerId);
+  const ids = hostedIds(input.ownerId);
   return {
     ownerId: input.ownerId,
     policyId: ids.policyId,
@@ -80,23 +93,47 @@ export function hostedSetupPlan(input: {
   };
 }
 
-/**
- * What the setup page asks a business's wallet to sign, in order: the agent's account, the executor's, the
- * keyless contract through the installer, and its registration on USDC. The CLI's list (setupTransactions)
- * with installerPolicyTransaction in place of policyTransaction.
- */
-export function hostedSetupTransactions(plan: SetupPlan): SetupTransaction[] {
-  return [
-    roleAccountTransaction(plan.policyId, plan.agent, AGENT_METHODS),
-    roleAccountTransaction(plan.policyId, plan.executor, EXECUTOR_METHODS),
-    installerPolicyTransaction(plan),
-    treasuryTransaction(plan),
-  ];
+/** What the factory's `create` takes, exactly: the three accounts' NEAR, the USDC registration and its record. */
+export function factoryDeposit(): bigint {
+  return HOSTED_ROLES.agent.balance + HOSTED_ROLES.executor.balance + suggestedPolicyBalance(RELEASE_WASM_BYTES) + FT_STORAGE_DEPOSIT + FACTORY_RECORD;
 }
 
-/** NEAR leaving the owner's account for the whole setup, network fees included (for a code of `wasmBytes`). */
-export function setupCost(wasmBytes: number): bigint {
-  return HOSTED_ROLES.agent.balance + HOSTED_ROLES.executor.balance + suggestedPolicyBalance(wasmBytes) + FT_STORAGE_DEPOSIT + SETUP_GAS;
+/** A public key ("ed25519:…") as the factory takes it: its 32 bytes in hex. */
+function keyHex(publicKey: string): string {
+  return bytesToHex(PublicKey.fromString(publicKey).data);
+}
+
+/**
+ * What the setup page asks a business's wallet to sign: one call to the factory, with the service's two public
+ * keys and exactly the setup's cost (D-32). HOT Wallet shows it as a call that sends NEAR, with no warning; the
+ * factory creates the role accounts, the keyless contract through the installer, and its USDC registration.
+ */
+export function hostedSetupTransaction(plan: Pick<SetupPlan, "agent" | "executor">): SetupTransaction {
+  return {
+    receiverId: FACTORY_ID,
+    actions: [
+      {
+        type: "FunctionCall",
+        method: "create",
+        args: { agent: keyHex(plan.agent.publicKey), executor: keyHex(plan.executor.publicKey) },
+        gas: FACTORY_CREATE_GAS,
+        deposit: factoryDeposit(),
+      },
+    ],
+  };
+}
+
+/** NEAR leaving the owner's account for the whole setup, network fees included. */
+export function setupCost(): bigint {
+  return factoryDeposit() + SETUP_GAS;
+}
+
+/**
+ * NEAR the owner's wallet must hold to sign the setup, at this gas price: the deposit, and the gas it attaches
+ * at the worst-case price (the fees come out of that, the rest comes back), and a little for the transaction itself.
+ */
+export function setupNeeds(gasPrice?: bigint): bigint {
+  return factoryDeposit() + signingReserve(gasPrice) + near("0.001");
 }
 
 /** NEAR for reading, rounded up to the cent: "1.43" (or to `decimals` places). */
@@ -263,13 +300,13 @@ export type ClaimKind = "setup" | "connect";
 export function setupClaimMessage(c: { kind?: ClaimKind; ownerId: string; agentPublicKey: string } & SetupAccount): string {
   if (c.kind === "connect") {
     return [
-      `Connect GetLeash: getleash.${c.ownerId}, owned by ${c.ownerId}.`,
+      `Connect GetLeash: ${hostedIds(c.ownerId).policyId}, owned by ${c.ownerId}.`,
       `This request's key: ${c.agentPublicKey}.`,
       `GetLeash then serves it only to the Telegram account ${c.telegramName} (user ${c.telegramUser}), instead of any account it served before. Sign only if that account is yours.`,
     ].join("\n");
   }
   return [
-    `Set up GetLeash: getleash.${c.ownerId}, owned by ${c.ownerId}.`,
+    `Set up GetLeash: ${hostedIds(c.ownerId).policyId}, owned by ${c.ownerId}.`,
     `Its agent key: ${c.agentPublicKey}.`,
     `GetLeash serves it only to the Telegram account ${c.telegramName} (user ${c.telegramUser}). Sign only if that account is yours.`,
   ].join("\n");

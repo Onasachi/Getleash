@@ -28,7 +28,9 @@ funds terms already committed on-chain, and the owner's wallet holds every key t
 - Unauthorized callers must **panic before any state write** (role checks first).
 - The policy contract account has **no access keys**. Code changes only through the owner-signed `upgrade`,
   or once, at creation, through the installer (`contract/bootstrap`, D-31), which installs only the release
-  whose SHA-256 is built into it, copied from the release store built into it, and only for the owner.
+  whose SHA-256 is built into it, copied from the release store built into it, and only for its parent: the
+  owner, or for hosted setups the factory (D-32), which writes `new`'s arguments with its caller as owner.
+  The factory, the store and every account they create stay keyless; the factory adds only role keys.
 - Budget counters **only go up**: refunds, returned change and failed transfers never give budget back.
 - The agent's LLM output is untrusted. Nothing model-generated goes on-chain except the enum `review_flag`; the
   obligation id is an HMAC computed by deterministic ingestion code.
@@ -55,7 +57,7 @@ funds terms already committed on-chain, and the owner's wallet holds every key t
 
 ```
 contract/        Rust policy contract v2 (src/budget.rs, src/rules.rs pure; src/json.rs strict owner JSON)
-                 bootstrap/: the installer and the release store, raw wasm without near-sdk (D-31)
+                 bootstrap/: the factory, the installer and the release store, raw wasm without near-sdk (D-31, D-32)
 shared/          Borsh types and decoders, role clients, 1Click client, setup flow, address checks.
                  "@getleash/shared" is browser-safe (the dashboard uses it); Node-only helpers
                  (key files, data dir) live in "@getleash/shared/node"
@@ -87,6 +89,7 @@ pnpm demo:mock          # all fixtures through the whole pipeline, offline; exit
 pnpm devnet             # long-running local deployment; then `pnpm dashboard` with the printed env
 pnpm build:installer    # build contract/bootstrap and refresh shared/src/installer-wasm.ts (--check: compare only)
 pnpm publish:release    # the operator, once per release, on mainnet: the store the installer copies from
+pnpm publish:factory    # the operator, once per release, on mainnet: getleash.near, keyless, which hosted setups call
 ```
 
 **Never run the contract tests with `--release`.** near-sdk's unit-test mock unwinds panics

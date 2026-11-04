@@ -9,7 +9,13 @@ import { describe, expect, it } from "vitest";
 import {
   abandonTransaction,
   hostedSetupPlan,
-  hostedSetupTransactions,
+  DEFAULT_POLICY,
+  FACTORY_BUILD,
+  FACTORY_CREATE_GAS,
+  FACTORY_ID,
+  FACTORY_WASM,
+  FACTORY_WASM_SHA256,
+  hostedSetupTransaction,
   INSTALL_GAS,
   INSTALLER_BUILD,
   INSTALLER_WASM,
@@ -17,6 +23,7 @@ import {
   isInstallerCode,
   near,
   nearRoundedUp,
+  NETWORKS,
   REGISTRATION_GAS,
   RELEASE_STORE_ID,
   RELEASE_WASM_BYTES,
@@ -24,7 +31,8 @@ import {
   releaseStoreId,
   releaseStoreTransaction,
   RETIRED_INSTALLER_SHA256S,
-  setupCost,
+  setupNeeds,
+  type SetupTransaction,
   setupTransactions,
   sha256Hex,
   signingReserve,
@@ -53,7 +61,7 @@ function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
 }
 
 /** What HOT Wallet's connector encodes before it shows anything: JSON.stringify of the request (a Uint8Array becomes an object with a key per byte). */
-function hotRequest(transactions: ReturnType<typeof hostedSetupTransactions>): string {
+function hotRequest(transactions: SetupTransaction[]): string {
   return JSON.stringify({
     method: "near:signAndSendTransactions",
     request: { transactions: transactions.map((t) => ({ receiverId: t.receiverId, actions: walletActions(t.actions) })) },
@@ -97,11 +105,29 @@ describe("the installer and the store", () => {
 });
 
 describe("a browser wallet's request for a whole setup", () => {
-  it("stays small enough for HOT Wallet's connector: under 25,000 characters, where deploying the release itself took 960,000", () => {
-    const viaInstaller = hotRequest(hostedSetupTransactions(plan()));
+  it("is one small call to the factory: under 1,000 characters for HOT Wallet's connector, where deploying the release itself took 960,000", () => {
+    const viaFactory = hotRequest([hostedSetupTransaction(plan())]);
     const direct = hotRequest(setupTransactions({ ...plan(), wasm: new Uint8Array(RELEASE_WASM_BYTES).fill(255) }));
-    expect(viaInstaller.length).toBeLessThan(25_000);
+    expect(viaFactory.length).toBeLessThan(1_000);
     expect(direct.length).toBeGreaterThan(900_000);
+  });
+
+  it("asks the wallet for nothing HOT Wallet calls dangerous: no deployment, no key, no new account, only a call with a deposit", () => {
+    const actions = walletActions(hostedSetupTransaction(plan()).actions);
+    expect(actions.map((a) => a.type)).toEqual(["FunctionCall"]);
+  });
+});
+
+describe("the factory", () => {
+  it("is the bytes pnpm build:installer built, pinned by their SHA-256, with the installer, USDC and the default limits inside", () => {
+    expect(sha256Hex(FACTORY_WASM)).toBe(FACTORY_WASM_SHA256);
+    expect(FACTORY_WASM.length).toBe(FACTORY_BUILD.bytes);
+    expect([...FACTORY_WASM.slice(0, 8)]).toEqual([0, 97, 115, 109, 1, 0, 0, 0]);
+    expect(contains(FACTORY_WASM, INSTALLER_WASM)).toBe(true);
+    expect(FACTORY_BUILD.token).toBe(NETWORKS.mainnet.usdc);
+    expect(contains(FACTORY_WASM, new TextEncoder().encode(FACTORY_BUILD.token))).toBe(true);
+    expect(contains(FACTORY_WASM, new TextEncoder().encode(JSON.stringify(DEFAULT_POLICY).slice(1, -1)))).toBe(true);
+    expect(FACTORY_ID).toBe("getleash.near");
   });
 });
 
@@ -125,13 +151,13 @@ describe("the release store's batch", () => {
 });
 
 describe("what a wallet must hold while it signs a setup", () => {
-  it("is the setup's cost plus all the gas still to attach, at NEAR's worst-case price (it comes back)", () => {
-    expect(INSTALL_GAS).toBe(tgas(60));
+  it("is the deposit plus the gas the factory call attaches, at NEAR's worst-case price (it comes back)", () => {
+    expect(INSTALL_GAS).toBe(tgas(35));
     expect(REGISTRATION_GAS).toBe(tgas(10));
-    expect(signingReserve({ contract: true, registered: true })).toBe(near("0.07"));
-    expect(signingReserve({ contract: false, registered: true })).toBe(near("0.01"));
-    expect(signingReserve({ contract: false, registered: false })).toBe(0n);
-    expect(nearRoundedUp(setupCost(RELEASE_WASM_BYTES) + signingReserve({ contract: true, registered: true }))).toBe("1.50");
+    expect(FACTORY_CREATE_GAS).toBe(tgas(85));
+    expect(signingReserve()).toBe(near("0.0867"));
+    expect(signingReserve(300_000_000n)).toBe(near("0.2601"));
+    expect(nearRoundedUp(setupNeeds(), 3)).toBe("1.491");
   });
 });
 

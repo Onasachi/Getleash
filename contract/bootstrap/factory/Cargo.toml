@@ -1,0 +1,11 @@
+[package]
+name = "getleash-factory"
+description = "Sets up a business's GetLeash from one call: its keyless contract (through the installer), its agent and executor accounts with only the service's keys, and its USDC registration."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"

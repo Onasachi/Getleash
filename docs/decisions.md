@@ -303,7 +303,8 @@ does the rest. One service serves many businesses; each keeps everything that ma
   `getleash.<owner>` created, funded, deployed and initialised in one transaction with no access key, and its
   USDC registration. The code is the published release (`RELEASE_WASM_SHA256`), installed by the installer
   from the operator's release store (D-31; the page first copied it from the operator's own contract, which
-  no wallet request could carry). Steps already on the chain are
+  no wallet request could carry). Since D-32 the wallet makes one call to GetLeash's factory instead, which
+  creates these accounts under its own name. Steps already on the chain are
   skipped, so the page carries on where it stopped. It costs the owner about 1.43 NEAR; the limits are
   `DEFAULT_POLICY` (the mainnet values, trust budget 0), which only the owner's wallet can change.
 - **A setup is someone's only when three things meet, each from where it can't be faked**
@@ -468,3 +469,72 @@ allowlist, to offer a setup).
 Amends D-11 (the code is installed by the installer a few receipts after the batch, still with no key),
 D-30 (the page no longer copies the release from the operator's contract) and AGENTS.md ("code changes only
 through the owner-signed `upgrade`", and once, at creation, through the installer).
+
+**D-32 · A business's wallet makes one call to GetLeash's factory, which creates everything.**
+- **Why.** With the installer (D-31) the setup reached HOT Wallet, which then showed it as a "Dangerous
+  request": a red "Deploying a contract replaces your account code. A malicious contract can take over the
+  account", a yellow "The app gets a key to call … without asking you", and a box to type CONFIRM. HOT's
+  own code says why (`app.hot-labs.org`, read 4 Nov, docs/verified-facts.md): it rates every
+  `DeployContract` and `UseGlobalContract` "danger", whichever account it targets, and asks for CONFIRM
+  whenever any action is rated so; a function-call key on another account is a warning; a function call
+  that sends NEAR gets no warning at all. Nothing here is unsafe, but a business owner reading that stops.
+  So the wallet must not deploy anything or add keys.
+- **What.** The factory (`contract/bootstrap/factory`, 7.9 KB, raw host functions) is published once, keyless,
+  at `getleash.near` (`pnpm publish:factory`). The wallet signs one call: `create({"agent":"<hex>",
+  "executor":"<hex>"})` with exactly the setup's cost attached (1.40325 NEAR: 0.15 + 0.2 + 1.05 for the
+  three accounts, 0.00125 for the USDC registration, 0.002 the factory keeps for its record). The factory,
+  for the caller as owner, creates `<name>-agent.getleash.near` and `<name>-executor.getleash.near`, each
+  with its NEAR and exactly one function-call key (the link's), limited to the contract and the role's
+  methods; `<name>.getleash.near`, the contract, with the installer and `install`, whose `new` arguments
+  the factory writes (the caller as owner, those two accounts, USDC, `DEFAULT_POLICY`); and the contract's
+  USDC registration. `<name>` is the owner's account id with dots made dashes (onasachi.tg →
+  onasachi-tg). Everything it sets up (amounts, allowances, methods, the token, the limits, the installer)
+  is built in from `shared/` (`factory/src/config.rs`, written by `pnpm build:installer`), so the factory's
+  code hash says all of it, and the bot checks the result exactly as before (`checkHostedSetup`).
+- **Why it can't go wrong in pieces.** Only the factory can create accounts under its own name, and it keeps
+  a record per name and refuses a name it set up before (`TAKEN`), an owner whose id ends in `.agent`,
+  `-agent`, `.executor` or `-executor` (`BAD_NAME`: otherwise one owner's contract could carry another
+  setup's role name, and that contract's owner could act as the other business's agent), a deposit other
+  than the exact cost (`WRONG_DEPOSIT`) and keys not given exactly as `{"agent":"<64 hex>","executor":"<64
+  hex>"}` (`BAD_ARGS`), all before anything is spent: the call fails whole and the wallet gets its NEAR
+  back. So none of the accounts it then creates can exist already. If the release is ever missing when
+  the installer asks, the contract keeps the installer, keyless; `retry_install`, for the recorded owner
+  only, asks again with all the gas the owner attaches (so a future rise in gas costs can be met). The
+  factory has no other method and no key: it can't touch a contract once created.
+- **What it changes.** HOT shows one smart contract call sending 1.404 NEAR, with no warning (to be confirmed
+  live). Names change from `getleash.<owner>`, `agent-1.<owner>`, `executor-1.<owner>` to the three above:
+  the contract is still the owner's alone (its owner, its limits), but it lives under GetLeash's name, not
+  the owner's. An account id of up to 41 characters can have one, implicit accounts included if short
+  enough. The claim names the new contract. The CLI's own setup (`pnpm setup:owner`) keeps the old names.
+- **What a wallet must hold.** The call attaches 85 Tgas: `create` needs 74 (measured; `install` inside gets
+  35 and needs 28, the registration 10), and NEAR holds attached gas at 10.06 times the gas price while it
+  runs (measured). So the page asks for the deposit plus the gas at 10.2 times the current gas price
+  (`setupNeeds`: 1.491 NEAR at the lowest price, more if gas costs more), and about 1.43 leaves the wallet
+  in the end (50.5 Tgas burnt, 0.0237 NEAR: each new account's receipt costs about 0.007). A wallet holding
+  exactly the first live wallet's balance (1.498 NEAR available) completed the setup on a local node.
+- **Limits accepted.** The factory is immutable, so a new release, token or default policy needs a new factory
+  at a new account, and new setups get names under it; contracts already set up keep their names (the bot
+  stores each business's contract). Two owners whose ids differ only where one has a dash and the other a
+  dot (a-b.near, a.b.near) get the same name; the second is refused (`TAKEN`). So someone could take the
+  name of an owner whose id has two dots or more (x.y.near) by creating its twin (x-y.near) and setting it
+  up first, for about 1.4 NEAR; for one dot (x.near, x.tg) the twin would be a top-level account, which
+  only NEAR's registrar creates. Only a name built from a hash would rule this out, and these names are
+  for reading. Anyone can register any name on USDC, even one that doesn't exist yet: the page doesn't let
+  that hold up a setup, and the factory's registration then refunds its 0.00125 NEAR to the factory, where
+  it stays, as would the NEAR of any creation receipt that failed (none can, given the checks above).
+- **Rejected.** Explaining the warning on the page and keeping the wallet's deploy (users would still type
+  CONFIRM under "A malicious contract can take over the account"). `UseGlobalContract` (rated "danger" too,
+  and about 8.4 NEAR to publish). The role accounts in the wallet's own request (a yellow warning per key).
+- **Reviewed (4 Nov).** An independent review on a local node found the role-name overlap, a page that a
+  stranger could keep at "being created" by registering a name on USDC first, too little headroom in the
+  wallet check, `retry_install` capped at 35 Tgas, and a publish script that could leave a key added by a
+  wallet; all fixed as above, and it confirmed the rest (keys added only to new accounts, nothing
+  injectable into `new`'s arguments, refusals before anything is spent, the gas figures).
+- Tests: `devkit/test/factory.sandbox.test.ts` (9, on a local node with the real wasm, the factory made
+  keyless as `pnpm publish:factory` makes it); `devkit/test/hosted.sandbox.test.ts` (the page's one call
+  makes a contract the bot serves); `shared/test/installer.test.ts` (the factory's bytes pinned, with the
+  installer, USDC and the limits inside; the request is one call under 1,000 characters).
+
+Amends D-30 (the wallet calls the factory; the accounts are named under it) and D-31 (the factory deploys the
+installer, and a stuck install is retried through the factory rather than cancelled; `abandon` stays in the
+installer for contracts their owner created themselves).
