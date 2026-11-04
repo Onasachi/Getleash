@@ -13,7 +13,24 @@ import { z } from "zod";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import { fromBase64Url, hexToBytes, toBase64Url } from "./bytes.ts";
-import { type Check, DEFAULT_POLICY, defaultRoleIds, FT_STORAGE_DEPOSIT, RELEASE_WASM_SHA256, type SetupPlan, sha256Hex, suggestedPolicyBalance, verifySetup } from "./setup.ts";
+import { installerPolicyTransaction } from "./installer.ts";
+import {
+  AGENT_METHODS,
+  type Check,
+  DEFAULT_POLICY,
+  defaultRoleIds,
+  EXECUTOR_METHODS,
+  FT_STORAGE_DEPOSIT,
+  RELEASE_WASM_BYTES,
+  RELEASE_WASM_SHA256,
+  roleAccountTransaction,
+  type SetupPlan,
+  type SetupTransaction,
+  sha256Hex,
+  suggestedPolicyBalance,
+  treasuryTransaction,
+  verifySetup,
+} from "./setup.ts";
 import { near } from "./units.ts";
 
 /** NEAR each role account starts with (for gas) and its key's gas allowance: the setup CLI's defaults. */
@@ -38,12 +55,15 @@ export function canHostUnder(accountId: string): boolean {
   return accountId.length <= 64 - "executor-1.".length && NAMED_ACCOUNT.test(accountId);
 }
 
-/** The setup a hosted business's wallet signs: the CLI's defaults, the service's two public keys, the operator's token. */
+/**
+ * The setup a hosted business's wallet signs: the CLI's defaults, the service's two public keys, the
+ * operator's token. It carries no code: the contract gets the release through the installer (D-31,
+ * hostedSetupTransactions), and its NEAR is sized for the release.
+ */
 export function hostedSetupPlan(input: {
   ownerId: string;
   agentPublicKey: string;
   executorPublicKey: string;
-  wasm: Uint8Array;
   token: { token_id: string; token_decimals: number };
 }): SetupPlan {
   const ids = defaultRoleIds(input.ownerId);
@@ -55,9 +75,23 @@ export function hostedSetupPlan(input: {
     treasuryToken: input.token.token_id,
     treasuryDecimals: input.token.token_decimals,
     policy: DEFAULT_POLICY,
-    wasm: input.wasm,
-    policyBalance: suggestedPolicyBalance(input.wasm.length),
+    wasm: new Uint8Array(),
+    policyBalance: suggestedPolicyBalance(RELEASE_WASM_BYTES),
   };
+}
+
+/**
+ * What the setup page asks a business's wallet to sign, in order: the agent's account, the executor's, the
+ * keyless contract through the installer, and its registration on USDC. The CLI's list (setupTransactions)
+ * with installerPolicyTransaction in place of policyTransaction.
+ */
+export function hostedSetupTransactions(plan: SetupPlan): SetupTransaction[] {
+  return [
+    roleAccountTransaction(plan.policyId, plan.agent, AGENT_METHODS),
+    roleAccountTransaction(plan.policyId, plan.executor, EXECUTOR_METHODS),
+    installerPolicyTransaction(plan),
+    treasuryTransaction(plan),
+  ];
 }
 
 /** NEAR leaving the owner's account for the whole setup, network fees included (for a code of `wasmBytes`). */
@@ -65,11 +99,20 @@ export function setupCost(wasmBytes: number): bigint {
   return HOSTED_ROLES.agent.balance + HOSTED_ROLES.executor.balance + suggestedPolicyBalance(wasmBytes) + FT_STORAGE_DEPOSIT + SETUP_GAS;
 }
 
-/** NEAR for reading, rounded up to the cent: "1.43". */
-export function nearRoundedUp(yocto: bigint): string {
-  const cent = 10n ** 22n;
-  const cents = (yocto + cent - 1n) / cent;
-  return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
+/** NEAR for reading, rounded up to the cent: "1.43" (or to `decimals` places). */
+export function nearRoundedUp(yocto: bigint, decimals = 2): string {
+  const unit = 10n ** BigInt(24 - decimals);
+  return nearUnits((yocto + unit - 1n) / unit, decimals);
+}
+
+/** NEAR for reading, rounded down: what a balance surely holds, "1.498" with 3 decimals. */
+export function nearRoundedDown(yocto: bigint, decimals = 2): string {
+  return nearUnits(yocto / 10n ** BigInt(24 - decimals), decimals);
+}
+
+function nearUnits(units: bigint, decimals: number): string {
+  const scale = 10n ** BigInt(decimals);
+  return `${units / scale}.${String(units % scale).padStart(decimals, "0")}`;
 }
 
 /**

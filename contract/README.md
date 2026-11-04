@@ -86,3 +86,4 @@ at the current executor epoch, outside the supplier's cooldown. Native payouts a
 | `src/validate.rs`, `src/events.rs` | Input checks and encoders; NEP-297 events written by hand |
 | `src/tests/` | Simulated-chain harness, unit tests, property tests, JSON fuzzing, golden Borsh vectors |
 | `tests/sandbox.rs` | The real wasm on a local node |
+| `bootstrap/` | Not this contract: the installer a setup from a browser wallet deploys, which copies this release from the release store and calls `new` from the account itself (`INIT_ONLY_BY_OWNER` allows that caller), and the store (docs/decisions.md D-31; tests in `devkit/test/installer.sandbox.test.ts`) |

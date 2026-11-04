@@ -61,6 +61,7 @@ import {
   type SetupLink,
   type SetupTarget,
   setupCost,
+  signingReserve,
 } from "@getleash/shared";
 import { type BusinessSecrets, type HostedBusiness, newKeyPair, writePrivateJson } from "@getleash/shared/node";
 
@@ -166,7 +167,7 @@ function offerText(): string {
     "",
     "Set it up in a minute:",
     `1. Tap "${SETUP_BUTTON}" below. It opens here in Telegram and connects your NEAR wallet (HOT Wallet works inside Telegram).`,
-    `2. Your wallet creates your own GetLeash: a contract that holds your USDC, has no keys, and that only your wallet can change. It costs about ${nearRoundedUp(setupCost(RELEASE_WASM_BYTES))} NEAR, from your wallet.`,
+    `2. Your wallet creates your own GetLeash: a contract that holds your USDC, has no keys, and that only your wallet can change. It costs about ${nearRoundedUp(setupCost(RELEASE_WASM_BYTES))} NEAR, from your wallet, which needs about ${nearRoundedUp(setupCost(RELEASE_WASM_BYTES) + signingReserve({ contract: true, registered: true }))} NEAR while it signs (the rest comes back).`,
     "3. Tap Finish on the page, then START here. I'll tell you when it's ready; then you send it USDC and add the people you pay.",
     "",
     `What you trust this service with: it reads the invoices you send, and pays suppliers you added on its own up to ${money(p.approval_threshold)} USDC a payment and ${money(p.autonomous_daily_budget)} USDC a day. Everything else waits for your OK in your wallet.`,

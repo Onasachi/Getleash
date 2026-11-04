@@ -1,0 +1,5 @@
+# Pinned: the installer's SHA-256 is part of what the setup page checks, so the same source must build the
+# same bytes. wasm32v1-none emits WebAssembly 1.0 only, which every NEAR protocol version runs.
+[toolchain]
+channel = "1.94.1"
+targets = ["wasm32v1-none"]
