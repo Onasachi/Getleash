@@ -8,6 +8,8 @@
  * then publishes the store once; it can't be set again, and gives the release to anyone. The owner's
  * install then turns the contract into the release, initialised with the owner's arguments, with nothing of
  * the installer left. Abandon gives the owner their NEAR back. A store holding other code installs nothing.
+ * Here the owner deploys the installer itself, into accounts under its own name; setups from the page go
+ * through the factory, which does the same (factory.sandbox.test.ts).
  */
 import { type Account, actions } from "near-api-js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -16,8 +18,8 @@ import {
   abandonTransaction,
   accountExists,
   codeSha256,
+  defaultRoleIds,
   hostedSetupPlan,
-  hostedSetupTransactions,
   initArgs,
   INSTALL_GAS,
   INSTALLER_WASM,
@@ -28,13 +30,10 @@ import {
   parseOutcome,
   PolicyView,
   RELEASE_STORE_ID,
-  RELEASE_WASM_BYTES,
   RELEASE_WASM_SHA256,
   releaseStoreTransaction,
-  setupCost,
   type SetupPlan,
   type SetupTransaction,
-  signingReserve,
   STORE_WASM_SHA256,
   storeHoldsRelease,
   storeTransaction,
@@ -58,13 +57,19 @@ function call(receiverId: string, method: string, args: Record<string, unknown> 
 
 const panics = (outcome: TxOutcome) => outcome.failures.map((f) => f.panic ?? f.message);
 
+/**
+ * A setup whose accounts the owner creates under its own name (the setup CLI's naming), so the owner can
+ * deploy the installer itself here; through the factory (factory.sandbox.test.ts) the factory does it.
+ */
 function planFor(net: Devnet, ownerId: string): SetupPlan {
-  return hostedSetupPlan({
+  const hosted = hostedSetupPlan({
     ownerId,
     agentPublicKey: KeyPair.fromRandom("ed25519").getPublicKey().toString(),
     executorPublicKey: KeyPair.fromRandom("ed25519").getPublicKey().toString(),
     token: { token_id: net.token.id, token_decimals: 6 },
   });
+  const ids = defaultRoleIds(ownerId);
+  return { ...hosted, policyId: ids.policyId, agent: { ...hosted.agent, accountId: ids.agentId }, executor: { ...hosted.executor, accountId: ids.executorId } };
 }
 
 async function keyCount(net: Devnet, accountId: string): Promise<number> {
@@ -216,36 +221,6 @@ describe("the installer and the release store on a local node", () => {
     expect(created.ok).toBe(true);
     return net.as(id, key.toString());
   }
-
-  async function setUp(owner: Account, plan: SetupPlan): Promise<string[]> {
-    const failed: string[] = [];
-    for (const tx of hostedSetupTransactions(plan)) {
-      try {
-        const outcome = await send(owner, tx);
-        if (!outcome.ok) failed.push(`${tx.receiverId}: ${panics(outcome).join("; ")}`);
-      } catch (error) {
-        failed.push(`${tx.receiverId}: ${(error as Error).message}`);
-      }
-      if (failed.length > 0) break;
-    }
-    return failed;
-  }
-
-  it("a wallet holding what the page asks for (the cost and the signing reserve) completes the whole setup", async () => {
-    const plan = planFor(net, "w1.acme.near");
-    const owner = await wallet(plan.ownerId, setupCost(RELEASE_WASM_BYTES) + signingReserve({ contract: true, registered: true }));
-    expect(await setUp(owner, plan)).toEqual([]);
-    expect(await codeSha256(net.rpc, plan.policyId)).toBe(RELEASE_WASM_SHA256);
-  });
-
-  it("one holding only the cost runs out at the contract, which is why the page asks for the reserve too", async () => {
-    const plan = planFor(net, "w2.acme.near");
-    const owner = await wallet(plan.ownerId, setupCost(RELEASE_WASM_BYTES));
-    const failed = await setUp(owner, plan);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatch(/^getleash\.w2\.acme\.near: .*(NotEnoughBalance|not enough|balance)/i);
-    expect(await accountExists(net.rpc, plan.policyId)).toBe(false);
-  });
 });
 
 describe("a release store holding other code", () => {

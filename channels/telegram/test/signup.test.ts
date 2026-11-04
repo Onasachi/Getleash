@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import { UpdateLog } from "@getleash/ingestion";
-import { type ClaimKind, DEFAULT_POLICY, FINISH_PREFIX, finishCodeText, finishNonce, newFinishCode, type PolicyView, type SetupClaim, setupLinkSigned } from "@getleash/shared";
+import { type ClaimKind, DEFAULT_POLICY, FINISH_PREFIX, finishCodeText, finishNonce, hostedIds, newFinishCode, type PolicyView, type SetupClaim, setupLinkSigned } from "@getleash/shared";
 import { HostedBusinesses, newKeyPair, publicKeyOf, setupLinkSigner } from "@getleash/shared/node";
 
 import { parseIdList, TelegramChannel, TelegramHub } from "../src/bot.ts";
@@ -215,7 +215,7 @@ function world(opts: { now?: () => number; max?: number; dir?: string; invoicesP
   /** The business's wallet signs the setup page's transactions with the keys offered to `from`. */
   const onChain = (owner: string, from = NEWCOMER) => {
     const { agent, executor } = offered(from);
-    chain.set(`getleash.${owner}`, { agent, executor });
+    chain.set(hostedIds(owner).policyId, { agent, executor });
   };
   return { dir, sent, hub, signup, businesses, chain, linkKey, say, update, page, finish, complete, onChain, last, offered, processed, activations: () => activations };
 }
@@ -227,7 +227,7 @@ describe("someone new sets up their own GetLeash", () => {
     expect(await w.say("/start")).toBe("signup:offered");
     const reply = w.last(NEWCOMER)!;
     expect(reply.text).toContain("Your wallet creates your own GetLeash");
-    expect(reply.text).toContain("about 1.43 NEAR, from your wallet, which needs about 1.50 NEAR while it signs");
+    expect(reply.text).toContain("about 1.43 NEAR, from your wallet, which needs about 1.491 NEAR while it signs");
     expect(reply.text).toContain("up to 2.50 USDC a payment and 5.00 USDC a day");
     const first = w.offered();
     expect(first.button.text).toBe(SETUP_BUTTON);
@@ -265,25 +265,25 @@ describe("someone new sets up their own GetLeash", () => {
     expect(w.businesses.list()).toEqual([]);
     expect(await w.finish()).toBe("signup:checking");
     const ready = w.last(NEWCOMER)!;
-    expect(ready.text).toContain("✅ Your GetLeash is ready: getleash.acme.tg, owned by your wallet acme.tg.");
-    expect(ready.text).toContain("Send USDC on NEAR to getleash.acme.tg");
+    expect(ready.text).toContain("✅ Your GetLeash is ready: acme-tg.getleash.near, owned by your wallet acme.tg.");
+    expect(ready.text).toContain("Send USDC on NEAR to acme-tg.getleash.near");
     expect(ready.other?.reply_markup).toEqual({ remove_keyboard: true });
 
     const [business] = w.businesses.list();
     expect(business).toMatchObject({
-      policy_id: "getleash.acme.tg",
+      policy_id: "acme-tg.getleash.near",
       owner_id: "acme.tg",
-      agent_id: "agent-1.acme.tg",
-      executor_id: "executor-1.acme.tg",
+      agent_id: "acme-tg-agent.getleash.near",
+      executor_id: "acme-tg-executor.getleash.near",
       owner_user: String(NEWCOMER),
       owner_chat: String(NEWCOMER),
     });
-    const secrets = w.businesses.secrets("getleash.acme.tg");
+    const secrets = w.businesses.secrets("acme-tg.getleash.near");
     expect(publicKeyOf(secrets.agent_private_key)).toBe(agent);
     expect(publicKeyOf(secrets.executor_private_key)).toBe(executor);
     expect(secrets.tenant_secret).toMatch(/^[0-9a-f]{64}$/);
     expect(secrets.invoice_store_key).not.toBe(secrets.tenant_secret);
-    expect(statSync(join(w.businesses.dir("getleash.acme.tg"), "secrets.json")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(w.businesses.dir("acme-tg.getleash.near"), "secrets.json")).mode & 0o777).toBe(0o600);
     expect(statSync(join(w.dir, "hosted", "businesses.json")).mode & 0o777).toBe(0o600);
     // The open setup, and its copy of the keys, is gone.
     expect(w.signup.open()).toBe(0);
@@ -301,7 +301,7 @@ describe("someone new sets up their own GetLeash", () => {
     expect(await w.say("/status", OWNER)).toBe("command:status");
     expect(w.last(CHAT)!.text).toContain("Treasury: 9.00 USDC");
     expect(await w.say("Invoice INV-1 from Acme, 2.00 USD")).toBe("invoice:rejected_onchain");
-    expect(w.processed.map((p) => p.split(":")[0])).toEqual(["getleash.acme.tg"]);
+    expect(w.processed.map((p) => p.split(":")[0])).toEqual(["acme-tg.getleash.near"]);
     // The new owner's /start is their own GetLeash's help now, not another setup.
     expect(await w.say("/start")).toBe("command:start");
     expect(w.last(NEWCOMER)!.text).toContain("Send me an invoice");
@@ -314,7 +314,7 @@ describe("someone new sets up their own GetLeash", () => {
     await w.complete("acme.tg");
     await w.say("/pause");
     const markup = w.last(NEWCOMER)!.other?.reply_markup as { inline_keyboard: Array<Array<{ web_app?: { url: string } }>> };
-    expect(markup.inline_keyboard[0]![0]!.web_app!.url).toBe("https://getleash.example/pause?c=getleash.acme.tg");
+    expect(markup.inline_keyboard[0]![0]!.web_app!.url).toBe("https://getleash.example/pause?c=acme-tg.getleash.near");
     await w.say("/pause", OWNER);
     const home = w.last(CHAT)!.other?.reply_markup as { inline_keyboard: Array<Array<{ web_app?: { url: string } }>> };
     expect(home.inline_keyboard[0]![0]!.web_app!.url).toBe("https://getleash.example/pause");
@@ -402,14 +402,14 @@ describe("what the bot does not believe", () => {
     const w = world({ now: () => now });
     await w.say("/start");
     expect(await w.complete("acme.tg")).toBe("signup:checking");
-    expect(w.last(NEWCOMER)!.text).toBe("⏳ Checking getleash.acme.tg on NEAR…");
+    expect(w.last(NEWCOMER)!.text).toBe("⏳ Checking acme-tg.getleash.near on NEAR…");
     now += 10_000;
     await w.hub.tick();
     expect(w.businesses.list()).toEqual([]);
     w.onChain("acme.tg");
     now += 10_000;
     await w.hub.tick();
-    expect(w.businesses.list().map((b) => b.policy_id)).toEqual(["getleash.acme.tg"]);
+    expect(w.businesses.list().map((b) => b.policy_id)).toEqual(["acme-tg.getleash.near"]);
   });
 
   it("gives up after CHECK_FOR_MS, says which checks failed, and keeps the setup open", async () => {
@@ -420,8 +420,8 @@ describe("what the bot does not believe", () => {
     now += CHECK_FOR_MS;
     await w.hub.tick();
     const reply = w.last(NEWCOMER)!.text;
-    expect(reply).toContain("⚠️ getleash.acme.tg isn't set up the way GetLeash needs yet:");
-    expect(reply).toContain("• not yet: getleash.acme.tg has no access keys");
+    expect(reply).toContain("⚠️ acme-tg.getleash.near isn't set up the way GetLeash needs yet:");
+    expect(reply).toContain("• not yet: acme-tg.getleash.near has no access keys");
     expect(w.signup.open()).toBe(1);
   });
 
@@ -437,7 +437,7 @@ describe("what the bot does not believe", () => {
   it("someone else's GetLeash does not count: the keys on the chain must be the ones generated for this person", async () => {
     const w = world();
     await w.say("/start");
-    w.chain.set("getleash.owner.near", { agent: "ed25519:other", executor: "ed25519:keys" });
+    w.chain.set(hostedIds("owner.near").policyId, { agent: "ed25519:other", executor: "ed25519:keys" });
     await w.complete("owner.near");
     expect(w.businesses.list()).toEqual([]);
   });
@@ -566,11 +566,11 @@ describe("the owner's wallet can always move its GetLeash to another Telegram ac
     await w.say("/start", OTHER);
     expect(await w.page("acme.tg", OTHER, OTHER, undefined, undefined, { kind: "connect" })).toBe("signup:claimed");
     expect(await w.finish(OTHER)).toBe("signup:moved");
-    expect(w.last(NEWCOMER)!.text).toContain("Your GetLeash getleash.acme.tg now answers another Telegram account: its owner's wallet, acme.tg, moved it there.");
-    expect(w.last(OTHER)).toMatchObject({ text: expect.stringContaining("✅ getleash.acme.tg answers to you now"), other: { reply_markup: { remove_keyboard: true } } });
+    expect(w.last(NEWCOMER)!.text).toContain("Your GetLeash acme-tg.getleash.near now answers another Telegram account: its owner's wallet, acme.tg, moved it there.");
+    expect(w.last(OTHER)).toMatchObject({ text: expect.stringContaining("✅ acme-tg.getleash.near answers to you now"), other: { reply_markup: { remove_keyboard: true } } });
     expect(w.businesses.list()).toHaveLength(1);
-    expect(w.businesses.list()[0]).toMatchObject({ policy_id: "getleash.acme.tg", owner_user: String(OTHER), owner_chat: String(OTHER) });
-    expect(publicKeyOf(w.businesses.secrets("getleash.acme.tg").agent_private_key)).toBe(agent);
+    expect(w.businesses.list()[0]).toMatchObject({ policy_id: "acme-tg.getleash.near", owner_user: String(OTHER), owner_chat: String(OTHER) });
+    expect(publicKeyOf(w.businesses.secrets("acme-tg.getleash.near").agent_private_key)).toBe(agent);
     expect(await w.say("/status", OTHER)).toBe("command:status");
     expect(w.last(OTHER)!.text).toContain("Treasury: 3.00 USDC");
     expect(await w.say("/status")).toBe("not_allowed");
@@ -583,23 +583,23 @@ describe("the owner's wallet can always move its GetLeash to another Telegram ac
     await w.say("/start");
     const victor = w.offered();
     // Mallory puts those same public keys on accounts of her own and asks to connect her contract.
-    w.chain.set("getleash.mallory.near", { agent: victor.agent, executor: victor.executor });
+    w.chain.set(hostedIds("mallory.near").policyId, { agent: victor.agent, executor: victor.executor });
     await w.say("/start", OTHER);
     expect(await w.complete("mallory.near", OTHER, { kind: "connect" })).toBe("signup:not_here");
-    expect(w.last(OTHER)!.text).toContain("GetLeash doesn't serve getleash.mallory.near");
+    expect(w.last(OTHER)!.text).toContain("GetLeash doesn't serve mallory-near.getleash.near");
     // Victor's setup is untouched and finishes as usual.
     w.onChain("victor.near");
     expect(await w.complete("victor.near")).toBe("signup:checking");
-    expect(w.businesses.list()).toEqual([expect.objectContaining({ policy_id: "getleash.victor.near", owner_user: String(NEWCOMER) })]);
-    expect(publicKeyOf(w.businesses.secrets("getleash.victor.near").agent_private_key)).toBe(victor.agent);
+    expect(w.businesses.list()).toEqual([expect.objectContaining({ policy_id: "victor-near.getleash.near", owner_user: String(NEWCOMER) })]);
+    expect(publicKeyOf(w.businesses.secrets("victor-near.getleash.near").agent_private_key)).toBe(victor.agent);
   });
 
   it("nothing this service doesn't serve", async () => {
     const w = world();
     await w.say("/start");
-    w.chain.set("getleash.self.near", { agent: "ed25519:theirs", executor: "ed25519:own" });
+    w.chain.set(hostedIds("self.near").policyId, { agent: "ed25519:theirs", executor: "ed25519:own" });
     expect(await w.complete("self.near", NEWCOMER, { kind: "connect" })).toBe("signup:not_here");
-    expect(w.last(NEWCOMER)!.text).toContain("GetLeash doesn't serve getleash.self.near");
+    expect(w.last(NEWCOMER)!.text).toContain("GetLeash doesn't serve self-near.getleash.near");
     expect(w.businesses.list()).toEqual([]);
   });
 
@@ -666,10 +666,10 @@ describe("open setups and businesses on disk", () => {
   it("a business is added once, and its secrets are never replaced", () => {
     const businesses = new HostedBusinesses(join(mkdtempSync(join(tmpdir(), "getleash-hosted-")), "hosted"));
     const business = {
-      policy_id: "getleash.acme.tg",
+      policy_id: "acme-tg.getleash.near",
       owner_id: "acme.tg",
-      agent_id: "agent-1.acme.tg",
-      executor_id: "executor-1.acme.tg",
+      agent_id: "acme-tg-agent.getleash.near",
+      executor_id: "acme-tg-executor.getleash.near",
       owner_user: "4004",
       owner_chat: "4004",
       created_at: "2026-11-03T00:00:00.000Z",
@@ -679,12 +679,12 @@ describe("open setups and businesses on disk", () => {
     businesses.add(business, secrets);
     expect(businesses.list()).toHaveLength(1);
     expect(() => businesses.add(business, { ...secrets, agent_private_key: "ed25519:other", tenant_secret: "33".repeat(32) })).toThrow("already set up with other keys");
-    expect(businesses.secrets("getleash.acme.tg").tenant_secret).toBe("11".repeat(32));
+    expect(businesses.secrets("acme-tg.getleash.near").tenant_secret).toBe("11".repeat(32));
     expect(() => businesses.dir("../../etc")).toThrow("not a NEAR account id");
     // Moving it changes only whom it answers.
-    expect(businesses.move("getleash.acme.tg", { owner_user: "6006", owner_chat: "6006" })).toMatchObject({ owner_user: "6006", owner_chat: "6006", owner_id: "acme.tg" });
+    expect(businesses.move("acme-tg.getleash.near", { owner_user: "6006", owner_chat: "6006" })).toMatchObject({ owner_user: "6006", owner_chat: "6006", owner_id: "acme.tg" });
     expect(businesses.list()).toEqual([{ ...business, owner_user: "6006", owner_chat: "6006" }]);
-    expect(businesses.secrets("getleash.acme.tg").agent_private_key).toBe("ed25519:agent");
-    expect(() => businesses.move("getleash.other.tg", { owner_user: "1", owner_chat: "1" })).toThrow("not hosted here");
+    expect(businesses.secrets("acme-tg.getleash.near").agent_private_key).toBe("ed25519:agent");
+    expect(() => businesses.move("other-tg.getleash.near", { owner_user: "1", owner_chat: "1" })).toThrow("not hosted here");
   });
 });

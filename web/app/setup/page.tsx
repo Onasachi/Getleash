@@ -7,18 +7,18 @@
  * saw it at /start: a Mini App opened from a keyboard button gets no user data from Telegram) and the
  * bot's username, all signed by the bot with the agent key of the dashboard's own GetLeash. The page reads
  * that agent's keys from the chain and refuses a link they didn't sign, so a fake bot can't hand out links
- * with keys of its own or send the last step anywhere but the real bot. The owner's own wallet signs
- * everything here, with the same transactions as the setup CLI (shared/src/setup.ts):
- *   1. agent-1.<owner> and executor-1.<owner>, each holding only its key, limited to this contract and to
- *      its role's methods;
- *   2. getleash.<owner>: created, funded and given the installer in one transaction, with no access key,
- *      owned by the owner's account (D-31). The installer copies the published release from GetLeash's
- *      release store on NEAR, deploys it only if its SHA-256 is the release's, and initialises it with the
- *      owner's arguments; the page checks the store holds the release before anything is signed. (A wallet
- *      request can't carry the release itself: HOT Wallet's connector would take hours to encode it.)
- *      A contract left with the installer can be cancelled here: it is deleted and its NEAR goes back;
- *   3. its registration on USDC, so it can hold the treasury.
- * Steps already on the chain are skipped, so the page carries on where it stopped. First, before anything
+ * with keys of its own or send the last step anywhere but the real bot. The owner's own wallet signs one
+ * call (D-32): `create` on GetLeash's factory, with the link's two public keys and exactly the setup's cost.
+ * The factory, keyless, whose code the page checks first, creates under its own name:
+ *   1. <name>-agent and <name>-executor (<name>: the owner's account, dots made dashes), each holding only
+ *      its key, limited to the owner's contract and to its role's methods;
+ *   2. <name>: the contract, with no access key, owned by the owner's account. The installer (D-31) copies
+ *      the published release from GetLeash's release store on NEAR, deploys it only if its SHA-256 is the
+ *      release's, and initialises it; the page checks the store holds the release first. Should it ever
+ *      be left without the release, the page asks the factory to install again;
+ *   3. its registration on USDC, so it can hold the treasury (signed by the owner here if it failed).
+ * HOT Wallet shows that call with no warning; a deployment in the wallet's own request would be a
+ * "dangerous request" it makes the user type CONFIRM for. First, before anything
  * is paid, the wallet signs a claim (NEP-413) naming the contract, the agent key and the Telegram account;
  * its nonce is the SHA-256 of a finish code the page keeps to itself. The page checks that claim as the
  * bot will, and only then asks for the setup. Finish then does two things: it opens the real bot's chat
@@ -32,27 +32,28 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
 import {
-  abandonTransaction,
   accountExists,
   AGENT_METHODS,
   bytesToHex,
-  canHostUnder,
+  canHost,
   checkSetupClaim,
   type ClaimKind,
   codeSha256,
   DEFAULT_POLICY,
-  defaultRoleIds,
   durationText,
   ED25519_PUBLIC_KEY,
   EXECUTOR_METHODS,
+  FACTORY_BUILD,
+  FACTORY_ID,
+  FACTORY_WASM_SHA256,
+  factoryDeposit,
   FINISH_PREFIX,
   finishCodeText,
   finishNonce,
-  FT_STORAGE_DEPOSIT,
   hexToBytes,
-  HOSTED_ROLES,
+  hostedIds,
   hostedSetupPlan,
-  installerPolicyTransaction,
+  hostedSetupTransaction,
   isInstallerCode,
   money,
   newFinishCode,
@@ -60,19 +61,17 @@ import {
   nearRoundedUp,
   PolicyView,
   RELEASE_STORE_ID,
-  RELEASE_WASM_BYTES,
   RELEASE_WASM_SHA256,
-  roleAccountTransaction,
+  retryInstallTransaction,
   SETUP_CLAIM_RECIPIENT,
-  SETUP_GAS,
   type SetupClaim,
   setupClaimMessage,
+  setupCost,
   type SetupLink,
   setupLinkSigned,
+  setupNeeds,
   type SetupTransaction,
-  signingReserve,
   storeHoldsRelease,
-  suggestedPolicyBalance,
   treasuryTransaction,
   walletActions,
 } from "@getleash/shared";
@@ -93,21 +92,33 @@ type KeyView = { public_key: string; access_key: { permission: unknown } };
 type StepState = "done" | "todo" | "taken" | "installing";
 
 const YOCTO_PER_BYTE = 10n ** 19n;
-let storeChecked: Promise<boolean> | null = null;
+let checked: Promise<string | null> | null = null;
 
-/** Whether GetLeash's release store holds the release the installer copies (asked again after a no). */
-function storeReady(): Promise<boolean> {
-  storeChecked ??= storeHoldsRelease(rpc).then(
-    (ready) => {
-      if (!ready) storeChecked = null;
-      return ready;
+/**
+ * Before the owner's wallet sends anything to the factory: the factory runs the published factory code and has
+ * no keys (so it can only do what that code says), it registers contracts on the token this dashboard's own
+ * GetLeash uses, and the store holds the release the installer copies. Null when all is so, else why not
+ * (asked again after a no).
+ */
+function setupReady(token: string): Promise<string | null> {
+  checked ??= (async () => {
+    if (!(await accountExists(rpc, FACTORY_ID)) || (await codeSha256(rpc, FACTORY_ID)) !== FACTORY_WASM_SHA256) return `GetLeash's factory (${FACTORY_ID}) isn't published yet`;
+    const { keys } = (await rpc.viewAccessKeyList({ accountId: FACTORY_ID })) as unknown as { keys: KeyView[] };
+    if (keys.length > 0) return `GetLeash's factory (${FACTORY_ID}) still has an access key`;
+    if (token !== FACTORY_BUILD.token) return `GetLeash's factory sets up contracts for another token than this dashboard's (${token})`;
+    if (!(await storeHoldsRelease(rpc))) return `GetLeash's code store (${RELEASE_STORE_ID}) doesn't hold the release yet`;
+    return null;
+  })().then(
+    (why) => {
+      if (why) checked = null;
+      return why;
     },
     (error: unknown) => {
-      storeChecked = null;
+      checked = null;
       throw error;
     },
   );
-  return storeChecked;
+  return checked;
 }
 
 /** Whether the bot signed this link: with a key of the agent the dashboard's own GetLeash names (read from the chain, not the link). */
@@ -127,7 +138,7 @@ async function roleState(accountId: string, publicKey: string, policyId: string,
 
 async function contractState(policyId: string, owner: string, agentId: string, executorId: string): Promise<StepState> {
   if (!(await accountExists(rpc, policyId))) return "todo";
-  // Only the owner can create getleash.<owner>, and the installer can't add a key, so this one is theirs.
+  // Only the factory creates accounts under its name, and only for the owner they are named after; the installer can't add a key.
   if (isInstallerCode(await codeSha256(rpc, policyId))) return "installing";
   try {
     const [state, genuine, keys] = await Promise.all([
@@ -144,8 +155,8 @@ async function contractState(policyId: string, owner: string, agentId: string, e
 
 async function load(owner: string | null, agentKey: string, executorKey: string) {
   const home = await homePolicy.state();
-  if (!owner || !canHostUnder(owner)) return { home, owner, steps: null };
-  const ids = defaultRoleIds(owner);
+  if (!owner || !canHost(owner)) return { home, owner, steps: null };
+  const ids = hostedIds(owner);
   const [agent, executor, contract, account] = await Promise.all([
     roleState(ids.agentId, agentKey, ids.policyId, AGENT_METHODS),
     roleState(ids.executorId, executorKey, ids.policyId, EXECUTOR_METHODS),
@@ -158,7 +169,9 @@ async function load(owner: string | null, agentKey: string, executorKey: string)
   // keep less than that, NEP-448, so this never counts below zero).
   const spare = BigInt(account.amount) - BigInt(account.storage_usage) * YOCTO_PER_BYTE;
   const available = spare > 0n ? spare : 0n;
-  return { home, owner, ids, steps: { agent, executor, contract, registered }, available };
+  // What signing costs depends on the gas price (NEAR holds attached gas at a multiple of it).
+  const gasPrice = BigInt(((await rpc.viewGasPrice()) as unknown as { gas_price: string }).gas_price);
+  return { home, owner, ids, steps: { agent, executor, contract, registered }, available, gasPrice };
 }
 
 export default function SetupPage() {
@@ -207,18 +220,22 @@ function Setup() {
   const ready = !!steps && Object.values(steps).every((s) => s === "done");
 
   const installing = steps?.contract === "installing";
+  // Some of the factory's three accounts there, some not, none in use otherwise: its receipts are still
+  // landing. (Not the USDC registration: anyone can register any name on USDC, even before the account exists.)
+  const made = steps ? [steps.agent, steps.executor, steps.contract] : [];
+  const creating = !!steps && !ready && !installing && made.includes("done") && made.includes("todo") && !made.includes("taken");
 
-  // After signing, and while the installer is at work, the chain is read again until everything shows up
-  // (blocks take a moment to reach the RPC).
+  // After signing, and while the factory and the installer are at work, the chain is read again until
+  // everything shows up (blocks take a moment to reach the RPC).
   useEffect(() => {
-    if ((!sent && !installing) || ready) return;
+    if ((!sent && !installing && !creating) || ready) return;
     const timer = setInterval(() => void reload(), 3_000);
     const stop = setTimeout(() => clearInterval(timer), 90_000);
     return () => {
       clearInterval(timer);
       clearTimeout(stop);
     };
-  }, [sent, installing, ready, reload]);
+  }, [sent, installing, creating, ready, reload]);
 
   if (!keysOk || !tg) {
     return (
@@ -309,24 +326,26 @@ function Setup() {
     }
   }
 
-  /** Deletes a contract the installer hasn't finished (it can't be done after): its NEAR goes back to the owner's wallet. */
-  async function cancel(policyId: string) {
-    setBusy("Confirm in your wallet…");
+  /** One transaction the owner's wallet signs; a refusal is shown by the view the chain then leads to. */
+  async function sign(tx: SetupTransaction, waiting: string) {
+    setBusy(waiting);
     setError(null);
+    setFailure(null);
     try {
-      const tx = abandonTransaction(policyId);
       const [outcome] = await wallet.sendTransactions([{ receiverId: tx.receiverId, actions: walletActions(tx.actions) }]);
-      const reasons = outcome?.failures.map((f) => f.panic ?? f.message).join("; ") ?? "";
-      // Installed in the meantime: there is no installer to cancel any more, and the page shows it ready.
-      if (outcome && !outcome.ok && !/MethodNotFound|MethodResolveError/.test(reasons)) throw new Error(`It wasn't cancelled: ${reasons}`);
-      setSent(false);
-      setFailure(null);
+      if (outcome && !outcome.ok) setFailure({ receiver: tx.receiverId, reasons: outcome.failures.map((f) => f.panic ?? f.message).join("; ") });
+      else setSent(true);
     } catch (e) {
       setError(plainError(e));
     } finally {
       setBusy(null);
       await reload();
     }
+  }
+
+  /** The factory asks the contract's installer to install the release again (only for the owner it recorded). */
+  async function retry() {
+    await sign(retryInstallTransaction(), "Confirm in your wallet…");
   }
 
   if (!owner) {
@@ -359,8 +378,8 @@ function Setup() {
         <StatusChip label="Can't set up" tone="bad" />
         <h1>This account can&apos;t hold GetLeash</h1>
         <p className="lead">
-          GetLeash creates its accounts under yours (getleash.<span className="mono">your-account</span>), and <span className="mono">{owner}</span> can&apos;t have any:
-          you need a named NEAR account, like acme.near or acme.tg. Create one in your wallet, then connect it here.
+          GetLeash names your contract after your account (<span className="mono">your-account.{FACTORY_ID}</span>), and <span className="mono">{owner}</span> is too
+          long for that: you need a NEAR account of at most 41 characters, like acme.near or acme.tg. Create one in your wallet, then connect it here.
         </p>
         <div className="actions">
           <button className="ghost" onClick={() => void wallet.disconnect()}>
@@ -373,8 +392,8 @@ function Setup() {
 
   const { ids } = data;
   // Created with the installer, which hasn't installed the release yet (D-31): usually seconds away, unless
-  // this page saw the contract's batch fail after the account was made.
-  const stuck = failure?.receiver === ids.policyId ? failure.reasons : null;
+  // this page saw the setup fail after the accounts were made.
+  const stuck = failure ? failure.reasons : null;
   if (installing) {
     return (
       <section className="hero">
@@ -382,23 +401,21 @@ function Setup() {
         <h1>Your contract is waiting for its code</h1>
         {stuck ? (
           <p className="lead">
-            <span className="mono">{ids.policyId}</span> exists, with no keys, owned by your wallet, but the GetLeash code didn&apos;t install ({stuck}), and nothing more is
-            on its way. Cancel it: your wallet deletes it and its NEAR goes back to <span className="mono">{owner}</span>. Then you can set it up again.
+            <span className="mono">{ids.policyId}</span> exists, with no keys, for your wallet, but the GetLeash code didn&apos;t install ({stuck}), and nothing more is on
+            its way. Try again: your wallet asks GetLeash&apos;s factory to install it; that costs only a little gas.
           </p>
         ) : (
           <>
             <p className="lead">
-              <span className="mono">{ids.policyId}</span> exists, with no keys, owned by your wallet, but the GetLeash code isn&apos;t in it yet. That usually takes a few
+              <span className="mono">{ids.policyId}</span> exists, with no keys, for your wallet, but the GetLeash code isn&apos;t in it yet. That usually takes a few
               seconds, and this page checks again.
             </p>
-            <p className="lead small">
-              If it stays like this, cancel it: your wallet deletes it and its NEAR goes back to <span className="mono">{owner}</span>. Then you can set it up again.
-            </p>
+            <p className="lead small">If it stays like this, try again: your wallet asks GetLeash&apos;s factory to install it; that costs only a little gas.</p>
           </>
         )}
         <div className="actions">
-          <button className="ghost" disabled={busy !== null} onClick={() => void cancel(ids.policyId)}>
-            {busy ?? "Cancel it and get the NEAR back"}
+          <button className="ghost" disabled={busy !== null} onClick={() => void retry()}>
+            {busy ?? "Try again"}
           </button>
         </div>
         {error && <p className="error">{error}</p>}
@@ -437,8 +454,8 @@ function Setup() {
         <StatusChip label="Can't set up" tone="bad" />
         <h1>Those accounts are in use</h1>
         <p className="lead">
-          {taken.map((k) => names[k]).join(" and ")} already {taken.length > 1 ? "exist" : "exists"} under <span className="mono">{owner}</span>, but not as this
-          setup needs, so nothing was signed. If you set GetLeash up yourself before, keep using that one; otherwise use another NEAR account here.
+          {taken.map((k) => names[k]).join(" and ")} already {taken.length > 1 ? "exist" : "exists"} for <span className="mono">{owner}</span>, but not as this setup
+          needs, so nothing was signed. If you set GetLeash up before, keep using that one; otherwise use another NEAR account here.
         </p>
         <div className="actions">
           <button className="ghost" onClick={() => void wallet.disconnect()}>
@@ -478,76 +495,77 @@ function Setup() {
     );
   }
 
-  // What is left to sign, in order, and what it costs.
-  const todo = {
-    agent: steps.agent === "todo",
-    executor: steps.executor === "todo",
-    contract: steps.contract === "todo",
-    registered: steps.registered === "todo",
-  };
-  const cost =
-    (todo.agent ? HOSTED_ROLES.agent.balance : 0n) +
-    (todo.executor ? HOSTED_ROLES.executor.balance : 0n) +
-    (todo.contract ? suggestedPolicyBalance(RELEASE_WASM_BYTES) : 0n) +
-    (todo.registered ? FT_STORAGE_DEPOSIT : 0n) +
-    SETUP_GAS;
-  // NEAR also holds the gas a transaction attaches, at a worst-case price, until it has run (D-31).
-  const reserve = signingReserve(todo);
-  const short = data.available < cost + reserve;
+  const plan = hostedSetupPlan({ ownerId: owner, agentPublicKey: agentKey, executorPublicKey: executorKey, token: data.home });
+
+  // Everything is there but the USDC registration (the factory's failed): the owner's wallet registers it.
+  if (steps.agent === "done" && steps.executor === "done" && steps.contract === "done" && steps.registered === "todo") {
+    return (
+      <section className="hero">
+        <StatusChip label="Almost there" tone="warn" />
+        <h1>Register your contract on USDC</h1>
+        <p className="lead">
+          <span className="mono">{ids.policyId}</span> is ready, but not yet registered on USDC, so it can&apos;t hold any. Your wallet registers it: 0.00125 NEAR.
+        </p>
+        <div className="actions">
+          <button className="primary" disabled={busy !== null} onClick={() => void sign(treasuryTransaction(plan), "Confirm in your wallet…")}>
+            {busy ?? "Register it"}
+          </button>
+        </div>
+        {failure && <p className="error">That didn&apos;t go through: {failure.reasons}.</p>}
+        {error && <p className="error">{error}</p>}
+      </section>
+    );
+  }
+
+  // The factory's receipts are still landing (or this page was opened while they were).
+  if (creating) {
+    return (
+      <section className="hero">
+        <StatusChip label="Almost there" tone="warn" />
+        <h1>Your GetLeash is being created</h1>
+        <p className="lead">Some of its accounts are on NEAR already. That usually takes a few seconds, and this page checks again.</p>
+        {error && <p className="error">{error}</p>}
+      </section>
+    );
+  }
+
+  // Nothing yet: one call to the factory.
+  const cost = setupCost();
+  const needs = setupNeeds(data.gasPrice);
+  const short = data.available < needs;
 
   async function create() {
-    setBusy("Checking the GetLeash code…");
+    setBusy("Checking GetLeash's factory…");
     setError(null);
     setFailure(null);
     try {
-      if (todo.contract && !(await storeReady())) {
-        throw new Error(`GetLeash's code store (${RELEASE_STORE_ID}) doesn't hold the release yet, so nothing was signed. Try again later, or tell the GetLeash team.`);
-      }
-      const plan = hostedSetupPlan({ ownerId: owner!, agentPublicKey: agentKey, executorPublicKey: executorKey, token: data!.home });
+      const why = await setupReady(data!.home.token_id);
+      if (why) throw new Error(`${why}, so nothing was signed. Try again later, or tell the GetLeash team.`);
       // The claim first: a wallet that can't sign it has spent nothing.
       setBusy("Confirm in your wallet: a message saying this GetLeash is yours…");
       await signClaim(owner!, "setup");
-      const transactions: SetupTransaction[] = [
-        ...(todo.agent ? [roleAccountTransaction(plan.policyId, plan.agent, AGENT_METHODS)] : []),
-        ...(todo.executor ? [roleAccountTransaction(plan.policyId, plan.executor, EXECUTOR_METHODS)] : []),
-        ...(todo.contract ? [installerPolicyTransaction(plan)] : []),
-        ...(todo.registered ? [treasuryTransaction(plan)] : []),
-      ];
-      setBusy(transactions.length > 1 ? "Confirm the setup in your wallet (it may ask more than once)…" : "Confirm the setup in your wallet…");
-      const outcomes = await wallet.sendTransactions(
-        transactions.map((t) => ({ receiverId: t.receiverId, actions: walletActions(t.actions) })),
-        (done) => setBusy(`Confirm in your wallet: ${done} of ${transactions.length} done…`),
-      );
-      const at = outcomes.findIndex((o) => !o.ok);
-      if (at >= 0) {
-        // Shown by the view the chain leads to: a contract left with the installer is cancelled, anything else is tapped again.
-        setFailure({ receiver: transactions[at]!.receiverId, reasons: outcomes[at]!.failures.map((f) => f.panic ?? f.message).join("; ") });
-        return;
-      }
-      setSent(true);
     } catch (e) {
       setError(plainError(e));
-    } finally {
       setBusy(null);
-      await reload();
+      return;
     }
+    await sign(hostedSetupTransaction(plan), "Confirm the setup in your wallet…");
   }
 
   const left = [
-    todo.agent && `${ids.agentId}: the agent, which proposes payments from the invoices you send. It holds only a key GetLeash generated, for proposing to your contract.`,
-    todo.executor && `${ids.executorId}: the executor, which sends cross-chain payments you've approved. It holds only a key GetLeash generated, for that alone.`,
-    todo.contract &&
-      `${ids.policyId}: your contract. It holds your USDC, runs the published GetLeash release (code ${RELEASE_WASM_SHA256.slice(0, 12)}…, which it copies from ${RELEASE_STORE_ID} on NEAR and checks), has no keys and answers to ${owner}.`,
-    todo.registered && `Registering ${ids.policyId} on USDC, so it can hold your treasury.`,
-  ].filter((line): line is string => typeof line === "string");
+    `${ids.agentId}: the agent, which proposes payments from the invoices you send. It holds only a key GetLeash generated, for proposing to your contract.`,
+    `${ids.executorId}: the executor, which sends cross-chain payments you've approved. It holds only a key GetLeash generated, for that alone.`,
+    `${ids.policyId}: your contract. It holds your USDC, runs the published GetLeash release (code ${RELEASE_WASM_SHA256.slice(0, 12)}…, which it copies from ${RELEASE_STORE_ID} on NEAR and checks), has no keys and answers only to ${owner}.`,
+    `Its registration on USDC, so it can hold your treasury.`,
+  ];
 
   return (
     <section className="hero">
       <StatusChip label={sent ? "Almost there" : "Set up GetLeash"} tone={sent ? "warn" : "plain"} />
       <h1>Create your GetLeash</h1>
       <p className="lead">
-        As <span className="mono">{owner}</span>, for the Telegram account <strong>{tg.name}</strong> (continue only if that&apos;s you). Your wallet creates, and
-        pays for:
+        As <span className="mono">{owner}</span>, for the Telegram account <strong>{tg.name}</strong> (continue only if that&apos;s you). Your wallet sends{" "}
+        {nearRoundedUp(factoryDeposit(), 3)} NEAR to GetLeash&apos;s factory, <span className="mono">{FACTORY_ID}</span>, which creates for you:
       </p>
       <ul className="rules">
         {left.map((line) => (
@@ -561,19 +579,20 @@ function Setup() {
       </p>
       <p className="lead small">
         GetLeash, the service behind the bot, holds the agent&apos;s and the executor&apos;s keys and reads the invoices you send it. It can never add a supplier, change
-        a limit or take money out: those need your wallet. Your wallet first signs a message saying this GetLeash is yours (free), then the setup.
+        a limit or take money out: those need your wallet. The factory has no keys and can&apos;t touch your contract once it exists. Your wallet first signs a message
+        saying this GetLeash is yours (free), then the setup.
       </p>
       <Check
         ok={!short}
-        label={`About ${nearRoundedUp(cost)} NEAR from your wallet, network fees included. It needs ${nearRoundedUp(cost + reserve, 3)} NEAR while it signs (the rest comes back); you have ${nearRoundedDown(data.available, 3)} NEAR available.`}
+        label={`About ${nearRoundedUp(cost)} NEAR from your wallet, network fees included. It needs ${nearRoundedUp(needs, 3)} NEAR while it signs (the rest comes back); you have ${nearRoundedDown(data.available, 3)} NEAR available.`}
       />
       <div className="actions">
         <button className="primary" disabled={busy !== null || short || sent} onClick={() => void create()}>
           {busy ?? (sent ? "Waiting for the chain…" : "Create my GetLeash")}
         </button>
       </div>
-      {short && <p className="blocked">Add NEAR to {owner} first: about {nearRoundedUp(cost + reserve - data.available, 3)} more.</p>}
-      {failure && <p className="error">A transaction failed, so that step didn&apos;t happen: {failure.reasons}. Tap the button again to carry on.</p>}
+      {short && <p className="blocked">Add NEAR to {owner} first: about {nearRoundedUp(needs - data.available, 3)} more.</p>}
+      {failure && <p className="error">The setup didn&apos;t go through: {failure.reasons}. Nothing was created, and the NEAR went back to your wallet.</p>}
       {error && <p className="error">{error}</p>}
     </section>
   );

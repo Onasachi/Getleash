@@ -25,8 +25,8 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
   0.21–0.85 USDT when checked).
 - Keep about 1.6 NEAR in the owner account. The treasury's USDC is up to you; the mainnet policy lets at
   most 20 USDC leave per day.
-- Letting other businesses set up their own (below): **0.86 NEAR once**, for the release store's storage
-  (locked as long as it exists, which is for good: it has no keys), plus about 0.002 NEAR of gas.
+- Letting other businesses set up their own (below): **0.95 NEAR once**: 0.86 for the release store's
+  storage and 0.09 for the factory's (both locked for good: neither has keys), plus about 0.005 NEAR of gas.
 
 ## Before you start
 
@@ -176,36 +176,48 @@ Vercel deployment.
 ## Let other businesses set up their own GetLeash
 
 Once the bot and the dashboard run, another business needs none of the steps above (docs/decisions.md
-D-30). It sends your bot `/start`, taps "Set up GetLeash", connects its NEAR wallet on the page that opens
-inside Telegram, and confirms twice: a free message saying this GetLeash is theirs, then the setup. Its
-wallet creates its own contract and pays for it (about 1.43 NEAR; it needs about 1.50 NEAR while it signs,
-and the rest comes back): the same keyless contract, the same release, the limits of
-`deploy/mainnet-policy.json`, owned by its wallet.
+D-30, D-32). It sends your bot `/start`, taps "Set up GetLeash", connects its NEAR wallet on the page that
+opens inside Telegram, and confirms twice: a free message saying this GetLeash is theirs, then one call to
+GetLeash's factory that sends 1.404 NEAR (about 1.43 NEAR leaves its wallet in all; it needs about 1.491
+while it signs, and the rest comes back). The factory creates its contract, `<its account, dots made
+dashes>.getleash.near`: the same keyless contract, the same release, the limits of
+`deploy/mainnet-policy.json`, owned by its wallet, with its agent and executor accounts next to it.
 The bot checks everything on-chain, says "✅ Your GetLeash is ready", and from then on serves that business
 in its owner's private chat only. Everything else works for it as for you: invoices, `/addsupplier`,
 `/invite`, approvals in HOT Wallet, `/pause`.
 
-- **First, publish the release store, once** (D-31). A wallet request can't carry the 84 KB release (HOT
-  Wallet's connector would take hours to encode it), so the page deploys a 1.9 KB installer that copies the
-  release from a store on NEAR, checks its SHA-256 and starts it. From the owner account, on the machine
-  with its key:
+Before the first one, publish two things, once, from the owner account on the machine with its key. Each
+script shows what it signs and asks first; run again, it only checks. Until both exist, the page signs
+nothing and says which is missing.
+
+- **The release store** (D-31): the account the installer copies the 84 KB release from (no wallet request
+  can carry it: HOT Wallet's connector would take hours to encode it).
 
   ```bash
   pnpm publish:release --network mainnet
   ```
 
-  It shows what it signs and asks first: it creates `release-8eaccbf1.onanikes.near` (the store the
-  installer is built for), keyless, holding the release, for 0.86 NEAR. Then it checks the store from chain
-  state; run again, it only checks. Until the store exists, the page signs nothing: "GetLeash's code store
-  … doesn't hold the release yet".
-- **A new release** needs a new installer and a new store: rebuild the release, update `RELEASE_WASM_SHA256`,
-  add the current installer's hash to `RETIRED_INSTALLER_SHA256S` (`shared/src/installer.ts`, so a setup
-  stuck with it can still be cancelled), run `pnpm build:installer` (it bakes the new hash and store name
-  into the installer), redeploy the dashboard, then `pnpm publish:release`. Contracts already set up keep
-  the release they run until their owner upgrades them.
+  It creates `release-8eaccbf1.onanikes.near`, keyless, holding the release, for 0.86 NEAR.
+- **The factory** (D-32): what the business's wallet calls. HOT Wallet calls any contract deployment in a
+  wallet's request "dangerous" and makes the user type CONFIRM, so the wallet doesn't deploy anything: the
+  factory does.
+
+  ```bash
+  pnpm publish:factory --network mainnet
+  ```
+
+  It claims `getleash.near` through the `near` account's linkdrop (0.09 NEAR for its storage; it needs about
+  0.145 NEAR in the owner account while it runs), with a key made for this alone, then deploys the factory
+  and deletes that key in one transaction, so `getleash.near` has no key. The key file it kept meanwhile
+  (`.keys/mainnet/getleash.near.json`) is removed at the end.
+- **A new release, token or default policy** needs a new installer, store and factory, and the factory at a
+  new account (the published one can't change): rebuild the release, update `RELEASE_WASM_SHA256` (or the
+  value), change `FACTORY_ID` (`shared/src/installer.ts`), run `pnpm build:installer`, redeploy the
+  services and the dashboard, then both publish scripts. Contracts already set up keep their names and the
+  release they run until their owner upgrades them.
 - **If the code doesn't arrive**, the business's contract keeps the installer, with no keys, and nobody but
-  its owner can do anything with it. The page then says so and offers "Cancel it and get the NEAR back":
-  the owner's wallet deletes it and gets its 1.05 NEAR back, and can set up again.
+  its owner can do anything with it. The page then says so and offers "Try again": the owner's wallet asks
+  the factory to have the installer install it again (a little gas).
 
 - **It needs the disk.** Each business's agent and executor keys, its two secrets, supplier names, invoices
   and journal live in `/var/data/<network>/hosted/<its contract>/`, mode 0600. Signup stays closed unless

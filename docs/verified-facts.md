@@ -393,6 +393,33 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   costs 10 NEAR per 100 KB, burned, not refundable; using one costs under 0.001 NEAR. For the release, about
   8.4 NEAR (D-31, rejected).
 
+## HOT Wallet's review screen, and the factory (checked 2026-11-04)
+
+- The installer setup reached HOT on Android (4 Nov): "Review transaction · Actions in request: 11", a red
+  "Deploying a contract replaces your account code. A malicious contract can take over the account.", a
+  yellow "The app gets a key to call getleash.onasachi.tg without asking you. It can't attach deposits.", and
+  "Dangerous request … To continue, type CONFIRM". The owner rejected it; nothing was spent.
+- HOT's web app (`https://app.hot-labs.org`, bundle `source/index-rLzeNhYW.js`, read 2026-11-04) rates each
+  action: `DeployContract` and `UseGlobalContract` "danger" (that red text), whatever account they target;
+  `DeployGlobalContract` "danger" by account, "warning" by hash; a full-access `AddKey` "danger"; a
+  function-call `AddKey` "warning" (the yellow text; "danger" when it may call the signer's own account);
+  `DeleteKey` and `DeleteAccount`, `Stake` and unknown actions "danger"; `CreateAccount` and `Transfer`
+  nothing. A `FunctionCall` gets a warning only for some methods (`nft_approve`, a forced
+  `storage_unregister`, NEAR Intents keys); otherwise HOT shows the NEAR it sends. A request needs CONFIRM
+  when any action is "danger" (`requiresConfirmation: o.some(c => c.severity === "danger")`).
+- The `near` account runs near/near-linkdrop 0.1.1 (its `contract_source_metadata`), which exports
+  `create_account`; its code names the arguments `new_account_id` and `new_public_key`. `getleash.near` did
+  not exist on mainnet (2026-11-04).
+- The factory on near-sandbox 2.13.4 (`devkit/test/factory.sandbox.test.ts` and measurements alongside):
+  `create` needs 74 Tgas attached (72 failed with "Exceeded the prepaid gas"); at 80 Tgas it burnt 50.5 Tgas,
+  0.0237 NEAR, in all. Each new account's receipt burns about 7.4 Tgas and 0.007 NEAR (the same as when the
+  owner created them: a plain `CreateAccount` + `Transfer` transaction cost 0.0071 NEAR here). Attaching 85
+  Tgas, the deposit of 1.40325 NEAR needs 1.489 available; at 100 Tgas a wallet with 1.5 NEAR was refused
+  ("cost 1.50417": attached gas held at 10.06 times the gas price), at 85 one with 1.498 available completed.
+  The factory with its name checks is 7,921 bytes; a review run put `create`'s minimum at 73.25 Tgas.
+- NEP-145 `storage_deposit` (the repo's mock token, the standard implementation) registers an account id
+  that doesn't exist yet; registering it again refunds the deposit to the caller.
+
 ## Skill vs live-doc conflicts
 
 | Skill says | Live source says | We follow |

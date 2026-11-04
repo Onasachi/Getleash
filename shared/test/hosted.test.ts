@@ -3,26 +3,27 @@
  * /setup page are the setup CLI's (one builder for both), in the wallet's action format; what they cost;
  * which accounts can hold GetLeash; and the dashboard links that name a hosted business's contract.
  */
-import { KeyPair, KeyPairSigner, type Provider } from "near-api-js";
+import { KeyPair, KeyPairSigner, PublicKey, type Provider } from "near-api-js";
 import { describe, expect, it } from "vitest";
 
 import {
   AGENT_METHODS,
   bytesToHex,
-  canHostUnder,
+  canHost,
   checkSetupClaim,
   dashboardLink,
   DEFAULT_POLICY,
+  defaultRoleIds,
   EXECUTOR_METHODS,
   finishCodeText,
   finishNonce,
   FT_STORAGE_DEPOSIT,
   fromBase64Url,
+  factoryDeposit,
+  hostedIds,
   hostedSetupPlan,
-  hostedSetupTransactions,
+  hostedSetupTransaction,
   initArgs,
-  INSTALL_GAS,
-  INSTALLER_WASM,
   near,
   nearApiActions,
   nearRoundedDown,
@@ -34,6 +35,7 @@ import {
   SetupClaim,
   setupClaimMessage,
   setupCost,
+  setupNeeds,
   setupLinkSigned,
   setupTransactions,
   signSetupLink,
@@ -49,113 +51,126 @@ const TOKEN = { token_id: "usdc.near", token_decimals: 6 };
 const plan = () => hostedSetupPlan({ ownerId: "acme.tg", agentPublicKey: AGENT_KEY, executorPublicKey: EXECUTOR_KEY, token: TOKEN });
 
 describe("a hosted business's setup plan", () => {
-  it("puts everything under the owner's account, with the service's two keys and the default limits", () => {
+  it("names everything after the owner's account, under the factory, with the service's two keys and the default limits", () => {
     const p = plan();
-    expect(p.policyId).toBe("getleash.acme.tg");
-    expect(p.agent).toEqual({ accountId: "agent-1.acme.tg", publicKey: AGENT_KEY, balance: near("0.15"), allowance: near("0.5") });
-    expect(p.executor).toEqual({ accountId: "executor-1.acme.tg", publicKey: EXECUTOR_KEY, balance: near("0.2"), allowance: near("1") });
+    expect(p.policyId).toBe("acme-tg.getleash.near");
+    expect(p.agent).toEqual({ accountId: "acme-tg-agent.getleash.near", publicKey: AGENT_KEY, balance: near("0.15"), allowance: near("0.5") });
+    expect(p.executor).toEqual({ accountId: "acme-tg-executor.getleash.near", publicKey: EXECUTOR_KEY, balance: near("0.2"), allowance: near("1") });
     expect(p.treasuryToken).toBe("usdc.near");
     expect(p.policy).toEqual(DEFAULT_POLICY);
     // 83,900 bytes of code at 1 NEAR per 100 kB, plus 0.2 NEAR for the contract's records, rounded up to 0.05.
     expect(p.policyBalance).toBe(near("1.05"));
+    expect(hostedIds("shop.acme.near")).toEqual({ policyId: "shop-acme-near.getleash.near", agentId: "shop-acme-near-agent.getleash.near", executorId: "shop-acme-near-executor.getleash.near" });
   });
 
-  it("costs what docs/deployment.md measured: about 1.43 NEAR with network fees", () => {
-    expect(setupCost(RELEASE_WASM_BYTES)).toBe(near("0.15") + near("0.2") + near("1.05") + FT_STORAGE_DEPOSIT + near("0.025"));
-    expect(nearRoundedUp(setupCost(RELEASE_WASM_BYTES))).toBe("1.43");
+  it("costs about 1.43 NEAR with network fees, and the wallet needs about 1.491 while it signs, more if gas costs more", () => {
+    expect(factoryDeposit()).toBe(near("0.15") + near("0.2") + near("1.05") + FT_STORAGE_DEPOSIT + near("0.002"));
+    expect(setupCost()).toBe(factoryDeposit() + near("0.025"));
+    expect(nearRoundedUp(setupCost())).toBe("1.43");
+    // 85 Tgas held at 10.2 times NEAR's lowest gas price, and a little for the transaction itself.
+    expect(setupNeeds()).toBe(factoryDeposit() + near("0.0867") + near("0.001"));
+    expect(nearRoundedUp(setupNeeds(), 3)).toBe("1.491");
+    expect(setupNeeds(200_000_000n)).toBe(factoryDeposit() + near("0.1734") + near("0.001"));
+    expect(setupNeeds(50_000_000n)).toBe(setupNeeds());
     expect(nearRoundedUp(near("1.4"))).toBe("1.40");
     expect(nearRoundedUp(near("0.001"))).toBe("0.01");
   });
 
   it("shows what a wallet needs rounded up and what it holds rounded down, so the two never look equal when it falls short", () => {
-    // The first live wallet: 1.5 NEAR and 182 bytes of its own, against the cost and the signing reserve.
+    // The first live wallet: 1.5 NEAR and 182 bytes of its own.
     const available = 1_500_000_000_000_000_000_001_000n - 182n * 10n ** 19n;
     expect(nearRoundedDown(available, 3)).toBe("1.498");
-    expect(nearRoundedUp(near("1.49625"), 3)).toBe("1.497");
+    expect(setupNeeds()).toBeLessThan(available);
     expect(nearRoundedUp(near("1.4955"), 2)).toBe("1.50");
     expect(nearRoundedDown(near("1.4955"), 2)).toBe("1.49");
     expect(nearRoundedDown(near("0.0009"), 3)).toBe("0.000");
   });
 });
 
-describe("the setup transactions", () => {
-  it("are the agent's account, the executor's, the keyless contract through the installer and its USDC registration, in that order", () => {
-    const p = plan();
-    const txs = hostedSetupTransactions(p);
-    expect(txs.map((t) => t.receiverId)).toEqual(["agent-1.acme.tg", "executor-1.acme.tg", "getleash.acme.tg", "usdc.near"]);
-    expect(txs[0]!.actions).toEqual([
-      { type: "CreateAccount" },
-      { type: "Transfer", deposit: near("0.15") },
-      { type: "AddKey", publicKey: AGENT_KEY, receiverId: "getleash.acme.tg", methodNames: [...AGENT_METHODS], allowance: near("0.5") },
+describe("the setup transaction", () => {
+  it("is one call to the factory: the service's two public keys in hex and exactly the setup's cost (D-32)", () => {
+    const tx = hostedSetupTransaction(plan());
+    expect(tx).toEqual({
+      receiverId: "getleash.near",
+      actions: [
+        {
+          type: "FunctionCall",
+          method: "create",
+          args: { agent: bytesToHex(PublicKey.fromString(AGENT_KEY).data), executor: bytesToHex(PublicKey.fromString(EXECUTOR_KEY).data) },
+          gas: tgas(85),
+          deposit: factoryDeposit(),
+        },
+      ],
+    });
+    // The factory reads exactly this text: {"agent":"<64 hex>","executor":"<64 hex>"}.
+    expect(JSON.stringify((tx.actions[0] as { args: unknown }).args)).toMatch(/^\{"agent":"[0-9a-f]{64}","executor":"[0-9a-f]{64}"\}$/);
+  });
+
+  it("converts to near-connect's action format: a plain call with a deposit, which HOT Wallet shows without a warning", () => {
+    expect(walletActions(hostedSetupTransaction(plan()).actions)).toEqual([
+      {
+        type: "FunctionCall",
+        params: {
+          methodName: "create",
+          args: { agent: bytesToHex(PublicKey.fromString(AGENT_KEY).data), executor: bytesToHex(PublicKey.fromString(EXECUTOR_KEY).data) },
+          gas: "85000000000000",
+          deposit: "1403250000000000000000000",
+        },
+      },
     ]);
-    expect(txs[1]!.actions[2]).toEqual({ type: "AddKey", publicKey: EXECUTOR_KEY, receiverId: "getleash.acme.tg", methodNames: [...EXECUTOR_METHODS], allowance: near("1") });
-    // The contract never gets a key: create, fund, deploy the installer, install (D-31), which deploys the
-    // release and calls `new` with these same arguments.
-    expect(txs[2]!.actions).toEqual([
-      { type: "CreateAccount" },
-      { type: "Transfer", deposit: near("1.05") },
-      { type: "DeployContract", code: INSTALLER_WASM },
-      { type: "FunctionCall", method: "install", args: initArgs(p), gas: INSTALL_GAS, deposit: 0n },
-    ]);
-    expect(initArgs(p)).toMatchObject({ owner_id: "acme.tg", agent_id: "agent-1.acme.tg", executor_id: "executor-1.acme.tg", token_id: "usdc.near", token_decimals: 6, executor_trust_daily_budget: "0" });
-    expect(txs[3]!.actions).toEqual([
+  });
+
+  it("the CLI's own setup still creates the accounts under the owner, keyless, deploying the release itself", () => {
+    const cli = setupTransactions({ ...plan(), ...defaultRoleIds("acme.tg"), agent: { ...plan().agent, accountId: "agent-1.acme.tg" }, executor: { ...plan().executor, accountId: "executor-1.acme.tg" }, policyId: "getleash.acme.tg", wasm: new Uint8Array(RELEASE_WASM_BYTES) });
+    expect(cli.map((t) => t.receiverId)).toEqual(["agent-1.acme.tg", "executor-1.acme.tg", "getleash.acme.tg", "usdc.near"]);
+    expect(cli[0]!.actions[2]).toEqual({ type: "AddKey", publicKey: AGENT_KEY, receiverId: "getleash.acme.tg", methodNames: [...AGENT_METHODS], allowance: near("0.5") });
+    expect(cli[1]!.actions[2]).toEqual({ type: "AddKey", publicKey: EXECUTOR_KEY, receiverId: "getleash.acme.tg", methodNames: [...EXECUTOR_METHODS], allowance: near("1") });
+    expect(cli[2]!.actions.map((a) => a.type)).toEqual(["CreateAccount", "Transfer", "DeployContract", "FunctionCall"]);
+    expect(cli[3]!.actions).toEqual([
       { type: "FunctionCall", method: "storage_deposit", args: { account_id: "getleash.acme.tg", registration_only: true }, gas: tgas(10), deposit: FT_STORAGE_DEPOSIT },
     ]);
+    expect(nearApiActions(cli[2]!.actions)[2]!.deployContract?.code.length).toBe(RELEASE_WASM_BYTES);
   });
 
-  it("are the CLI's, with the installer in place of the release (the CLI deploys the release itself, then `new`)", () => {
-    const cli = setupTransactions({ ...plan(), wasm: new Uint8Array(RELEASE_WASM_BYTES) });
-    const page = hostedSetupTransactions(plan());
-    expect(page.filter((_, i) => i !== 2)).toEqual(cli.filter((_, i) => i !== 2));
-    expect(cli[2]!.actions.map((a) => a.type)).toEqual(["CreateAccount", "Transfer", "DeployContract", "FunctionCall"]);
-    expect(cli[2]!.actions[3]).toEqual({ type: "FunctionCall", method: "new", args: initArgs(plan()), gas: tgas(100), deposit: 0n });
-  });
-
-  it("convert to near-connect's action format for the browser wallet", () => {
-    const [agent, , contract] = hostedSetupTransactions(plan());
-    expect(walletActions(agent!.actions)).toEqual([
-      { type: "CreateAccount" },
-      { type: "Transfer", params: { deposit: "150000000000000000000000" } },
-      { type: "AddKey", params: { publicKey: AGENT_KEY, accessKey: { permission: { receiverId: "getleash.acme.tg", methodNames: ["propose"], allowance: "500000000000000000000000" } } } },
-    ]);
-    const [, , deploy, install] = walletActions(contract!.actions);
-    expect(deploy).toEqual({ type: "DeployContract", params: { code: INSTALLER_WASM } });
-    expect(install).toEqual({ type: "FunctionCall", params: { methodName: "install", args: initArgs(plan()), gas: "60000000000000", deposit: "0" } });
-  });
-
-  it("convert to near-api-js actions for a key on this machine (the sandbox tests)", () => {
-    const list = hostedSetupTransactions(plan()).map((t) => nearApiActions(t.actions));
-    expect(list.map((a) => a.length)).toEqual([3, 3, 4, 1]);
-    expect(list[2]![2]!.deployContract?.code).toEqual(INSTALLER_WASM);
-    expect(list[0]![2]!.addKey?.accessKey.permission.functionCall?.receiverId).toBe("getleash.acme.tg");
+  it("the contract's `new` arguments are the plan's: the owner, the two role accounts, the token, the default limits", () => {
+    expect(initArgs(plan())).toMatchObject({ owner_id: "acme.tg", agent_id: "acme-tg-agent.getleash.near", executor_id: "acme-tg-executor.getleash.near", token_id: "usdc.near", token_decimals: 6, executor_trust_daily_budget: "0" });
   });
 });
 
-describe("who can hold a hosted GetLeash", () => {
-  it("named accounts with a dot, short enough for executor-1.<account>", () => {
-    expect(canHostUnder("acme.near")).toBe(true);
-    expect(canHostUnder("acme.tg")).toBe(true);
-    expect(canHostUnder("shop.acme.near")).toBe(true);
-    expect(canHostUnder("a".repeat(48) + ".near")).toBe(true);
-    expect(canHostUnder("a".repeat(49) + ".near")).toBe(false);
+describe("who can have a hosted GetLeash", () => {
+  it("any NEAR account short enough for <name>-executor.getleash.near to fit NEAR's 64 characters", () => {
+    expect(canHost("acme.near")).toBe(true);
+    expect(canHost("acme.tg")).toBe(true);
+    expect(canHost("shop.acme.near")).toBe(true);
+    expect(canHost("near")).toBe(true);
+    expect(canHost("a".repeat(36) + ".near")).toBe(true);
+    expect(canHost("a".repeat(37) + ".near")).toBe(false);
   });
 
-  it("not implicit accounts, which cannot create sub-accounts, nor anything that isn't an account", () => {
-    expect(canHostUnder("98793cd91a3f870fb126f66285808c7e094afcfc4eda8a970f6648cdf0dbd6de")).toBe(false);
-    expect(canHostUnder("0x52908400098527886e0f7030069857d2e4169ee7")).toBe(false);
-    expect(canHostUnder("near")).toBe(false);
-    expect(canHostUnder("Acme.near")).toBe(false);
-    expect(canHostUnder("acme..near")).toBe(false);
-    expect(canHostUnder("")).toBe(false);
+  it("not an account whose name would end like a role account's: the factory refuses those", () => {
+    expect(canHost("v.agent")).toBe(false);
+    expect(canHost("shop-agent")).toBe(false);
+    expect(canHost("v.executor")).toBe(false);
+    expect(canHost("ops-executor")).toBe(false);
+    expect(canHost("agent.near")).toBe(true);
+    expect(canHost("my-agent-shop.near")).toBe(true);
+  });
+
+  it("not implicit accounts (too long), nor anything that isn't an account", () => {
+    expect(canHost("98793cd91a3f870fb126f66285808c7e094afcfc4eda8a970f6648cdf0dbd6de")).toBe(false);
+    expect(canHost("0x52908400098527886e0f7030069857d2e4169ee7")).toBe(false);
+    expect(canHost("Acme.near")).toBe(false);
+    expect(canHost("acme..near")).toBe(false);
+    expect(canHost("")).toBe(false);
   });
 });
 
 describe("dashboard links", () => {
   it("name a hosted business's contract, and leave the dashboard's own links as they were", () => {
     expect(dashboardLink("https://getleash.example/", "/intent/4")).toBe("https://getleash.example/intent/4");
-    expect(dashboardLink("https://getleash.example", "/intent/4", "getleash.acme.tg")).toBe("https://getleash.example/intent/4?c=getleash.acme.tg");
-    expect(dashboardLink("https://getleash.example", "/suppliers/new?to=acme.near", "getleash.acme.tg")).toBe("https://getleash.example/suppliers/new?to=acme.near&c=getleash.acme.tg");
-    expect(dashboardLink(null, "/intent/4", "getleash.acme.tg")).toBeNull();
+    expect(dashboardLink("https://getleash.example", "/intent/4", "acme-tg.getleash.near")).toBe("https://getleash.example/intent/4?c=acme-tg.getleash.near");
+    expect(dashboardLink("https://getleash.example", "/suppliers/new?to=acme.near", "acme-tg.getleash.near")).toBe("https://getleash.example/suppliers/new?to=acme.near&c=acme-tg.getleash.near");
+    expect(dashboardLink(null, "/intent/4", "acme-tg.getleash.near")).toBeNull();
   });
 });
 

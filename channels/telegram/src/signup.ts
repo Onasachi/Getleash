@@ -41,27 +41,26 @@ import { z } from "zod";
 import type { Notice } from "@getleash/channel-core";
 import type { UpdateLog } from "@getleash/ingestion";
 import {
-  canHostUnder,
+  canHost,
   type Check,
   checkHostedSetup,
   checkSetupClaim,
   dashboardLink,
   DEFAULT_POLICY,
-  defaultRoleIds,
   durationText,
   FINISH_PREFIX,
   finishNonce,
+  hostedIds,
   money,
   nearRoundedUp,
   parseFinishCode,
   type Policy,
   type PolicyView,
-  RELEASE_WASM_BYTES,
   SetupClaim,
   type SetupLink,
   type SetupTarget,
   setupCost,
-  signingReserve,
+  setupNeeds,
 } from "@getleash/shared";
 import { type BusinessSecrets, type HostedBusiness, newKeyPair, writePrivateJson } from "@getleash/shared/node";
 
@@ -167,7 +166,7 @@ function offerText(): string {
     "",
     "Set it up in a minute:",
     `1. Tap "${SETUP_BUTTON}" below. It opens here in Telegram and connects your NEAR wallet (HOT Wallet works inside Telegram).`,
-    `2. Your wallet creates your own GetLeash: a contract that holds your USDC, has no keys, and that only your wallet can change. It costs about ${nearRoundedUp(setupCost(RELEASE_WASM_BYTES))} NEAR, from your wallet, which needs about ${nearRoundedUp(setupCost(RELEASE_WASM_BYTES) + signingReserve({ contract: true, registered: true }))} NEAR while it signs (the rest comes back).`,
+    `2. Your wallet creates your own GetLeash: a contract that holds your USDC, has no keys, and that only your wallet can change. It costs about ${nearRoundedUp(setupCost())} NEAR, from your wallet, which needs about ${nearRoundedUp(setupNeeds(), 3)} NEAR while it signs (the rest comes back).`,
     "3. Tap Finish on the page, then START here. I'll tell you when it's ready; then you send it USDC and add the people you pay.",
     "",
     `What you trust this service with: it reads the invoices you send, and pays suppliers you added on its own up to ${money(p.approval_threshold)} USDC a payment and ${money(p.autonomous_daily_budget)} USDC a day. Everything else waits for your OK in your wallet.`,
@@ -236,7 +235,7 @@ function movedHereText(business: HostedBusiness): string {
 
 /** The accounts a setup made with these keys must show on-chain, under `owner`. */
 function targetOf(setup: PendingSetup, owner: string): SetupTarget {
-  const ids = defaultRoleIds(owner);
+  const ids = hostedIds(owner);
   return {
     ownerId: owner,
     policyId: ids.policyId,
@@ -338,7 +337,7 @@ export class BusinessSignup {
    */
   private async claim(setup: PendingSetup, data: string): Promise<string> {
     const claim = parseClaim(data);
-    if (!claim || !canHostUnder(claim.owner)) {
+    if (!claim || !canHost(claim.owner)) {
       await this.tell(setup.chat, { text: `⚠️ That didn't come from the setup page as I expected. ${FINISH_THERE}` });
       return "signup:bad_claim";
     }
@@ -421,7 +420,7 @@ export class BusinessSignup {
     setup.owner = claim.owner;
     setup.claimed_at = this.now();
     this.save();
-    await this.tell(setup.chat, { text: `⏳ Checking getleash.${claim.owner} on NEAR…` });
+    await this.tell(setup.chat, { text: `⏳ Checking ${hostedIds(claim.owner).policyId} on NEAR…` });
     await this.check(setup);
     return "signup:checking";
   }
@@ -433,7 +432,7 @@ export class BusinessSignup {
    * service doesn't serve isn't its to connect.
    */
   private async connect(setup: PendingSetup, owner: string): Promise<string> {
-    const policyId = defaultRoleIds(owner).policyId;
+    const policyId = hostedIds(owner).policyId;
     const business = this.deps.hosted(policyId);
     if (!business || business.owner_id !== owner) {
       delete setup.claim;
