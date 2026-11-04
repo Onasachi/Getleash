@@ -26,6 +26,7 @@ import { Account, KeyPair, KeyPairSigner, type JsonRpcProvider, type KeyPairStri
 import { z } from "zod";
 
 import { Directory, mergeDirectories } from "./directory.ts";
+import { type SetupLink, signSetupLink } from "./hosted.ts";
 import type { NetworkId } from "./networks.ts";
 
 /**
@@ -232,4 +233,108 @@ export class DeliveredNotices {
     }
     this.offset += end + 1;
   }
+}
+
+// ── Hosted businesses (docs/decisions.md D-30) ───────────────────────────────────────────────
+
+/** A business that set up its own GetLeash through this service's bot. */
+export const HostedBusiness = z.object({
+  policy_id: z.string().min(2).max(64),
+  owner_id: z.string().min(2).max(64),
+  agent_id: z.string().min(2).max(64),
+  executor_id: z.string().min(2).max(64),
+  /** The Telegram user who set it up, and their private chat with the bot: the only chat it answers. */
+  owner_user: z.string().regex(/^\d+$/),
+  owner_chat: z.string().regex(/^-?\d+$/),
+  created_at: z.string(),
+});
+export type HostedBusiness = z.infer<typeof HostedBusiness>;
+
+/** What the service holds for one business: its two function-call keys and its two off-chain secrets. */
+export const BusinessSecrets = z.object({
+  agent_private_key: z.string().startsWith("ed25519:"),
+  executor_private_key: z.string().startsWith("ed25519:"),
+  tenant_secret: z.string().regex(/^[0-9a-f]{64}$/),
+  invoice_store_key: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type BusinessSecrets = z.infer<typeof BusinessSecrets>;
+
+const HostedRegistry = z.object({ businesses: z.array(HostedBusiness).default([]) });
+
+/** Where hosted businesses live: `<data dir>/hosted/`. */
+export function hostedDir(network: NetworkId): string {
+  return join(dataDir(network), "hosted");
+}
+
+/**
+ * The hosted businesses (`businesses.json`) and each one's own directory (`<contract>/`: its secrets,
+ * supplier names, encrypted invoices, executor journal and notices), all mode 0600. The bot adds
+ * businesses; the executor reads the list at every pass, so a new one is picked up without a restart.
+ */
+export class HostedBusinesses {
+  constructor(readonly root: string) {}
+
+  private get registryPath(): string {
+    return join(this.root, "businesses.json");
+  }
+
+  list(): HostedBusiness[] {
+    if (!existsSync(this.registryPath)) return [];
+    return HostedRegistry.parse(JSON.parse(readFileSync(this.registryPath, "utf8"))).businesses;
+  }
+
+  /** A business's directory, named after its contract (a NEAR account id: no slashes, no "..", so it stays inside `root`). */
+  dir(policyId: string): string {
+    if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(policyId) || policyId.includes("..")) throw new Error(`not a NEAR account id: ${policyId}`);
+    return join(this.root, policyId);
+  }
+
+  secrets(policyId: string): BusinessSecrets {
+    return BusinessSecrets.parse(JSON.parse(readFileSync(join(this.dir(policyId), "secrets.json"), "utf8")));
+  }
+
+  /**
+   * Adds a business: its secrets first, then the registry entry that makes the services use them. Adding
+   * it again changes nothing, and a business's secrets are never replaced: its stored invoices and the
+   * obligation ids that block paying an invoice twice depend on them.
+   */
+  add(business: HostedBusiness, secrets: BusinessSecrets): void {
+    const entry = HostedBusiness.parse(business);
+    const path = join(this.dir(entry.policy_id), "secrets.json");
+    if (existsSync(path)) {
+      const kept = BusinessSecrets.parse(JSON.parse(readFileSync(path, "utf8")));
+      if (kept.agent_private_key !== secrets.agent_private_key) throw new Error(`${entry.policy_id} is already set up with other keys`);
+    } else {
+      writePrivateJson(path, BusinessSecrets.parse(secrets));
+    }
+    const all = this.list();
+    if (all.some((b) => b.policy_id === entry.policy_id)) return;
+    writePrivateJson(this.registryPath, { businesses: [...all, entry] });
+  }
+
+  /**
+   * Moves a business to another Telegram account, which its owner's wallet asked for (a "connect" claim,
+   * docs/decisions.md D-30): only the registry entry changes; its keys, secrets and files stay.
+   */
+  move(policyId: string, to: { owner_user: string; owner_chat: string }): HostedBusiness {
+    const all = this.list();
+    const at = all.findIndex((b) => b.policy_id === policyId);
+    if (at < 0) throw new Error(`${policyId} is not hosted here`);
+    const moved = HostedBusiness.parse({ ...all[at], owner_user: to.owner_user, owner_chat: to.owner_chat });
+    all[at] = moved;
+    writePrivateJson(this.registryPath, { businesses: all });
+    return moved;
+  }
+}
+
+/** Signs setup links with a private key, as the bot does with its agent's (tests and local runs). */
+export function setupLinkSigner(accountId: string, privateKey: string): (link: SetupLink) => Promise<string> {
+  const signer = KeyPairSigner.fromSecretKey(privateKey as KeyPairString);
+  return (link) => signSetupLink(signer, accountId, link);
+}
+
+/** A new ed25519 key pair in near-cli's string form, for a key only this service will hold. */
+export function newKeyPair(): { public_key: string; private_key: string } {
+  const pair = KeyPair.fromRandom("ed25519");
+  return { public_key: pair.getPublicKey().toString(), private_key: pair.toString() };
 }

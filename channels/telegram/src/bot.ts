@@ -20,6 +20,7 @@ import { checkFile, type InvoiceFile, LIMITS, LimitError, Semaphore, type Update
 import {
   assetName,
   cleanName,
+  dashboardLink,
   type DetailsProblem,
   type Directory,
   durationText,
@@ -43,6 +44,8 @@ import { type DeliveredNotices, noticeKey } from "@getleash/shared/node";
 
 import { type LinkButton, noticeLinks, telegramMessage } from "./notifier.ts";
 import type { SupplierInvite, SupplierOnboarding } from "./onboarding.ts";
+import type { PendingUpdates } from "./pending.ts";
+import type { BusinessSignup } from "./signup.ts";
 
 /** The subset of the Bot API the channel uses (grammY's `bot.api` provides it; tests fake it). */
 export interface BotApi {
@@ -63,8 +66,19 @@ export type TelegramDeps = {
   view: PolicyView;
   directory: () => Directory;
   dashboardUrl: string | null;
+  /** A hosted business's contract (D-30), named in its dashboard links (`?c=`); null for the dashboard's own. */
+  dashboardContract?: string | null;
+  /** Invoices processed at once; one semaphore shared by every business keeps the model's load bounded. */
+  jobs?: Semaphore;
+  /** Invoices read per UTC day (a hosted business's share of the operator's model budget); null: no limit. */
+  invoicesPerDay?: number | null;
   /** The owner's chat (TELEGRAM_OWNER_CHAT_ID), where the executor sends its notices too. */
   ownerChatId?: string | null;
+  /**
+   * A hosted business answers one chat: its supplier invites and requests report to `ownerChatId`, not the
+   * chat they were made in, since its owner's wallet may have moved it to another Telegram account since.
+   */
+  ownerChatOnly?: boolean;
   /** Shared with the executor: replies in the owner's chat stand in for its notices of the same news. */
   delivered?: Pick<DeliveredNotices, "add"> | null;
   /** Adding suppliers from Telegram (/addsupplier, /invite); without it those commands say so. */
@@ -142,6 +156,9 @@ function telegramName(from: Message["from"]): string {
   return from.username ? `@${from.username}` : [from.first_name, from.last_name].filter(Boolean).join(" ");
 }
 
+/** `/start join_<token>`: a supplier opening an invite link. */
+const INVITE_START = /^\/start(?:@\w+)?\s+join_([A-Za-z0-9_-]{16,64})\s*$/;
+
 /** A text reply to the bot's "Who do you want to add?" (a file sent as a reply is still an invoice). */
 function isAddReply(message: Message): boolean {
   const asked = message.reply_to_message;
@@ -159,12 +176,19 @@ export function parseIdList(value: string | undefined): Set<string> {
 
 export class TelegramChannel implements Channel<Update> {
   readonly name = "telegram";
-  private readonly jobs = new Semaphore(LIMITS.maxConcurrentJobs);
+  private readonly jobs: Semaphore;
 
-  constructor(private readonly deps: TelegramDeps) {}
+  constructor(private readonly deps: TelegramDeps) {
+    this.jobs = deps.jobs ?? new Semaphore(LIMITS.maxConcurrentJobs);
+  }
+
+  /** The contract this channel serves. */
+  get contractId(): string {
+    return this.deps.view.contractId;
+  }
 
   private link(path: string) {
-    return this.deps.dashboardUrl ? `${this.deps.dashboardUrl.replace(/\/$/, "")}${path}` : null;
+    return dashboardLink(this.deps.dashboardUrl, path, this.deps.dashboardContract);
   }
 
   async receive(update: Update): Promise<Received> {
@@ -221,8 +245,7 @@ export class TelegramChannel implements Channel<Update> {
   async send(chatId: string, notice: Notice): Promise<void> {
     const options = { link_preview_options: { is_disabled: true } };
     if (notice.ask) {
-      // A question: Telegram opens a reply box, so the answer comes back as a reply to it.
-      await this.deps.api.sendMessage(chatId, notice.text, { ...options, reply_markup: { force_reply: true, input_field_placeholder: notice.ask.slice(0, 64) } });
+      await this.question(chatId, notice);
       return;
     }
     const links = noticeLinks(notice);
@@ -238,9 +261,54 @@ export class TelegramChannel implements Channel<Update> {
     await this.deps.api.sendMessage(chatId, telegramMessage(chatId, notice.text, links, false).text, options);
   }
 
+  /** A question: Telegram opens a reply box, so the answer comes back as a reply to it. Returns its message id when Telegram reports it. */
+  private async question(chatId: string, notice: Notice): Promise<number | undefined> {
+    const sent = await this.deps.api.sendMessage(chatId, notice.text, {
+      link_preview_options: { is_disabled: true },
+      reply_markup: { force_reply: true, input_field_placeholder: (notice.ask ?? "").slice(0, 64) || "Your answer" },
+    });
+    const id = (sent as { message_id?: unknown } | undefined)?.message_id;
+    return typeof id === "number" ? id : undefined;
+  }
+
   private allowed(message: Message): boolean {
     const user = message.from ? String(message.from.id) : "";
     return this.deps.allowedUsers.has(user) && this.deps.allowedChats.has(String(message.chat.id));
+  }
+
+  /** Whether this message is the owner's (sender and chat approved): the hub routes it here. */
+  allows(message: Message): boolean {
+    return this.allowed(message);
+  }
+
+  /** Whether this Telegram user is one of this GetLeash's approved users. */
+  hasUser(user: string): boolean {
+    return this.deps.allowedUsers.has(user);
+  }
+
+  /** Whether a message opens one of this channel's supplier invites (`/start join_<token>`). */
+  opensInvite(message: Message): boolean {
+    const onboarding = this.deps.onboarding;
+    const user = message.from ? String(message.from.id) : "";
+    const token = message.text?.match(INVITE_START)?.[1];
+    return !!onboarding && !!user && message.chat.type === "private" && !this.allowed(message) && !!token && onboarding.knowsInvite(token, user);
+  }
+
+  /**
+   * When a text message answers this channel's invite: the time that invite was opened (the hub picks the
+   * latest), else null. Someone who uses a GetLeash here answers only by replying to the invite's question,
+   * so the rest of what they send stays with their own business.
+   */
+  answersInvite(message: Message, member: boolean): number | null {
+    const onboarding = this.deps.onboarding;
+    const user = message.from ? String(message.from.id) : "";
+    if (!onboarding || !user || message.chat.type !== "private" || this.allowed(message)) return null;
+    const text = message.text ?? message.caption;
+    if (text === undefined || text.startsWith("/") || message.web_app_data) return null;
+    const invite = onboarding.inviteOf(user);
+    if (!invite) return null;
+    if (member && !invite.prompts.includes(message.reply_to_message?.message_id ?? -1)) return null;
+    return invite.opened_at ?? invite.at;
   }
 
   /** Handles one update end to end. Returns what was done (tests and logs use it). */
@@ -275,6 +343,10 @@ export class TelegramChannel implements Channel<Update> {
       this.deps.log?.(`[telegram] update ${update.update_id} ignored: ${received.reason}${received.detail ? ` (${received.detail})` : ""}`);
       return `ignored:${received.reason}`;
     }
+    if (!this.countInvoice()) {
+      await this.send(received.replyTo, { text: `You've sent ${this.deps.invoicesPerDay} invoices today, as many as GetLeash reads for one business in a day. Send the rest tomorrow (UTC).` });
+      return "ignored:QUOTA";
+    }
     const outcome = await this.jobs.run(() => this.deps.agent.process(received.input));
     const limits = outcome.intentStatus === "PENDING" ? await this.limits() : undefined;
     await this.send(received.replyTo, this.describe(outcome, limits));
@@ -283,6 +355,23 @@ export class TelegramChannel implements Channel<Update> {
       this.deps.delivered.add(coveredNotices(outcome), "telegram");
     }
     return `invoice:${outcome.status}`;
+  }
+
+  private invoiceDay = "";
+  private invoicesToday = 0;
+
+  /** Counts an invoice against the day's quota; false once it is used up. */
+  private countInvoice(): boolean {
+    const limit = this.deps.invoicesPerDay;
+    if (limit == null) return true;
+    const day = new Date().toISOString().slice(0, 10);
+    if (day !== this.invoiceDay) {
+      this.invoiceDay = day;
+      this.invoicesToday = 0;
+    }
+    if (this.invoicesToday >= limit) return false;
+    this.invoicesToday += 1;
+    return true;
   }
 
   /** The owner's limits, to say why a payment waits ("above the 2.50 USDC the agent may pay on its own"). */
@@ -531,13 +620,13 @@ export class TelegramChannel implements Channel<Update> {
     const onboarding = this.deps.onboarding!;
     const user = message.from ? String(message.from.id) : "";
     if (!user) return null;
-    const token = command === "start" ? message.text?.match(/^\/start(?:@\w+)?\s+join_([A-Za-z0-9_-]{16,64})\s*$/)?.[1] : undefined;
+    const token = command === "start" ? message.text?.match(INVITE_START)?.[1] : undefined;
     const invite = token ? onboarding.openInvite(token, user) : command ? null : onboarding.inviteOf(user);
     if (!invite) return null;
     if (!this.deps.updateLog.claim(`telegram-${update.update_id}`)) return "duplicate";
     const chat = String(message.chat.id);
     if (token) {
-      await this.send(chat, inviteGreeting(invite));
+      onboarding.notePrompt(invite, await this.question(chat, inviteGreeting(invite)));
       return "invite:opened";
     }
 
@@ -551,12 +640,11 @@ export class TelegramChannel implements Channel<Update> {
     if (check?.kind === "refused") problem = check.why;
     if (problem || !check || check.kind === "refused" || !name) {
       const left = onboarding.failedTry(invite);
-      await this.send(
-        chat,
-        left > 0
-          ? { text: `${problem} (${left} ${left === 1 ? "try" : "tries"} left)`, ask: inviteGreeting(invite).ask }
-          : { text: `${problem}\nThis invite is closed now: ask them for a new one.` },
-      );
+      if (left > 0) {
+        onboarding.notePrompt(invite, await this.question(chat, { text: `${problem} (${left} ${left === 1 ? "try" : "tries"} left)`, ask: inviteGreeting(invite).ask }));
+      } else {
+        await this.send(chat, { text: `${problem}\nThis invite is closed now: ask them for a new one.` });
+      }
       return "invite:retry";
     }
 
@@ -566,7 +654,7 @@ export class TelegramChannel implements Channel<Update> {
       const { supplier } = check;
       const saved = check.name ?? onboarding.saveName(supplier, name);
       await this.tell(chat, { text: `✅ You're already set up: they pay you in ${paidAt(supplier)}.` });
-      await this.tell(invite.owner_chat, {
+      await this.tell(this.ownerChatFor(invite.owner_chat), {
         text: `📨 ${name} answered your invite (${who}) with ${supplier.recipient}, which is already on your list as ${saved} (supplier #${supplier.id}). Nothing else to do.`,
       });
       return "invite:listed";
@@ -574,7 +662,7 @@ export class TelegramChannel implements Channel<Update> {
     onboarding.request({ name, chain: check.payee.chain, recipient: check.payee.recipient, owner_chat: invite.owner_chat, supplier_chat: chat });
     await this.tell(chat, { text: `✅ Thanks! I've passed it on: paid in ${paidAt(check.payee)}. I'll tell you here once they've added you.` });
     await this.tell(
-      invite.owner_chat,
+      this.ownerChatFor(invite.owner_chat),
       this.addOffer(name, check, `📨 ${name} answered your invite (${who}). Add them, paid in ${paidAt(check.payee)}? Make sure that's who you sent the invite to.`),
     );
     return "invite:answered";
@@ -606,9 +694,14 @@ export class TelegramChannel implements Channel<Update> {
         BigInt(Date.now()) * 1_000_000n < until
           ? ` Until ${utcTime(until)}, every payment to them waits for your OK, up to ${money(state.policy.cooldown_max, state.token_decimals)} USDC each.`
           : "";
-      await this.tell(request.owner_chat, { text: `✅ ${name} is on your list now (supplier #${supplier.id}), paid in ${paidAt(supplier)}.${waits}` });
+      await this.tell(this.ownerChatFor(request.owner_chat), { text: `✅ ${name} is on your list now (supplier #${supplier.id}), paid in ${paidAt(supplier)}.${waits}` });
       if (request.supplier_chat) await this.tell(request.supplier_chat, { text: `✅ You've been added. Payments to you arrive in ${paidAt(supplier)}.` });
     }
+  }
+
+  /** Where an invite's or a request's news goes: a hosted business's one chat (ownerChatOnly), else the chat it was made in. */
+  private ownerChatFor(stored: string): string {
+    return this.deps.ownerChatOnly && this.deps.ownerChatId ? this.deps.ownerChatId : stored;
   }
 
   /** Sends, and logs instead of throwing: one chat that cannot be reached does not stop the others. */
@@ -621,18 +714,138 @@ export class TelegramChannel implements Channel<Update> {
   }
 }
 
-/** Long-polling bot wired to the channel. */
-export function startBot(token: string, makeChannel: (bot: Bot) => TelegramChannel, log: (line: string) => void = console.log) {
+/** What the long-polling loop drives: one channel, or the hub of every business's channel. */
+export interface UpdateHandler {
+  handle(update: Update): Promise<string>;
+  tick(): Promise<void>;
+}
+
+/**
+ * One bot for many businesses (docs/decisions.md D-30). Each update goes to exactly one place:
+ *   1. the channel whose owner sent it (sender and chat approved there): the operator's own, or a hosted
+ *      business's;
+ *   2. from anyone else, in a private chat: the business whose supplier invite it opens or answers, else
+ *      the signup (starting or finishing a setup);
+ *   3. everything else to the operator's channel, which ignores it as before (nothing is answered).
+ * Businesses share nothing but the bot: each channel has its own contract, agent, keys, directory and
+ * invoice store, and answers only its owner.
+ */
+export class TelegramHub implements UpdateHandler {
+  private readonly hosted: TelegramChannel[] = [];
+
+  constructor(
+    private readonly home: TelegramChannel,
+    private signup: BusinessSignup | null = null,
+    private readonly log: (line: string) => void = () => undefined,
+  ) {}
+
+  get channels(): TelegramChannel[] {
+    return [this.home, ...this.hosted];
+  }
+
+  /** Serves a hosted business from now on (once per contract). */
+  add(channel: TelegramChannel): void {
+    if (this.channels.some((c) => c.contractId === channel.contractId)) return;
+    this.hosted.push(channel);
+  }
+
+  /** Serves a hosted business through this channel instead of the one it had: its owner's wallet moved it to another Telegram account. */
+  replace(channel: TelegramChannel): void {
+    const at = this.hosted.findIndex((c) => c.contractId === channel.contractId);
+    if (at < 0) this.hosted.push(channel);
+    else this.hosted[at] = channel;
+  }
+
+  setSignup(signup: BusinessSignup | null): void {
+    this.signup = signup;
+  }
+
+  /** Whether this Telegram user already uses a GetLeash here. */
+  isMember(user: string): boolean {
+    return this.channels.some((c) => c.hasUser(user));
+  }
+
+  async handle(update: Update): Promise<string> {
+    const message = update.message;
+    if (message) {
+      // An invite link goes to the business that sent it, whoever opens it (businesses supply each other).
+      const inviting = this.channels.find((c) => c.opensInvite(message));
+      if (inviting) return inviting.handle(update);
+      const user = message.from ? String(message.from.id) : "";
+      const member = this.isMember(user);
+      // An answer to an invite goes to that invite (the one opened last); a member's only as a reply to its question.
+      const answering = this.channels
+        .map((c) => ({ c, at: c.answersInvite(message, member) }))
+        .filter((x): x is { c: TelegramChannel; at: number } => x.at !== null)
+        .sort((a, b) => b.at - a.at)[0]?.c;
+      if (answering) return answering.handle(update);
+      const owner = this.channels.find((c) => c.allows(message));
+      if (owner) return owner.handle(update);
+      if (message.chat.type === "private") {
+        const done = await this.signup?.handle(update, message);
+        if (done) return done;
+      }
+    }
+    return this.home.handle(update);
+  }
+
+  private ticking = false;
+
+  /** Every channel's periodic work, then the signup's, one pass at a time; one that fails does not hold up the others. */
+  async tick(): Promise<void> {
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      for (const channel of this.channels) {
+        await channel.tick().catch((error: Error) => this.log(`[telegram] ${channel.contractId}: ${error.message}`));
+      }
+      await this.signup?.tick().catch((error: Error) => this.log(`[signup] ${error.message}`));
+    } finally {
+      this.ticking = false;
+    }
+  }
+}
+
+/**
+ * Each chat's updates in order, on a queue of its own: one chat's slow invoice (a photo can take two
+ * minutes) never holds up another chat, another business's above all. The model's limit stays the shared
+ * semaphore (3 at once). `pending` keeps every update until it is handled, across restarts.
+ */
+export function chatQueues(channel: UpdateHandler, log: (line: string) => void, pending: PendingUpdates | null = null) {
+  const queues = new Map<string, Promise<void>>();
+  return (update: Update): Promise<void> => {
+    pending?.add(update);
+    const chat = String(update.message?.chat.id ?? "other");
+    const run = async () => {
+      try {
+        const done = await channel.handle(update);
+        log(`[telegram] update ${update.update_id}: ${done}`);
+      } catch (error) {
+        log(`[telegram] update ${update.update_id} failed: ${(error as Error).message}`);
+      } finally {
+        pending?.done(update.update_id);
+      }
+    };
+    const next = (queues.get(chat) ?? Promise.resolve()).then(run);
+    queues.set(chat, next);
+    void next.then(() => {
+      if (queues.get(chat) === next) queues.delete(chat);
+    });
+    return next;
+  };
+}
+
+/** Long-polling bot wired to a channel or a hub. */
+export function startBot(token: string, makeChannel: (bot: Bot) => UpdateHandler, log: (line: string) => void = console.log, pending: PendingUpdates | null = null) {
   const bot = new Bot(token);
   const channel = makeChannel(bot);
-  bot.use(async (ctx) => {
-    try {
-      const done = await channel.handle(ctx.update);
-      log(`[telegram] update ${ctx.update.update_id}: ${done}`);
-    } catch (error) {
-      log(`[telegram] update ${ctx.update.update_id} failed: ${(error as Error).message}`);
-    }
-  });
+  // grammY confirms a batch as soon as the handler returns, before the queues have run it: updates still
+  // queued at a restart are replayed from `pending` (the update log drops any that were already acted on).
+  const enqueue = chatQueues(channel, log, pending);
+  const replay = pending?.load() ?? [];
+  if (replay.length > 0) log(`[telegram] replaying ${replay.length} update(s) not finished before the restart`);
+  for (const update of replay) void enqueue(update);
+  bot.use((ctx) => void enqueue(ctx.update));
   bot.catch((error) => log(`[telegram] ${error.message}`));
   // Suppliers the owner adds on the dashboard's page are picked up here (onboarding.ts).
   setInterval(() => void channel.tick().catch((error: Error) => log(`[telegram] supplier check failed: ${error.message}`)), 10_000);

@@ -309,6 +309,59 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
 - Share links (https://core.telegram.org/api/links#share-links): `t.me/share/url?url=<url>&text=<text>` opens
   a chat picker and puts the URL, then the text on a new line, in the chosen chat's text field. /invite's
   "Share the invite" button is one.
+- Keyboard-button Mini Apps (Bot API 10.3, 24 Aug 2026; https://core.telegram.org/bots/api#keyboardbutton,
+  https://core.telegram.org/bots/webapps#keyboard-button-mini-apps): a `KeyboardButton` with `web_app`
+  ("If specified, the described Web App will be launched when the button is pressed") is "Available in
+  private chats only". Such a Mini App can send the bot data with `Telegram.WebApp.sendData`, "up to 4096
+  bytes", "only available for Mini Apps launched via a Keyboard button", after which "the Mini App is
+  closed". The bot receives it as a service message, `Message.web_app_data` (`WebAppData`: `data` and
+  `button_text`), and the docs warn that "a bad client can send arbitrary data in this field": the bot
+  only takes it as a claim to check on-chain. Without Telegram's script, the raw event is
+  `web_app_data_send` with `{"data": "<string>"}` (https://core.telegram.org/api/web-events#web-app-data-send).
+  `ReplyKeyboardMarkup` takes `keyboard` and optional `is_persistent`, `resize_keyboard`,
+  `one_time_keyboard`, `input_field_placeholder`, `selective`, `force_reply`; `ReplyKeyboardRemove` is
+  `{"remove_keyboard": true}`. `WebAppInfo.url` is "An HTTPS URL". The setup offer (D-30) uses all of this.
+- A keyboard-button Mini App gets no user data (https://core.telegram.org/bots/webapps#webappinitdata):
+  WebAppInitData "is empty if the Mini App was launched from a keyboard button". So the setup page can't
+  learn who opened it from Telegram's launch data. The bot puts the account it recorded at /start in the
+  page's link, and checks the signed claim against its own record. For the same reason the bot can't
+  check `initData`. That check is "HMAC_SHA256(<bot_token>, "WebAppData")" as the secret key, then the
+  hex HMAC of the alphabetically sorted `key=value` lines (#validating-data-received-via-the-mini-app).
+  The dashboard detects Telegram by any `tgWebApp…` launch parameter (`tgWebAppVersion`,
+  `tgWebAppPlatform`), not only `tgWebAppData`. near-connect 0.12 (`build/helpers/telegram.js`) counts
+  `window.TelegramWebviewProxy` or a stored `__telegram__initParams` as a Mini App.
+- Checked 2026-11-04 (https://core.telegram.org/bots/webapps): `openTelegramLink(url)` "opens a telegram
+  link inside the Telegram app. The Mini App will not be closed after this method is called. Up to Bot API
+  7.0 The Mini App will be closed after this method is called" (changelog, Bot API 7.0, 29 Dec 2023: "Mini
+  Apps no longer close when the method WebApp.openTelegramLink is called"). The setup page's Finish opens
+  `t.me/<bot>?start=finish_<code>` this way (raw event `web_app_open_tg_link` with `path_full`), then sends
+  its claim with sendData, which closes it; below version 7.0 (`tgWebAppVersion`) it asks for an update.
+  Deep links in private chats (https://core.telegram.org/bots/features#deep-linking): "When someone opens a
+  chat with your bot via this link, you will receive: /start <parameter>", from that person. `finish_` and
+  43 base64url characters (32 bytes) is 50 characters.
+
+## Hosted setup from a browser wallet (checked 2026-11-03)
+
+- @hot-labs/near-connect 0.12.0 (`build/actions/types.d.ts` in the installed package) declares the actions
+  a dapp can ask a wallet to sign: `CreateAccount`, `DeployContract` (`params.code`, a `Uint8Array`),
+  `FunctionCall`, `Transfer`, `Stake`, `AddKey` (a function-call permission is
+  `{receiverId, allowance?, methodNames?}`), `DeleteKey`, `DeleteAccount`, `UseGlobalContract`,
+  `DeployGlobalContract` and the gas-key actions. The `/setup` page sends `CreateAccount`, `Transfer`,
+  `AddKey`, `DeployContract` and `FunctionCall` (`walletActions` in `shared/src/setup.ts`). Whether HOT
+  Wallet signs a contract deployment, or a NEP-413 message, from a Mini App has not been tried yet.
+- near-api-js 7.4 `verifyMessage` (`near-api-js/nep413`, `lib/nep413/index.js`) reads the signer's access key
+  with `viewAccessKey`, refuses it unless `permission === "FullAccess"`, then checks the ed25519 signature
+  over SHA-256 of the Borsh payload `{message, nonce[32], recipient, callbackUrl?}` behind the prefix
+  2147484061 (2^31 + 413). `checkSetupClaim` reads the key itself, so an RPC failure is not mistaken for a
+  bad signature, and tests it with signatures made by `KeyPairSigner.signNep413Message`.
+- `query` with `request_type: "view_code"` for `getleash.onanikes.near` returns 83,900 bytes whose SHA-256
+  is the release's (`8eaccbf1…`), both from Node (near-api-js `viewContractCode`) and from a browser page
+  on another origin (FastNEAR's RPC allows it). The setup page copies the code this way and refuses any
+  other hash.
+- `storage_balance_of` on USDC returns `null` for an account that does not exist yet
+  (`getleash.chisolu.near`), and near-api-js 7.4 `viewAccount` reports `amount`, `locked` and
+  `storage_usage`. A small account can hold less than its storage costs (`chisolu.near`: 0.0018 NEAR
+  less, NEP-448), so the page never counts a balance below zero.
 
 ## Skill vs live-doc conflicts
 

@@ -288,3 +288,116 @@ both hosts as `GETLEASH_DIRECTORY_BASE64`. Now it takes one message and one sign
 
 Amends D-26 (the bot also writes the directory file) and PLAN §4.3 step 4 (an unnamed on-chain supplier
 is matched by its exact address).
+
+**D-30 · Other businesses set up their own GetLeash from the operator's bot (hosted mode).**
+A business that wanted GetLeash had to run all of `docs/deployment.md`: a terminal, near-cli, its own bot
+token, a NEAR AI key, its own hosting. Now it opens the operator's bot and taps a button; its own wallet
+does the rest. One service serves many businesses; each keeps everything that matters:
+- **Their own contract, signed by their own wallet.** `/start` from someone the bot does not serve offers a
+  "Set up GetLeash" keyboard button (a keyboard button, because only a Mini App opened from one can send
+  data back to the bot). It opens the dashboard's `/setup` page in Telegram with the public halves of two
+  keys the bot just generated for this person, one for the agent and one for the executor, and an expiry a
+  day away (asking /start again renews it with the same keys). The page builds
+  the setup CLI's own transactions (`setupTransactions`, `shared/src/setup.ts`; one builder for both) and
+  the owner's wallet signs them: `agent-1.<owner>` and `executor-1.<owner>` with only those keys,
+  `getleash.<owner>` created, funded, deployed and initialised in one transaction with no access key, and its
+  USDC registration. The code is the published release, copied from the operator's own contract and checked
+  against `RELEASE_WASM_SHA256` in the browser before anything is signed. Steps already on the chain are
+  skipped, so the page carries on where it stopped. It costs the owner about 1.43 NEAR; the limits are
+  `DEFAULT_POLICY` (the mainnet values, trust budget 0), which only the owner's wallet can change.
+- **A setup is someone's only when three things meet, each from where it can't be faked**
+  (`shared/src/hosted.ts`, `channels/telegram/src/signup.ts`):
+  1. *The link, signed by the bot.* The bot signs each setup link (NEP-413, recipient `getleash-setup-link`)
+     with the operator's agent key: the setup's two public keys, its expiry, the Telegram account it is for
+     as the bot saw it at /start (user id and "@username" or name; Telegram gives a Mini App opened from a
+     keyboard button no user data) and the bot's username. The page reads that agent's keys from the chain
+     (the operator's contract names its agent) and refuses a link they didn't sign. So a fake bot can't
+     hand out links with keys of its own (its owner would hold a business's role keys), can't make a link
+     show another name, and can't send the last step anywhere but the real bot.
+  2. *The owner's claim.* Before any transaction, the owner's wallet signs a claim (NEP-413, recipient
+     `getleash-setup`): the contract, the link's agent key and that Telegram account. Its nonce is the
+     SHA-256 of a finish code the page makes and keeps to itself. The page shows whose setup it is ("This
+     setup is for the Telegram account @acme. Continue only if that account is yours"), checks the claim
+     exactly as the bot will (a wallet whose signature the bot would refuse stops before anything is paid),
+     and sends it at the end as `web_app_data` to the bot that opened the page.
+  3. *The finish code, from the right account.* Finish also opens the real bot's chat
+     (`t.me/<bot>?start=finish_<code>`, the bot from the signed link), where the user taps START: Telegram
+     delivers the code as a message from the account holding the app the page runs in. (Telegram keeps a
+     Mini App open while it opens a chat since Bot API 7.0; the page asks older apps to update.) The bot
+     serves the business only when a claim and its code both came from the account the setup is for, in
+     either order; a code without its claim is let go after a minute.
+
+  This closes the lookalike bot. Mallory's bot sends Victor to the real page with her own, signed link; the
+  page says the setup is for @mallory; if Victor signs anyway, his claim goes to Mallory's bot and she can
+  relay it here, but the code goes from Victor's own Telegram straight to the real bot, which sees Victor,
+  not Mallory, refuses, and tells Victor whose setup it was. Mallory never sees the code. A forwarded link
+  fails the same way, and a link edited to show another name no longer verifies. (Earlier drafts took the
+  account the page named, `/ready <account>`, the user in Telegram's launch data, which a keyboard button
+  doesn't send, and then the claim alone, which a lookalike bot could relay; three rounds of review found
+  the gaps.)
+- **The owner's wallet can always move its GetLeash to another Telegram account.** The same page, opened
+  by a wallet whose `getleash.<owner>` runs the release and is registered on USDC while its role accounts
+  hold other keys than the link's, offers to connect it instead: a claim of kind `connect` naming the new
+  account, finished the same way. If the service serves that contract, it moves it there: only the registry
+  entry changes (keys, secrets and files stay), the account it leaves is told, the business's supplier
+  invites and requests report to the new chat (a hosted channel answers one chat only), and the executor
+  notifies it from its next pass. This covers a new phone and a lost account, and it undoes the one attack
+  no code here can prevent: a copy of the page on another website that gets the owner's wallet to sign a
+  claim naming someone else's Telegram account (the wallet shows that account in the message it signs).
+  Whoever gets the bot that way reads what the bot says about that business and can have it pay only
+  suppliers the owner added, within the owner's limits, until the owner's wallet connects it back.
+  Connecting never takes a setup that is still open: a draft also served a setup whose keys the owner's
+  accounts held, to rescue someone whose wallet paid with another person's link, but anyone can put a
+  setup's public keys (on-chain from its first transaction) on accounts of their own, so it let a stranger
+  take over someone else's half-finished setup (found in review). Someone whose wallet paid with another
+  person's link has lost that NEAR, and the page warned them first; nobody can use what it created.
+  Display names in links and claims are `@username` when there is one, else the name in quotes, cleaned so
+  it can't pass for a username or a user id.
+- **The bot believes nothing it is told.** Any client can send anything as `web_app_data`. So the bot checks
+  the claim's signature, made by a full-access key of that account (`checkSetupClaim`), over the message
+  rebuilt from its own record of the setup's agent key and Telegram account, and counts it only from that
+  account's chat and only with a finish code from that same account. Then it checks from
+  chain state alone (`checkHostedSetup`): the contract has no keys, runs the release, and names that account
+  as owner and the two role accounts; each role account holds only the key generated for this person; the
+  token is the operator's; the contract is registered on it. It keeps checking for 3 minutes (blocks take a
+  moment to reach every RPC), then says which check failed, and checks at most every 10 s whoever asks. Only
+  then is the business served, once: its two off-chain secrets were made with the setup, and the registry
+  never replaces a business's secrets (its invoices and obligation ids depend on them).
+- **What the business trusts the operator with.** The service holds the two function-call keys and two
+  secrets it generated (the obligation-id key and the invoice store key), in `<data dir>/hosted/<contract>/`,
+  mode 0600. So it reads the business's invoices, and it can propose payments to suppliers the owner added
+  and fund cross-chain payments the owner authorised. The contract bounds the rest: without the owner, at
+  most `approval_threshold` a payment and `autonomous_daily_budget` a day (2.50 and 5 USDC by default),
+  and only to the owner's own suppliers. It can never add a supplier, change a limit, withdraw or upgrade.
+  The setup page and the bot's first message say so before anything is signed. A business that wants
+  none of this runs its own copy (`docs/deployment.md`), as before.
+- **Isolated in the service.** Each business gets its own channel (answering only its owner's Telegram
+  account and private chat), agent, executor, supplier directory, invoice store, journal and notices;
+  businesses share only the bot and the model's limit of 3 invoices at once. Each chat's messages are
+  handled in order on their own queue, so one business's slow invoice never holds up another's, and a
+  hosted business has at most 50 invoices read a day. Because grammY confirms updates to Telegram before
+  the queues have run them, each update is kept, encrypted with INVOICE_STORE_KEY, in
+  `telegram-pending.jsonl` until it is handled; after a restart the unfinished ones are replayed (the
+  update log drops any already acted on). The hub routes each message: an invite link to the
+  business that sent it, whoever opens it (businesses supply each other); a text answer to the invite the
+  sender opened last (someone who uses a GetLeash here answers only by replying to that invite's question);
+  else to the business whose owner sent it; else to the signup; else nowhere (strangers' other messages
+  stay unanswered). One business per Telegram user; the operator's own users cannot sign up. The executor
+  takes this GetLeash and one hosted one per pass (every 10 s), in turn, to stay within the public RPCs'
+  limits: at the 50-business cap each is looked at about every 8 minutes, so a trust-budget quote (20
+  minutes) still lasts the two looks a cross-chain payment needs. Dashboard links name a hosted business's
+  contract as `?c=<contract>`. A link can name any contract, so the wallet signs nothing for one until the
+  chain shows it runs the release, and every page says so meanwhile. The private view (names, invoices)
+  stays the operator's alone, and its names are not shown against another contract's suppliers.
+- **Bounds and failure.** Signup opens only when `GETLEASH_DATA_DIR` names a disk and `DASHBOARD_URL` is an
+  https address (Telegram opens Mini Apps from https only); `GETLEASH_SIGNUP=off` closes it, and
+  `GETLEASH_MAX_BUSINESSES` (default 50) caps it. An open setup keeps its keys until a day after its link
+  expired (a wallet may have signed just before), then they go and the bot removes the button; 1000 can be
+  open at once. A registry that can't be read closes signup and serves no hosted business, while the
+  operator's own GetLeash runs as usual. If the service loses its disk, the businesses' keys are gone with it, but not their money:
+  it stays in each business's contract, which answers only to its owner's wallet (`set_roles` points it
+  at new keys, `withdraw` takes the USDC out; both owner-signed, from any wallet or near-cli).
+
+Amends D-11 (the setup can be signed by a browser wallet, with the same transactions), D-26 (each hosted
+business has its own directory file) and PLAN §4.4 (the bot answers `/start` from people outside the
+allowlist, to offer a setup).

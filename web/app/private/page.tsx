@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { DirectoryEntry } from "@getleash/shared";
 
 import { Pill } from "@/components/ui";
+import { HOSTED, POLICY_ID } from "@/lib/config";
 import { useWallet } from "@/lib/wallet";
 
 type InvoiceRecord = {
@@ -45,8 +46,11 @@ export default function PrivatePage() {
     setStatus("ready");
   }, []);
 
+  // A hosted business (D-30) keeps its names and invoices with the bot that serves it, not with this site.
+  const [hosted, setHosted] = useState(false);
   useEffect(() => {
-    void load();
+    if (HOSTED) setHosted(true);
+    else void load();
   }, [load]);
 
   async function signIn() {
@@ -74,6 +78,17 @@ export default function PrivatePage() {
     setStatus("signed_out");
   }
 
+  if (hosted) {
+    return (
+      <>
+        <h1>Private view</h1>
+        <p className="muted">
+          The supplier names and invoices of <span className="mono">{POLICY_ID}</span> stay with the GetLeash bot that serves it, encrypted on its disk. In
+          Telegram, /suppliers lists the suppliers by name.
+        </p>
+      </>
+    );
+  }
   if (status === "loading") return <p className="muted">Loading…</p>;
   if (status === "signed_out") {
     return (

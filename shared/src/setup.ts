@@ -14,7 +14,7 @@
  * v2 (docs/decisions.md D-28) costs about 1.4 NEAR in all on mainnet: ~0.86 NEAR of code
  * storage plus 0.2 NEAR for the contract's records, and the two role accounts.
  */
-import { type Account, type Action, actions, baseDecode, type JsonRpcProvider, PublicKey } from "near-api-js";
+import { type Account, type Action, actions, baseDecode, PublicKey, type Provider } from "near-api-js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 
@@ -94,7 +94,7 @@ export function defaultRoleIds(ownerId: string, n = 1) {
   };
 }
 
-export async function accountExists(rpc: JsonRpcProvider, accountId: string): Promise<boolean> {
+export async function accountExists(rpc: Provider, accountId: string): Promise<boolean> {
   try {
     await rpc.viewAccount({ accountId });
     return true;
@@ -104,8 +104,126 @@ export async function accountExists(rpc: JsonRpcProvider, accountId: string): Pr
   }
 }
 
-async function send(owner: Account, receiverId: string, list: Action[]): Promise<TxOutcome> {
-  const raw = await owner.signAndSendTransaction({ receiverId, actions: list, throwOnFailure: false });
+// ── The setup transactions ───────────────────────────────────────────────────────────────────
+// Built once, here, and sent either by near-api-js with the owner's key (the setup CLI, the tests) or
+// by the owner's browser wallet (the dashboard's /setup page, D-30): both send exactly these.
+
+/**
+ * The published release build (README, "Try it", step 7; 83,900 bytes): the only code the dashboard's
+ * setup page deploys, and what the bot checks a hosted business's contract runs before it serves it.
+ */
+export const RELEASE_WASM_SHA256 = "8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d";
+export const RELEASE_WASM_BYTES = 83_900;
+
+/** One action of a setup transaction, in a neutral form: `nearApiActions` and `walletActions` convert it. */
+export type SetupAction =
+  | { type: "CreateAccount" }
+  | { type: "Transfer"; deposit: bigint }
+  | { type: "AddKey"; publicKey: string; receiverId: string; methodNames: string[]; allowance: bigint }
+  | { type: "DeployContract"; code: Uint8Array }
+  | { type: "FunctionCall"; method: string; args: Record<string, unknown>; gas: bigint; deposit: bigint };
+
+export type SetupTransaction = { receiverId: string; actions: SetupAction[] };
+
+/** A role account, created under the owner with the role's function-call key and nothing else. */
+export function roleAccountTransaction(policyId: string, role: RolePlan, methods: readonly string[]): SetupTransaction {
+  return {
+    receiverId: role.accountId,
+    actions: [
+      { type: "CreateAccount" },
+      { type: "Transfer", deposit: role.balance },
+      { type: "AddKey", publicKey: role.publicKey, receiverId: policyId, methodNames: [...methods], allowance: role.allowance },
+    ],
+  };
+}
+
+/** The contract's `new` arguments: flat JSON, read by its strict parser (contract/src/json.rs). */
+export function initArgs(plan: SetupPlan): Record<string, unknown> {
+  return {
+    owner_id: plan.ownerId,
+    agent_id: plan.agent.accountId,
+    executor_id: plan.executor.accountId,
+    token_id: plan.treasuryToken,
+    token_decimals: plan.treasuryDecimals,
+    ...plan.policy,
+  };
+}
+
+/** The D-11 batch: the policy account is created, funded, deployed and initialised, and never gets a key. */
+export function policyTransaction(plan: SetupPlan): SetupTransaction {
+  return {
+    receiverId: plan.policyId,
+    actions: [
+      { type: "CreateAccount" },
+      { type: "Transfer", deposit: plan.policyBalance },
+      { type: "DeployContract", code: plan.wasm },
+      { type: "FunctionCall", method: "new", args: initArgs(plan), gas: tgas(100), deposit: 0n },
+    ],
+  };
+}
+
+/** The treasury's registration on the token, paid by the owner (a token pays registered accounts only). */
+export function treasuryTransaction(plan: Pick<SetupPlan, "treasuryToken" | "policyId">): SetupTransaction {
+  return {
+    receiverId: plan.treasuryToken,
+    actions: [
+      { type: "FunctionCall", method: "storage_deposit", args: { account_id: plan.policyId, registration_only: true }, gas: tgas(30), deposit: FT_STORAGE_DEPOSIT },
+    ],
+  };
+}
+
+/** The whole setup, in order: the agent's account, the executor's, the contract, its registration. */
+export function setupTransactions(plan: SetupPlan): SetupTransaction[] {
+  return [
+    roleAccountTransaction(plan.policyId, plan.agent, AGENT_METHODS),
+    roleAccountTransaction(plan.policyId, plan.executor, EXECUTOR_METHODS),
+    policyTransaction(plan),
+    treasuryTransaction(plan),
+  ];
+}
+
+/** For near-api-js (a key on this machine). */
+export function nearApiActions(list: readonly SetupAction[]): Action[] {
+  return list.map((a) => {
+    switch (a.type) {
+      case "CreateAccount":
+        return actions.createAccount();
+      case "Transfer":
+        return actions.transfer(a.deposit);
+      case "AddKey":
+        return actions.addFunctionCallAccessKey(PublicKey.fromString(a.publicKey), a.receiverId, a.methodNames, a.allowance);
+      case "DeployContract":
+        return actions.deployContract(a.code);
+      case "FunctionCall":
+        return actions.functionCall(a.method, a.args, a.gas, a.deposit);
+    }
+  });
+}
+
+/** For a browser wallet, in near-connect's action format (the shape @hot-labs/near-connect 0.12 declares). */
+export function walletActions(list: readonly SetupAction[]) {
+  return list.map((a) => {
+    switch (a.type) {
+      case "CreateAccount":
+        return { type: "CreateAccount" as const };
+      case "Transfer":
+        return { type: "Transfer" as const, params: { deposit: a.deposit.toString() } };
+      case "AddKey":
+        return {
+          type: "AddKey" as const,
+          params: { publicKey: a.publicKey, accessKey: { permission: { receiverId: a.receiverId, methodNames: a.methodNames, allowance: a.allowance.toString() } } },
+        };
+      case "DeployContract":
+        return { type: "DeployContract" as const, params: { code: a.code } };
+      case "FunctionCall":
+        return { type: "FunctionCall" as const, params: { methodName: a.method, args: a.args, gas: a.gas.toString(), deposit: a.deposit.toString() } };
+    }
+  });
+}
+
+async function send(owner: Account, transaction: SetupTransaction): Promise<TxOutcome> {
+  const { receiverId } = transaction;
+  const raw = await owner.signAndSendTransaction({ receiverId, actions: nearApiActions(transaction.actions), throwOnFailure: false });
   const outcome = parseOutcome(raw);
   if (!outcome.ok) {
     const reasons = outcome.failures.map((f) => f.panic ?? f.message).join("; ");
@@ -119,57 +237,31 @@ export function createRoleAccount(owner: Account, policyId: string, role: RolePl
   if (!role.accountId.endsWith(`.${owner.accountId}`)) {
     throw new Error(`${role.accountId} is not a sub-account of ${owner.accountId}`);
   }
-  return send(owner, role.accountId, [
-    actions.createAccount(),
-    actions.transfer(role.balance),
-    actions.addFunctionCallAccessKey(PublicKey.fromString(role.publicKey), policyId, [...methods], role.allowance),
-  ]);
+  return send(owner, roleAccountTransaction(policyId, role, methods));
 }
 
 /** The D-11 batch: the policy account is created, funded, deployed and initialised with no key. */
 export function deployPolicy(owner: Account, plan: SetupPlan) {
-  // Flat JSON, read by the contract's strict parser (contract/src/json.rs).
-  const init = {
-    owner_id: plan.ownerId,
-    agent_id: plan.agent.accountId,
-    executor_id: plan.executor.accountId,
-    token_id: plan.treasuryToken,
-    token_decimals: plan.treasuryDecimals,
-    ...plan.policy,
-  };
-  return send(owner, plan.policyId, [
-    actions.createAccount(),
-    actions.transfer(plan.policyBalance),
-    actions.deployContract(plan.wasm),
-    actions.functionCall("new", init, tgas(100), 0n),
-  ]);
+  return send(owner, policyTransaction(plan));
 }
 
 /** Registers the policy account on the treasury token, paid by the owner. */
 export function registerTreasury(owner: Account, plan: Pick<SetupPlan, "treasuryToken" | "policyId">) {
-  return send(owner, plan.treasuryToken, [
-    actions.functionCall(
-      "storage_deposit",
-      { account_id: plan.policyId, registration_only: true },
-      tgas(30),
-      FT_STORAGE_DEPOSIT,
-    ),
-  ]);
+  return send(owner, treasuryTransaction(plan));
 }
 
 /** Owner top-up: a plain `ft_transfer` (v2 keeps no ledger; the balance is the token's). */
 export function topUp(owner: Account, plan: Pick<SetupPlan, "treasuryToken" | "policyId">, amount: bigint) {
-  return send(owner, plan.treasuryToken, [
-    actions.functionCall("ft_transfer", { receiver_id: plan.policyId, amount: amount.toString() }, tgas(30), 1n),
-  ]);
+  return send(owner, {
+    receiverId: plan.treasuryToken,
+    actions: [{ type: "FunctionCall", method: "ft_transfer", args: { receiver_id: plan.policyId, amount: amount.toString() }, gas: tgas(30), deposit: 1n }],
+  });
 }
 
 /** Registers a native supplier's account on the treasury token, paid by the owner (the contract
  *  pays a native transfer only to a registered account). */
 export function registerOnToken(owner: Account, token: string, accountId: string) {
-  return send(owner, token, [
-    actions.functionCall("storage_deposit", { account_id: accountId, registration_only: true }, tgas(30), FT_STORAGE_DEPOSIT),
-  ]);
+  return send(owner, treasuryTransaction({ treasuryToken: token, policyId: accountId }));
 }
 
 // ── Verification from chain state ────────────────────────────────────────────────────────────
@@ -187,7 +279,7 @@ function describePermission(permission: unknown): string {
   return fc ? `function-call → ${fc.receiver_id} [${fc.method_names.join(", ")}]` : JSON.stringify(permission);
 }
 
-async function keysOf(rpc: JsonRpcProvider, accountId: string): Promise<KeyView[]> {
+async function keysOf(rpc: Provider, accountId: string): Promise<KeyView[]> {
   const list = (await rpc.viewAccessKeyList({ accountId })) as unknown as { keys: KeyView[] };
   return list.keys;
 }
@@ -197,7 +289,7 @@ function sameMethods(a: readonly string[], b: readonly string[]) {
 }
 
 async function checkRole(
-  rpc: JsonRpcProvider,
+  rpc: Provider,
   role: Pick<RolePlan, "accountId" | "publicKey">,
   policyId: string,
   methods: readonly string[],
@@ -216,8 +308,10 @@ async function checkRole(
 }
 
 export async function verifySetup(
-  rpc: JsonRpcProvider,
-  plan: Pick<SetupPlan, "ownerId" | "policyId" | "agent" | "executor" | "treasuryToken"> & {
+  rpc: Provider,
+  plan: Pick<SetupPlan, "ownerId" | "policyId" | "treasuryToken"> & {
+    agent: Pick<RolePlan, "accountId" | "publicKey">;
+    executor: Pick<RolePlan, "accountId" | "publicKey">;
     wasmSha256?: string;
   },
 ): Promise<Check[]> {

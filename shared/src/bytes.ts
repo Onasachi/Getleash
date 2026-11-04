@@ -16,6 +16,24 @@ export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** base64url without padding (RFC 4648 §5): what Telegram allows in a deep link's start parameter. */
+export function toBase64Url(bytes: Uint8Array): string {
+  let text = "";
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** The bytes of a base64url text (no padding), or null if it isn't one. */
+export function fromBase64Url(text: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return null;
+  try {
+    const plain = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (text.length % 4)) % 4));
+    return Uint8Array.from(plain, (c) => c.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
 /** Exactly 32 bytes from 64 hex characters. */
 export function hex32(hex: string): Uint8Array {
   const bytes = hexToBytes(hex);
