@@ -31,6 +31,9 @@ export const EXECUTOR_METHODS = ["create_attempt", "fund", "forget"] as const;
 /** NEP-145 registration cost on Circle USDC (min = max, docs/verified-facts.md). */
 export const FT_STORAGE_DEPOSIT = 1_250_000_000_000_000_000_000n;
 
+/** Gas for that registration: it burns 2.04 Tgas (docs/verified-facts.md). Attached gas is held at a worst-case price while a transaction runs, so no more than needed. */
+export const REGISTRATION_GAS = 10_000_000_000_000n;
+
 /** Storage staking: 1 NEAR per 100 kB (10^19 yocto per byte). */
 const YOCTO_PER_BYTE = 10_000_000_000_000_000_000n;
 
@@ -115,13 +118,22 @@ export async function accountExists(rpc: Provider, accountId: string): Promise<b
 export const RELEASE_WASM_SHA256 = "8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d";
 export const RELEASE_WASM_BYTES = 83_900;
 
+/**
+ * The keyless account that holds a release on the chain for setups from a browser wallet (D-31): created
+ * once by the operator, named after the release's SHA-256, under the operator's account.
+ */
+export function releaseStoreId(operatorId: string, releaseSha256: string = RELEASE_WASM_SHA256): string {
+  return `release-${releaseSha256.slice(0, 8)}.${operatorId}`;
+}
+
 /** One action of a setup transaction, in a neutral form: `nearApiActions` and `walletActions` convert it. */
 export type SetupAction =
   | { type: "CreateAccount" }
   | { type: "Transfer"; deposit: bigint }
   | { type: "AddKey"; publicKey: string; receiverId: string; methodNames: string[]; allowance: bigint }
   | { type: "DeployContract"; code: Uint8Array }
-  | { type: "FunctionCall"; method: string; args: Record<string, unknown>; gas: bigint; deposit: bigint };
+  /** JSON arguments, or raw bytes (the release store's `set` takes the wasm itself). */
+  | { type: "FunctionCall"; method: string; args: Record<string, unknown> | Uint8Array; gas: bigint; deposit: bigint };
 
 export type SetupTransaction = { receiverId: string; actions: SetupAction[] };
 
@@ -167,7 +179,7 @@ export function treasuryTransaction(plan: Pick<SetupPlan, "treasuryToken" | "pol
   return {
     receiverId: plan.treasuryToken,
     actions: [
-      { type: "FunctionCall", method: "storage_deposit", args: { account_id: plan.policyId, registration_only: true }, gas: tgas(30), deposit: FT_STORAGE_DEPOSIT },
+      { type: "FunctionCall", method: "storage_deposit", args: { account_id: plan.policyId, registration_only: true }, gas: REGISTRATION_GAS, deposit: FT_STORAGE_DEPOSIT },
     ],
   };
 }

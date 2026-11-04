@@ -25,6 +25,8 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
   0.21–0.85 USDT when checked).
 - Keep about 1.6 NEAR in the owner account. The treasury's USDC is up to you; the mainnet policy lets at
   most 20 USDC leave per day.
+- Letting other businesses set up their own (below): **0.86 NEAR once**, for the release store's storage
+  (locked as long as it exists, which is for good: it has no keys), plus about 0.002 NEAR of gas.
 
 ## Before you start
 
@@ -176,11 +178,34 @@ Vercel deployment.
 Once the bot and the dashboard run, another business needs none of the steps above (docs/decisions.md
 D-30). It sends your bot `/start`, taps "Set up GetLeash", connects its NEAR wallet on the page that opens
 inside Telegram, and confirms twice: a free message saying this GetLeash is theirs, then the setup. Its
-wallet creates its own contract and pays for it (about 1.43 NEAR): the same keyless contract, the same
-release, the limits of `deploy/mainnet-policy.json`, owned by its wallet.
+wallet creates its own contract and pays for it (about 1.43 NEAR; it needs about 1.50 NEAR while it signs,
+and the rest comes back): the same keyless contract, the same release, the limits of
+`deploy/mainnet-policy.json`, owned by its wallet.
 The bot checks everything on-chain, says "✅ Your GetLeash is ready", and from then on serves that business
 in its owner's private chat only. Everything else works for it as for you: invoices, `/addsupplier`,
 `/invite`, approvals in HOT Wallet, `/pause`.
+
+- **First, publish the release store, once** (D-31). A wallet request can't carry the 84 KB release (HOT
+  Wallet's connector would take hours to encode it), so the page deploys a 1.9 KB installer that copies the
+  release from a store on NEAR, checks its SHA-256 and starts it. From the owner account, on the machine
+  with its key:
+
+  ```bash
+  pnpm publish:release --network mainnet
+  ```
+
+  It shows what it signs and asks first: it creates `release-8eaccbf1.onanikes.near` (the store the
+  installer is built for), keyless, holding the release, for 0.86 NEAR. Then it checks the store from chain
+  state; run again, it only checks. Until the store exists, the page signs nothing: "GetLeash's code store
+  … doesn't hold the release yet".
+- **A new release** needs a new installer and a new store: rebuild the release, update `RELEASE_WASM_SHA256`,
+  add the current installer's hash to `RETIRED_INSTALLER_SHA256S` (`shared/src/installer.ts`, so a setup
+  stuck with it can still be cancelled), run `pnpm build:installer` (it bakes the new hash and store name
+  into the installer), redeploy the dashboard, then `pnpm publish:release`. Contracts already set up keep
+  the release they run until their owner upgrades them.
+- **If the code doesn't arrive**, the business's contract keeps the installer, with no keys, and nobody but
+  its owner can do anything with it. The page then says so and offers "Cancel it and get the NEAR back":
+  the owner's wallet deletes it and gets its 1.05 NEAR back, and can set up again.
 
 - **It needs the disk.** Each business's agent and executor keys, its two secrets, supplier names, invoices
   and journal live in `/var/data/<network>/hosted/<its contract>/`, mode 0600. Signup stays closed unless

@@ -1,0 +1,22 @@
+# The two tiny contracts behind a setup from a browser wallet (docs/decisions.md D-31): the release
+# store, published once by the operator, and the installer, which each business's setup deploys first.
+# No near-sdk: each is a few hundred bytes of wasm, so a wallet request that carries the installer stays
+# small. Build with `pnpm build:installer` (it also refreshes shared/src/installer-wasm.ts).
+[workspace]
+members = ["installer", "store"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://bitbucket.org/crackedstudios/getleash"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+strip = true
+panic = "abort"
+overflow-checks = true

@@ -1,0 +1,11 @@
+[package]
+name = "getleash-store"
+description = "Holds one GetLeash release, set once when the keyless store account is created, and returns it to anyone who asks."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"

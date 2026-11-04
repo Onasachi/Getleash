@@ -301,8 +301,9 @@ does the rest. One service serves many businesses; each keeps everything that ma
   the setup CLI's own transactions (`setupTransactions`, `shared/src/setup.ts`; one builder for both) and
   the owner's wallet signs them: `agent-1.<owner>` and `executor-1.<owner>` with only those keys,
   `getleash.<owner>` created, funded, deployed and initialised in one transaction with no access key, and its
-  USDC registration. The code is the published release, copied from the operator's own contract and checked
-  against `RELEASE_WASM_SHA256` in the browser before anything is signed. Steps already on the chain are
+  USDC registration. The code is the published release (`RELEASE_WASM_SHA256`), installed by the installer
+  from the operator's release store (D-31; the page first copied it from the operator's own contract, which
+  no wallet request could carry). Steps already on the chain are
   skipped, so the page carries on where it stopped. It costs the owner about 1.43 NEAR; the limits are
   `DEFAULT_POLICY` (the mainnet values, trust budget 0), which only the owner's wallet can change.
 - **A setup is someone's only when three things meet, each from where it can't be faked**
@@ -401,3 +402,69 @@ does the rest. One service serves many businesses; each keeps everything that ma
 Amends D-11 (the setup can be signed by a browser wallet, with the same transactions), D-26 (each hosted
 business has its own directory file) and PLAN §4.4 (the bot answers `/start` from people outside the
 allowlist, to offer a setup).
+
+**D-31 · A setup from a browser wallet deploys a small installer, which copies the release from a store on NEAR.**
+- **Why.** The first setup from Telegram (HOT Wallet, 4 Nov) never showed the wallet's prompt. HOT's
+  connector (near-connect's sandboxed `hotwallet.js`) base58-encodes the JSON of every request before it
+  shows anything; a `Uint8Array` becomes an object with one key per byte, so the batch deploying the
+  83,900-byte release was 960,190 characters, and base58 (base-x) takes time that grows with the square of
+  the length: about 40 minutes on a laptop, hours on a phone. The request also expires 60 seconds after it
+  is made (docs/verified-facts.md). Nothing was signed or spent; the small claim before it went through.
+  So no wallet request may carry the release.
+- **What.** The page's batch for the contract deploys the installer instead (`contract/bootstrap/installer`,
+  1,932 bytes, raw host functions, no near-sdk), still keyless: `CreateAccount getleash.<owner>`, `Transfer`,
+  `DeployContract(installer)`, `install(<new's arguments>)`. `install` (only from the account it is a
+  sub-account of: its owner) keeps the arguments and calls the release store's `get`; its callback `on_code`
+  (only from the account itself) deploys what came back only if its SHA-256 is the release's, after
+  removing what `install` kept, and calls `new` with the owner's arguments, both in one batch on itself:
+  both happen or neither. The release's `new` already accepts its own account as the caller. The store's
+  account and the release's hash are built into the installer (`pnpm build:installer`, toolchain pinned,
+  `--check` rebuilds and compares), so it installs that release from that store and nothing else; the
+  owner's arguments can't point it anywhere else. The whole wallet request is now 20,688 characters and
+  encodes in about 1 s on the same laptop. The installer's path burns about 30 Tgas and needs 28 attached;
+  `install` gets 60.
+- **The store** (`contract/bootstrap/store`, `release-8eaccbf1.onanikes.near`) is published once by the
+  operator (`pnpm publish:release`, 0.86 NEAR locked for its storage): created keyless in one batch with the
+  release as `set`'s raw input. `set` works once, only for its parent account; `get` returns the code to
+  anyone. With no keys and no other method, it never changes.
+- **What it changes for the owner.** What they sign and pay stays the same: four transactions, about 1.43
+  NEAR, and the wallet shows `new`'s arguments, now as `install`'s. The account never has a key. The page
+  checks the store holds the release before anything is signed, and the bot checks the result exactly as
+  before (`checkHostedSetup`: the release's code hash, no keys, the roles). If the code doesn't come (no
+  store, other code), the contract keeps the installer, keyless, and only its owner can act: the page offers
+  to cancel (`abandon` deletes the account and sends its NEAR to the owner); `install` again also works.
+  `abandon`'s batch first calls `still_installer`, a no-op the release doesn't have, so a cancel whose batch
+  lands after the release was installed fails whole instead of deleting it. A page built after a new
+  installer still recognises the old ones it lists (`RETIRED_INSTALLER_SHA256S`), so their owners can cancel.
+- **Known and accepted (review, 4 Nov).** An `install` sent again while another is between `on_code` and the
+  deploy (about a block) keeps its arguments after `on_code` removed the first's, and the release starts
+  with them still stored under `i`: owner-only, harmless (the release's keys are longer and nothing reads
+  `i`; about 0.007 NEAR stays locked), removable only by an upgrade. The installer can't prevent it without
+  leaving a key of its own, since once the release runs nothing of the installer's can delete anything.
+  The page never sends `install` twice; only call it again when the installer is stuck. An independent
+  review rebuilt both wasm files to the same hashes, swept interleavings and gas on a local node, and found
+  nothing else on-chain.
+- **What a wallet must hold while it signs.** NEAR takes each transaction's attached gas at about 10× the
+  gas price when it is sent and refunds the unburned part a block or two later, after the wallet has sent
+  the next one. Measured on a local node with the page's four transactions back to back: the cost plus 0.05
+  NEAR ran out at the contract, plus 0.06 completed. So `install` attaches 60 Tgas and the USDC registration
+  10 (it burns 2.04), and the page requires the cost plus all the gas still to attach at that price
+  (`signingReserve`: 0.07 NEAR, 1.50 in all), which it says comes back. From a wallet holding exactly what
+  the first live wallet held (1.50 NEAR, 182 bytes of its own), the installer's setup completed, and the
+  direct deploy before (100 Tgas attached to `new`) was refused at the contract: 1.135 NEAR left, 1.164
+  needed. The page had said 1.43 was enough.
+- **Rejected.** NEAR global contracts (publish once, `UseGlobalContract` by hash): the natural fit and about
+  0.6 NEAR per setup, but publishing burns 10 NEAR per 100 KB (about 8.4 NEAR, not refundable), more than the
+  operator could spend. A key on the new contract, or a throwaway account whose key the page holds, to
+  deploy from the browser: breaks D-11, or puts a key in a browser. The service uploading the code: needs a
+  funded service account and puts the service on the setup's path. A factory contract: it can't create
+  `getleash.<owner>` (a contract creates only its own sub-accounts). An installer that takes the store and
+  the hash as arguments: twice the size (1.9 KB → 2.8 KB), for no one but tests.
+- Tests: `devkit/test/installer.sandbox.test.ts` (12, on a local node with the real wasm: keyless before the
+  store exists, owner-only, abandon and its guard, the store set once, install, too little gas then install
+  again, a whole setup in one transaction, the signing reserve, a store holding other code); `shared/test/installer.test.ts` (bytes pinned, built for this
+  release and store, the request's size).
+
+Amends D-11 (the code is installed by the installer a few receipts after the batch, still with no key),
+D-30 (the page no longer copies the release from the operator's contract) and AGENTS.md ("code changes only
+through the owner-signed `upgrade`", and once, at creation, through the installer).

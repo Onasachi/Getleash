@@ -1,0 +1,4 @@
+# A small stack (the contracts keep nothing big on it) puts their data at low addresses, which take
+# fewer bytes to write in the code.
+[target.wasm32v1-none]
+rustflags = ["-C", "link-arg=-zstack-size=8192"]

@@ -19,9 +19,13 @@ import {
   FT_STORAGE_DEPOSIT,
   fromBase64Url,
   hostedSetupPlan,
+  hostedSetupTransactions,
   initArgs,
+  INSTALL_GAS,
+  INSTALLER_WASM,
   near,
   nearApiActions,
+  nearRoundedDown,
   nearRoundedUp,
   newFinishCode,
   parseFinishCode,
@@ -42,7 +46,7 @@ const AGENT_KEY = "ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB";
 const EXECUTOR_KEY = "ed25519:9ZRMNuXdfDzoPMGcLj2ZTzEXzuRkTNM5uVrCAwKcYmS4";
 const TOKEN = { token_id: "usdc.near", token_decimals: 6 };
 
-const plan = () => hostedSetupPlan({ ownerId: "acme.tg", agentPublicKey: AGENT_KEY, executorPublicKey: EXECUTOR_KEY, wasm: new Uint8Array(RELEASE_WASM_BYTES), token: TOKEN });
+const plan = () => hostedSetupPlan({ ownerId: "acme.tg", agentPublicKey: AGENT_KEY, executorPublicKey: EXECUTOR_KEY, token: TOKEN });
 
 describe("a hosted business's setup plan", () => {
   it("puts everything under the owner's account, with the service's two keys and the default limits", () => {
@@ -62,12 +66,22 @@ describe("a hosted business's setup plan", () => {
     expect(nearRoundedUp(near("1.4"))).toBe("1.40");
     expect(nearRoundedUp(near("0.001"))).toBe("0.01");
   });
+
+  it("shows what a wallet needs rounded up and what it holds rounded down, so the two never look equal when it falls short", () => {
+    // The first live wallet: 1.5 NEAR and 182 bytes of its own, against the cost and the signing reserve.
+    const available = 1_500_000_000_000_000_000_001_000n - 182n * 10n ** 19n;
+    expect(nearRoundedDown(available, 3)).toBe("1.498");
+    expect(nearRoundedUp(near("1.49625"), 3)).toBe("1.497");
+    expect(nearRoundedUp(near("1.4955"), 2)).toBe("1.50");
+    expect(nearRoundedDown(near("1.4955"), 2)).toBe("1.49");
+    expect(nearRoundedDown(near("0.0009"), 3)).toBe("0.000");
+  });
 });
 
 describe("the setup transactions", () => {
-  it("are the agent's account, the executor's, the keyless contract and its USDC registration, in that order", () => {
+  it("are the agent's account, the executor's, the keyless contract through the installer and its USDC registration, in that order", () => {
     const p = plan();
-    const txs = setupTransactions(p);
+    const txs = hostedSetupTransactions(p);
     expect(txs.map((t) => t.receiverId)).toEqual(["agent-1.acme.tg", "executor-1.acme.tg", "getleash.acme.tg", "usdc.near"]);
     expect(txs[0]!.actions).toEqual([
       { type: "CreateAccount" },
@@ -75,31 +89,44 @@ describe("the setup transactions", () => {
       { type: "AddKey", publicKey: AGENT_KEY, receiverId: "getleash.acme.tg", methodNames: [...AGENT_METHODS], allowance: near("0.5") },
     ]);
     expect(txs[1]!.actions[2]).toEqual({ type: "AddKey", publicKey: EXECUTOR_KEY, receiverId: "getleash.acme.tg", methodNames: [...EXECUTOR_METHODS], allowance: near("1") });
-    // The contract never gets a key: create, fund, deploy, initialise.
-    expect(txs[2]!.actions.map((a) => a.type)).toEqual(["CreateAccount", "Transfer", "DeployContract", "FunctionCall"]);
-    expect(txs[2]!.actions[3]).toEqual({ type: "FunctionCall", method: "new", args: initArgs(p), gas: tgas(100), deposit: 0n });
+    // The contract never gets a key: create, fund, deploy the installer, install (D-31), which deploys the
+    // release and calls `new` with these same arguments.
+    expect(txs[2]!.actions).toEqual([
+      { type: "CreateAccount" },
+      { type: "Transfer", deposit: near("1.05") },
+      { type: "DeployContract", code: INSTALLER_WASM },
+      { type: "FunctionCall", method: "install", args: initArgs(p), gas: INSTALL_GAS, deposit: 0n },
+    ]);
     expect(initArgs(p)).toMatchObject({ owner_id: "acme.tg", agent_id: "agent-1.acme.tg", executor_id: "executor-1.acme.tg", token_id: "usdc.near", token_decimals: 6, executor_trust_daily_budget: "0" });
     expect(txs[3]!.actions).toEqual([
-      { type: "FunctionCall", method: "storage_deposit", args: { account_id: "getleash.acme.tg", registration_only: true }, gas: tgas(30), deposit: FT_STORAGE_DEPOSIT },
+      { type: "FunctionCall", method: "storage_deposit", args: { account_id: "getleash.acme.tg", registration_only: true }, gas: tgas(10), deposit: FT_STORAGE_DEPOSIT },
     ]);
   });
 
+  it("are the CLI's, with the installer in place of the release (the CLI deploys the release itself, then `new`)", () => {
+    const cli = setupTransactions({ ...plan(), wasm: new Uint8Array(RELEASE_WASM_BYTES) });
+    const page = hostedSetupTransactions(plan());
+    expect(page.filter((_, i) => i !== 2)).toEqual(cli.filter((_, i) => i !== 2));
+    expect(cli[2]!.actions.map((a) => a.type)).toEqual(["CreateAccount", "Transfer", "DeployContract", "FunctionCall"]);
+    expect(cli[2]!.actions[3]).toEqual({ type: "FunctionCall", method: "new", args: initArgs(plan()), gas: tgas(100), deposit: 0n });
+  });
+
   it("convert to near-connect's action format for the browser wallet", () => {
-    const [agent, , contract] = setupTransactions(plan());
+    const [agent, , contract] = hostedSetupTransactions(plan());
     expect(walletActions(agent!.actions)).toEqual([
       { type: "CreateAccount" },
       { type: "Transfer", params: { deposit: "150000000000000000000000" } },
       { type: "AddKey", params: { publicKey: AGENT_KEY, accessKey: { permission: { receiverId: "getleash.acme.tg", methodNames: ["propose"], allowance: "500000000000000000000000" } } } },
     ]);
-    const [, , deploy, init] = walletActions(contract!.actions);
-    expect(deploy).toEqual({ type: "DeployContract", params: { code: new Uint8Array(RELEASE_WASM_BYTES) } });
-    expect(init).toMatchObject({ type: "FunctionCall", params: { methodName: "new", gas: "100000000000000", deposit: "0" } });
+    const [, , deploy, install] = walletActions(contract!.actions);
+    expect(deploy).toEqual({ type: "DeployContract", params: { code: INSTALLER_WASM } });
+    expect(install).toEqual({ type: "FunctionCall", params: { methodName: "install", args: initArgs(plan()), gas: "60000000000000", deposit: "0" } });
   });
 
-  it("convert to near-api-js actions for a key on this machine (the CLI and the sandbox tests)", () => {
-    const list = setupTransactions(plan()).map((t) => nearApiActions(t.actions));
+  it("convert to near-api-js actions for a key on this machine (the sandbox tests)", () => {
+    const list = hostedSetupTransactions(plan()).map((t) => nearApiActions(t.actions));
     expect(list.map((a) => a.length)).toEqual([3, 3, 4, 1]);
-    expect(list[2]![2]!.deployContract?.code.length).toBe(RELEASE_WASM_BYTES);
+    expect(list[2]![2]!.deployContract?.code).toEqual(INSTALLER_WASM);
     expect(list[0]![2]!.addKey?.accessKey.permission.functionCall?.receiverId).toBe("getleash.acme.tg");
   });
 });

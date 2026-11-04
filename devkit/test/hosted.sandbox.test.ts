@@ -1,8 +1,9 @@
 /**
- * A hosted setup on a real local node (docs/decisions.md D-30): the exact transactions the dashboard's
- * /setup page asks a business's wallet to sign (setupTransactions, the same list the page converts with
- * walletActions), signed here with the owner's key, produce a contract the bot accepts with its own
- * check (checkHostedSetup against the published release). Before that, and for anyone else's keys, the
+ * A hosted setup on a real local node (docs/decisions.md D-30, D-31): the exact transactions the
+ * dashboard's /setup page asks a business's wallet to sign (hostedSetupTransactions, the same list the page
+ * converts with walletActions: the contract through the installer, which copies the release from the
+ * operator's release store), signed here with the owner's key, produce a contract the bot accepts with its
+ * own check (checkHostedSetup against the published release). Before that, and for anyone else's keys, the
  * check fails without throwing. The setup page's check of a setup link reads the signing agent's keys
  * from the chain the same way, and accepts only what that agent's key signed.
  */
@@ -12,16 +13,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   checkHostedSetup,
   hostedSetupPlan,
+  hostedSetupTransactions,
   nearApiActions,
   parseOutcome,
   PolicyView,
+  RELEASE_STORE_ID,
   RELEASE_WASM_SHA256,
+  releaseStoreTransaction,
   setupLinkSigned,
   type SetupPlan,
   type SetupTarget,
-  setupTransactions,
   sha256Hex,
   signSetupLink,
+  storeHoldsRelease,
 } from "@getleash/shared";
 
 import { type Devnet, ensureWasm, startDevnet } from "../src/sandbox.ts";
@@ -33,14 +37,18 @@ describe("a hosted setup on a local node", () => {
   const agentKey = KeyPair.fromRandom("ed25519");
   const executorKey = KeyPair.fromRandom("ed25519");
 
+  // The installer copies the release from the operator's store (D-31), so the operator is on this devnet too.
+  const operator = RELEASE_STORE_ID.slice(RELEASE_STORE_ID.indexOf(".") + 1);
+
   beforeAll(async () => {
-    net = await startDevnet();
-    const { policy: wasm } = ensureWasm();
+    net = await startDevnet({ extra: ["acme.near", "oneclick.near", "mallory.near", operator] });
+    const store = releaseStoreTransaction(ensureWasm().policy);
+    const published = parseOutcome(await net.accounts[operator]!.account.signAndSendTransaction({ receiverId: store.receiverId, actions: nearApiActions(store.actions), throwOnFailure: false }));
+    if (!published.ok) throw new Error(`release store: ${JSON.stringify(published.failures)}`);
     plan = hostedSetupPlan({
       ownerId: net.owner.id,
       agentPublicKey: agentKey.getPublicKey().toString(),
       executorPublicKey: executorKey.getPublicKey().toString(),
-      wasm,
       token: { token_id: net.token.id, token_decimals: 6 },
     });
     target = {
@@ -55,9 +63,10 @@ describe("a hosted setup on a local node", () => {
     await net?.stop();
   });
 
-  it("builds the release the bot checks for", () => {
+  it("the store holds the release the bot checks for", async () => {
     // contract/target/near holds the reproducible release build; a dev build would differ, and the bot would refuse it.
-    expect(sha256Hex(plan.wasm)).toBe(RELEASE_WASM_SHA256);
+    expect(sha256Hex(ensureWasm().policy)).toBe(RELEASE_WASM_SHA256);
+    expect(await storeHoldsRelease(net.rpc)).toBe(true);
   });
 
   it("fails the bot's check before the owner has signed anything, without throwing", async () => {
@@ -66,7 +75,7 @@ describe("a hosted setup on a local node", () => {
   });
 
   it("the page's transactions, signed by the owner, make a contract the bot serves", async () => {
-    for (const tx of setupTransactions(plan)) {
+    for (const tx of hostedSetupTransactions(plan)) {
       const outcome = parseOutcome(await net.owner.account.signAndSendTransaction({ receiverId: tx.receiverId, actions: nearApiActions(tx.actions), throwOnFailure: false }));
       expect(outcome.ok, `${tx.receiverId}: ${outcome.failures.map((f) => f.panic ?? f.message).join("; ")}`).toBe(true);
     }

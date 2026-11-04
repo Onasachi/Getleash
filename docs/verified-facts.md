@@ -347,8 +347,10 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   `FunctionCall`, `Transfer`, `Stake`, `AddKey` (a function-call permission is
   `{receiverId, allowance?, methodNames?}`), `DeleteKey`, `DeleteAccount`, `UseGlobalContract`,
   `DeployGlobalContract` and the gas-key actions. The `/setup` page sends `CreateAccount`, `Transfer`,
-  `AddKey`, `DeployContract` and `FunctionCall` (`walletActions` in `shared/src/setup.ts`). Whether HOT
-  Wallet signs a contract deployment, or a NEP-413 message, from a Mini App has not been tried yet.
+  `AddKey`, `DeployContract` and `FunctionCall` (`walletActions` in `shared/src/setup.ts`). HOT Wallet
+  signed a NEP-413 message from the Mini App on Android on 2026-11-04 (the setup claim, which the page
+  checks exactly as the bot does). Whether it signs a contract deployment is still untried: the 84 KB one
+  never reached it (next section).
 - near-api-js 7.4 `verifyMessage` (`near-api-js/nep413`, `lib/nep413/index.js`) reads the signer's access key
   with `viewAccessKey`, refuses it unless `permission === "FullAccess"`, then checks the ed25519 signature
   over SHA-256 of the Borsh payload `{message, nonce[32], recipient, callbackUrl?}` behind the prefix
@@ -356,12 +358,40 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   bad signature, and tests it with signatures made by `KeyPairSigner.signNep413Message`.
 - `query` with `request_type: "view_code"` for `getleash.onanikes.near` returns 83,900 bytes whose SHA-256
   is the release's (`8eaccbf1…`), both from Node (near-api-js `viewContractCode`) and from a browser page
-  on another origin (FastNEAR's RPC allows it). The setup page copies the code this way and refuses any
-  other hash.
+  on another origin (FastNEAR's RPC allows it). The setup page copied the code this way until D-31.
 - `storage_balance_of` on USDC returns `null` for an account that does not exist yet
   (`getleash.chisolu.near`), and near-api-js 7.4 `viewAccount` reports `amount`, `locked` and
   `storage_usage`. A small account can hold less than its storage costs (`chisolu.near`: 0.0018 NEAR
   less, NEP-448), so the page never counts a balance below zero.
+
+## HOT Wallet's connector, and the installer (checked 2026-11-04)
+
+- The connector near-connect loads for HOT Wallet (`repository/manifest.json` 1.1.0 in hot-dao/near-selector,
+  wallet `hot-wallet` 1.0.4, executor `repository/hotwallet.js`, read 2026-11-04) handles every request the
+  same way: `JSON.stringify({method, request, deadline: now + 60 s, id, $hot, origin})`, base58 of that
+  (base-x 3, bundled), POST to `https://h4n.app/<sha1>/request`, then buttons (in Telegram,
+  `t.me/hot_wallet/app?startapp=hotcall-<id>`), then a poll of `https://h4n.app/<id>/response` every 3 s
+  with no timeout. Near-connect hands it the request by `postMessage`, so a `Uint8Array` arrives intact
+  and `JSON.stringify` writes it as an object with one key per byte.
+- base-x's base58 is quadratic. Measured in Node on this Mac with bs58 4.0.1 (the same base-x): 32,000
+  characters 2.7 s. The setup page's batch deploying the 83,900-byte release was 960,190 characters: about
+  41 minutes here (extrapolated), hours on a phone, so HOT's prompt never appeared (the first live setup,
+  Android, 4 Nov; nothing was signed but the claim, and `onasachi.tg` kept its 1.50 NEAR). The batch with
+  the installer (1,932 bytes) is 20,688 characters: 1.0–1.3 s here.
+- On near-sandbox 2.13.4 (`devkit/test/installer.sandbox.test.ts` and measurements alongside), gas price
+  10^8 yocto as on mainnet (checked 2026-11-04): publishing the store burns 16.6 Tgas; a policy batch with
+  the installer burns 29.6 Tgas in all (the creating receipt 9.4, the store's `get` 7.2, `on_code` 4.2, the
+  deploy and `new` 6.9); `install` needs 28 Tgas attached (with 15 for `get`); the contract then uses
+  84,348 bytes of storage, the store 85,409.
+- NEAR charges a transaction's attached gas up front at about 10× the gas price and refunds what wasn't
+  burned one or two blocks later: a 60 Tgas `install` moved the balance down 0.0425 NEAR beyond its deposit
+  and 0.0334 came back 3 s later. Sent back to back, the four setup transactions needed the cost plus 0.055
+  to 0.06 NEAR in the wallet (plus 0.05 ran out at the contract, plus 0.06 completed). With 1.50 NEAR and
+  182 bytes of storage (`onasachi.tg`'s), the installer's setup completed and the direct deploy (100 Tgas on
+  `new`) was refused at the contract: balance 1.135, cost 1.164 NEAR.
+- Global contracts (https://docs.near.org/smart-contracts/global-contracts, read 2026-11-04): publishing
+  costs 10 NEAR per 100 KB, burned, not refundable; using one costs under 0.001 NEAR. For the release, about
+  8.4 NEAR (D-31, rejected).
 
 ## Skill vs live-doc conflicts
 

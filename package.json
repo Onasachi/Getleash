@@ -12,6 +12,8 @@
     "typecheck": "pnpm -r --parallel typecheck",
     "keygen": "tsx scripts/src/keygen.ts",
     "setup:owner": "tsx scripts/src/setup.ts",
+    "build:installer": "tsx scripts/src/build-installer.ts",
+    "publish:release": "tsx scripts/src/publish-release.ts",
     "topup": "tsx scripts/src/topup.ts",
     "seed": "tsx scripts/src/seed.ts",
     "status": "tsx scripts/src/status.ts",
