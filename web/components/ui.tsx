@@ -5,13 +5,23 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import type { Tone, TxOutcome } from "@getleash/shared";
 
-import { EXPLORER, NETWORK, POLICY_ID } from "@/lib/config";
+import { runsRelease } from "@/lib/chain";
+import { EXPLORER, HOME_POLICY_ID, HOSTED, NETWORK, POLICY_ID } from "@/lib/config";
 import { startTelegramMiniApp } from "@/lib/telegram";
 import { useWallet } from "@/lib/wallet";
 
 export function Shell({ children }: { children: ReactNode }) {
   const { accountId, connect, disconnect } = useWallet();
   useEffect(() => startTelegramMiniApp(), []);
+  // A link can name a hosted business's contract (?c=, lib/config.ts), which only the browser knows: it is
+  // shown after the first render, so that render matches the prerendered page.
+  const [contract, setContract] = useState(HOME_POLICY_ID);
+  const [release, setRelease] = useState<boolean | null>(null);
+  useEffect(() => {
+    setContract(POLICY_ID);
+    if (HOSTED) void runsRelease(POLICY_ID).then(setRelease, () => undefined); // unchecked stays "checking"; signing re-checks (lib/wallet.tsx)
+  }, []);
+  const hosted = contract !== HOME_POLICY_ID;
   return (
     <>
       <header className="top">
@@ -20,7 +30,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </Link>
         <nav>
           <Link href="/">Payments</Link>
-          <Link href="/private">Suppliers &amp; invoices</Link>
+          {!hosted && <Link href="/private">Suppliers &amp; invoices</Link>}
           <Link href="/pause">Pause</Link>
           <Link href="/wallet">Wallet</Link>
         </nav>
@@ -34,12 +44,25 @@ export function Shell({ children }: { children: ReactNode }) {
           <button onClick={() => void connect()}>Connect wallet</button>
         )}
       </header>
-      <main>{children}</main>
+      <main>
+        {hosted && release === false && (
+          <p className="notice bad">
+            ⚠️ <span className="mono">{contract}</span> doesn&apos;t run the GetLeash release, so this isn&apos;t a GetLeash. These pages sign nothing for it; don&apos;t send it
+            anything.
+          </p>
+        )}
+        {hosted && release === null && (
+          <p className="notice small">
+            Checking that <span className="mono">{contract}</span> runs the GetLeash release. Nothing is signed for it until it does.
+          </p>
+        )}
+        {children}
+      </main>
       <footer className="muted small">
         Everything here is read straight from the NEAR blockchain in your browser. Money moves only within the rules of the contract{" "}
-        {POLICY_ID ? (
-          <a href={EXPLORER.explorerAccount(POLICY_ID)} target="_blank" rel="noreferrer" className="mono">
-            {POLICY_ID}
+        {contract ? (
+          <a href={EXPLORER.explorerAccount(contract)} target="_blank" rel="noreferrer" className="mono">
+            {contract}
           </a>
         ) : (
           "(not configured)"

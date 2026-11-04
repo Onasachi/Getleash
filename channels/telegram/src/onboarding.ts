@@ -56,6 +56,10 @@ const SupplierInvite = z.object({
   at: z.number().int(),
   /** The Telegram user who opened it first; nobody else can use it. */
   user: z.string().optional(),
+  /** When that user opened it: a supplier with invites from two businesses answers the one opened last. */
+  opened_at: z.number().int().optional(),
+  /** The bot's questions for this invite (message ids): a reply to one is an answer to this invite. */
+  prompts: z.array(z.number().int()).default([]),
   tries: z.number().int().default(0),
 });
 export type SupplierInvite = z.infer<typeof SupplierInvite>;
@@ -115,7 +119,7 @@ export class SupplierOnboarding {
   /** A new one-time invite; returns its token, for the link `t.me/<bot>?start=join_<token>`. */
   createInvite(ownerChat: string, name: string | null): string {
     const token = randomBytes(16).toString("base64url");
-    this.state.invites.push({ hash: hash(token), name, owner_chat: ownerChat, at: this.now(), tries: 0 });
+    this.state.invites.push({ hash: hash(token), name, owner_chat: ownerChat, at: this.now(), prompts: [], tries: 0 });
     this.save();
     return token;
   }
@@ -128,9 +132,23 @@ export class SupplierOnboarding {
       // One open invite per user: one opened before is closed.
       this.state.invites = this.state.invites.filter((i) => i === invite || i.user !== user);
       invite.user = user;
+      invite.opened_at = this.now();
       this.save();
     }
     return invite;
+  }
+
+  /** Remembers a question the bot asked for this invite, so a reply to it reaches this invite. */
+  notePrompt(invite: SupplierInvite, messageId: number | undefined): void {
+    if (messageId === undefined || !this.state.invites.includes(invite)) return;
+    invite.prompts = [...invite.prompts.slice(-9), messageId];
+    this.save();
+  }
+
+  /** Whether `openInvite` would give this user the invite behind the token (it changes nothing). */
+  knowsInvite(token: string, user: string): boolean {
+    const invite = this.liveInvites().find((i) => i.hash === hash(token));
+    return !!invite && (invite.user === undefined || invite.user === user);
   }
 
   /** The open invite this Telegram user is answering, if any. */

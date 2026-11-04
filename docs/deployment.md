@@ -171,6 +171,46 @@ encrypted on the worker's disk. A supplier added in Telegram appears there as "s
 address. `NEXT_PUBLIC_*` values are built into the dashboard, so changing one needs a new
 Vercel deployment.
 
+## Let other businesses set up their own GetLeash
+
+Once the bot and the dashboard run, another business needs none of the steps above (docs/decisions.md
+D-30). It sends your bot `/start`, taps "Set up GetLeash", connects its NEAR wallet on the page that opens
+inside Telegram, and confirms twice: a free message saying this GetLeash is theirs, then the setup. Its
+wallet creates its own contract and pays for it (about 1.43 NEAR): the same keyless contract, the same
+release, the limits of `deploy/mainnet-policy.json`, owned by its wallet.
+The bot checks everything on-chain, says "✅ Your GetLeash is ready", and from then on serves that business
+in its owner's private chat only. Everything else works for it as for you: invoices, `/addsupplier`,
+`/invite`, approvals in HOT Wallet, `/pause`.
+
+- **It needs the disk.** Each business's agent and executor keys, its two secrets, supplier names, invoices
+  and journal live in `/var/data/<network>/hosted/<its contract>/`, mode 0600. Signup stays closed unless
+  `GETLEASH_DATA_DIR` is set and `DASHBOARD_URL` is an https address; the bot's startup log says which
+  (`hosted businesses: N …; signup open` or `signup closed: <why>`). Back the disk up: if it is lost, the
+  businesses' money stays in their contracts, but each owner has to point their contract at new keys
+  (`set_roles`, signed in their wallet) before the service can work for them again.
+- **What it trusts you with.** Your service holds its agent's and executor's keys, so it can propose
+  payments to the suppliers it added (paid without its OK up to 2.50 USDC a payment and 5 USDC a day) and
+  send cross-chain payments it approved; it reads the invoices it sends. Nothing you hold can add a
+  supplier, change a limit or take money out. The bot's first message and the setup page say this before
+  anything is signed.
+- **Limits.** One business per Telegram user (you and your allowlisted users cannot sign up), 50 businesses
+  (`GETLEASH_MAX_BUSINESSES`), 50 invoices read per business per day, 1000 setups open at once. A setup link
+  works for a day; `/start` renews it. `GETLEASH_SIGNUP=off` closes signup; businesses already set up keep
+  working. The executor looks at your GetLeash and one hosted one per pass (every 10 s), in turn.
+- **The page works only from the button, inside Telegram**, and says whose setup it is ("for the Telegram
+  account @…"). The bot signs each link with your agent's key, and the page checks it against the keys
+  the chain lists for the agent your dashboard's contract names; it refuses any other link, so nothing new
+  needs configuring for this. Opened outside Telegram, or from an expired link, it does nothing. Finish
+  opens your bot's chat with a one-time code and the owner taps START; if the chat doesn't confirm, the
+  owner taps "Set up GetLeash" again: the page sees the setup done and offers Finish again.
+- **Moving a GetLeash to another Telegram account.** An owner with a new phone or a lost account sends
+  `/start` from the new account and opens the page with the same wallet: it offers to connect their
+  existing GetLeash. The bot moves it (keys and files stay) and tells the account it leaves. The same step
+  takes it back if a copy of the page on another website ever got their wallet to sign for someone else's
+  account.
+- **If you rotate your own agent key** (`pnpm rotate`), setup links made before stop checking out on the
+  page; people send `/start` for a new one.
+
 ## Day to day
 
 - **Approve, without leaving Telegram:** the bot's "Review and approve" button opens the payment page

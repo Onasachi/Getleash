@@ -8,5 +8,6 @@ export * from "./networks.ts";
 export * from "./directory.ts";
 export * from "./oneclick.ts";
 export * from "./setup.ts";
+export * from "./hosted.ts";
 export * from "./words.ts";
 export * from "./wallets.ts";

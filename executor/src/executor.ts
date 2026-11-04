@@ -26,6 +26,7 @@ import {
   assetName,
   checkExecutionQuote,
   ContractCallError,
+  dashboardLink,
   durationText,
   isExpired,
   isNative,
@@ -74,9 +75,11 @@ export type ExecutorConfig = {
    */
   quietStart: boolean;
   dashboardUrl: string | null;
+  /** A hosted business's contract (D-30), named in its dashboard links; null for the dashboard's own. */
+  dashboardContract: string | null;
 };
 
-export const DEFAULT_CONFIG: Omit<ExecutorConfig, "policyId" | "originAsset" | "dashboardUrl"> = {
+export const DEFAULT_CONFIG: Omit<ExecutorConfig, "policyId" | "originAsset" | "dashboardUrl" | "dashboardContract"> = {
   slippageBps: 50,
   trustQuoteTtlMs: 20 * 60_000,
   ownerQuoteTtlMs: 4 * 3_600_000,
@@ -117,7 +120,7 @@ export class Executor {
     cfg: Partial<ExecutorConfig> & Pick<ExecutorConfig, "policyId" | "originAsset">,
     private readonly deps: ExecutorDeps,
   ) {
-    this.cfg = { ...DEFAULT_CONFIG, dashboardUrl: null, ...cfg };
+    this.cfg = { ...DEFAULT_CONFIG, dashboardUrl: null, dashboardContract: null, ...cfg };
     this.quiet = this.cfg.quietStart;
   }
 
@@ -144,7 +147,7 @@ export class Executor {
   }
 
   private link(path: string): string | undefined {
-    return this.cfg.dashboardUrl ? `${this.cfg.dashboardUrl.replace(/\/$/, "")}${path}` : undefined;
+    return dashboardLink(this.cfg.dashboardUrl, path, this.cfg.dashboardContract) ?? undefined;
   }
 
   private async notifyOnce(notice: Notice) {

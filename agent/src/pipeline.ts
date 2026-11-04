@@ -11,6 +11,7 @@ import { obligationId, type InvoiceInput, pdfText } from "@getleash/ingestion";
 import {
   type AgentClient,
   ContractCallError,
+  dashboardLink,
   type Directory,
   isRateLimited,
   type IntentStatus,
@@ -51,6 +52,8 @@ export type AgentDeps = {
   directory: () => Directory;
   store?: InvoiceStore | null;
   dashboardUrl?: string | null;
+  /** A hosted business's contract (D-30), named in its dashboard links; null for the dashboard's own. */
+  dashboardContract?: string | null;
   log?: (line: string) => void;
 };
 
@@ -58,7 +61,7 @@ export class InvoiceAgent {
   constructor(private readonly deps: AgentDeps) {}
 
   private link(path: string) {
-    return this.deps.dashboardUrl ? `${this.deps.dashboardUrl.replace(/\/$/, "")}${path}` : undefined;
+    return dashboardLink(this.deps.dashboardUrl, path, this.deps.dashboardContract) ?? undefined;
   }
 
   async process(input: InvoiceInput): Promise<AgentOutcome> {

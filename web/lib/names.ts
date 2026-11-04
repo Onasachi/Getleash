@@ -6,10 +6,14 @@
  */
 import { useEffect, useState } from "react";
 
+import { HOSTED } from "./config";
+
 export function useSupplierNames(): { names: Map<number, string>; available: boolean } {
   const [names, setNames] = useState<Map<number, string>>(new Map());
   const [available, setAvailable] = useState(false);
   useEffect(() => {
+    // The private names are the dashboard's own GetLeash's: never shown against a hosted business's suppliers.
+    if (HOSTED) return;
     let cancelled = false;
     fetch("/api/private/names", { cache: "no-store" })
       .then(async (response) => (response.ok ? ((await response.json()) as { names: Record<string, string> }) : null))

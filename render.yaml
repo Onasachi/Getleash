@@ -50,3 +50,6 @@ services:
       - { key: GETLEASH_DIRECTORY_BASE64, sync: false }
       # The dashboard's public address, for the links in Telegram.
       - { key: DASHBOARD_URL, sync: false }
+      # Other businesses set up their own GetLeash from the bot (docs/decisions.md D-30) while the disk above
+      # is mounted and DASHBOARD_URL is https; their keys live on that disk. To close signup, add
+      # GETLEASH_SIGNUP=off; GETLEASH_MAX_BUSINESSES (default 50) caps it.

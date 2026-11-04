@@ -14,7 +14,9 @@ type Bridge = {
 
 function launchedFromTelegram(): boolean {
   try {
-    if (location.hash.includes("tgWebAppData")) {
+    // Telegram puts its launch parameters in the address's fragment. A Mini App opened from a keyboard
+    // button (the setup page) gets no user data, so tgWebAppData may be missing; the others are there.
+    if (/(^#|&)tgWebApp(Data|Version|Platform)=/.test(location.hash)) {
       // The key Telegram's own script uses, which near-connect checks.
       sessionStorage.setItem("__telegram__initParams", location.hash.slice(1));
       return true;
@@ -32,10 +34,45 @@ function postEvent(eventType: string, eventData: object = {}) {
   if (window.parent !== window) window.parent.postMessage(JSON.stringify({ eventType, eventData }), "https://web.telegram.org"); // Web
 }
 
+/** The Bot API version of the Telegram app the page runs in ("8.0"), from its launch parameters; null outside Telegram. */
+export function telegramVersion(): string | null {
+  try {
+    const params = new URLSearchParams(location.hash.includes("tgWebAppVersion=") ? location.hash.slice(1) : (sessionStorage.getItem("__telegram__initParams") ?? ""));
+    const version = params.get("tgWebAppVersion");
+    return version && /^\d+(\.\d+)*$/.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `version` ("7.10") is at least `min` ("7.0"). */
+export function versionAtLeast(version: string, min: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = min.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
 /** Whether the page runs as a Telegram Mini App (opened from one of the bot's buttons). */
 export function inTelegram(): boolean {
   return typeof window !== "undefined" && launchedFromTelegram();
 }
+
+/**
+ * Whether the page runs inside a Telegram app, with its bridge: not merely a browser whose address carries
+ * Telegram's launch data (anyone can paste that into a link). The setup page needs this: only there does
+ * its result reach the bot, from the user who opened it.
+ */
+export function inTelegramClient(): boolean {
+  if (!inTelegram()) return false;
+  const bridge = window as unknown as Bridge;
+  return !!bridge.TelegramWebviewProxy || typeof bridge.external?.notify === "function" || window.parent !== window;
+}
+
 
 /** Opens a t.me link (such as HOT Wallet's Mini App) through Telegram, which a Mini App has to ask for; outside Telegram, in a new tab. */
 export function openTelegramLink(url: string): void {
@@ -50,6 +87,16 @@ export function openTelegramLink(url: string): void {
 /** Closes the Mini App, back to the chat (inside Telegram only). */
 export function closeMiniApp(): void {
   if (inTelegram()) postEvent("web_app_close");
+}
+
+/**
+ * Sends `data` (4096 bytes at most) to the bot as a message from this user, and closes the Mini App.
+ * Telegram does it only for a Mini App opened from a keyboard button (the bot's "Set up GetLeash");
+ * anywhere else nothing happens, so the page keeps showing what to do instead.
+ * https://core.telegram.org/api/web-events#web-app-data-send
+ */
+export function sendDataToBot(data: string): void {
+  if (inTelegram()) postEvent("web_app_data_send", { data });
 }
 
 export function startTelegramMiniApp(): void {
