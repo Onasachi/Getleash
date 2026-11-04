@@ -339,6 +339,21 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   Deep links in private chats (https://core.telegram.org/bots/features#deep-linking): "When someone opens a
   chat with your bot via this link, you will receive: /start <parameter>", from that person. `finish_` and
   43 base64url characters (32 bytes) is 50 characters.
+- Telegram for Android, read in its source on 2026-11-04 (github.com/DrKLO/Telegram, master):
+  `ui/web/BotWebViewContainer.java` handles `web_app_open_tg_link` with
+  `onOpenUri(Uri.parse("https://t.me/" + pathFull), null, false, true, force_request)`, and `onOpenUri`
+  returns without opening anything when `System.currentTimeMillis() - lastClickMs > 10_000 && suppressPopup`;
+  otherwise it sets `lastClickMs = 0` and opens the link. `lastClickMs` is set when the web view is touched
+  (`ACTION_DOWN`) and by the Mini App's main, secondary and settings buttons. So a Mini App on Android opens a
+  t.me link only within 10 seconds of a tap on it, and once per tap, with no error when it doesn't. HOT
+  Wallet's connector asks for its own tap (its popup in the page) and opens HOT with it, so after the wallet
+  has signed, the page's own `openTelegramLink` is dropped. Seen live the same day (onasachi.tg): the claim
+  reached the bot as `web_app_data`, the finish code never did. The setup page therefore opens the chat from
+  a tap of its own, after the wallet has signed.
+- In the same source, `ui/LaunchActivity.java`: a bot link with a start parameter, when the chat on screen is
+  that bot's (`sameDialogId`, the chat under the Mini App), calls `minimizeBotWebViews` and
+  `ChatActivity.setBotUser(botUser)`, which calls `sendBotStart(currentUser, botUser = value)`: Android
+  sends `/start <parameter>` by itself and shows no START button. Other chats open with START.
 
 ## Hosted setup from a browser wallet (checked 2026-11-03)
 

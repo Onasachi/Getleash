@@ -22,11 +22,13 @@
  * is paid, the wallet signs a claim (NEP-413) naming the contract, the agent key and the Telegram account;
  * its nonce is the SHA-256 of a finish code the page keeps to itself. The page checks that claim as the
  * bot will, and only then asks for the setup. Finish then does two things: it opens the real bot's chat
- * with the code (`t.me/<bot>?start=finish_<code>`, where the user taps START, so the code comes from this
- * Telegram account, straight from Telegram), and sends the claim to the bot that opened the page
- * (Telegram's sendData). The bot serves the business only when both came from the account the setup is
- * for. A wallet that already owns a GetLeash whose role accounts hold other keys gets "connect" instead:
- * the same two steps move that GetLeash, if this service serves it, to this Telegram account.
+ * with the code (`t.me/<bot>?start=finish_<code>`, where Telegram sends START or the user taps it, so the
+ * code comes from this Telegram account, straight from Telegram), and sends the claim to the bot that
+ * opened the page (Telegram's sendData). On a page opened again, which has no signed claim, the first tap
+ * signs it and a second tap does those two things: Telegram on Android opens the chat only from a tap of
+ * its own. The bot serves the business only when both came from the account the setup is for. A wallet
+ * that already owns a GetLeash whose role accounts hold other keys gets "connect" instead: the same steps
+ * move that GetLeash, if this service serves it, to this Telegram account.
  */
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -151,6 +153,14 @@ async function contractState(policyId: string, owner: string, agentId: string, e
   } catch {
     return "taken"; // an account with other code, or none
   }
+}
+
+/** Under the last step's button: what the next tap does (the wallet signs, or the GetLeash chat opens). */
+function lastStepHint(signed: boolean, bot: string): string {
+  const chat = `Telegram opens the GetLeash chat (@${bot}) and sends START for you, or shows a START button: tap it. That tells the bot it's you, and it replies when it has checked everything.`;
+  return signed
+    ? `Your wallet has signed. Tap “Open the GetLeash chat”: ${chat}`
+    : `First your wallet signs a message saying this GetLeash is yours; it costs nothing. Then tap “Open the GetLeash chat”: ${chat}`;
 }
 
 async function load(owner: string | null, agentKey: string, executorKey: string) {
@@ -307,23 +317,35 @@ function Setup() {
     return made;
   }
 
+  /** The claim this page's wallet signed for `kind`, if it has. */
+  const signedFor = (kind: ClaimKind): SetupClaim | null => (claim && claim.owner === owner && claim.kind === kind ? claim : null);
+
   /**
    * The last step. The finish code goes to the real bot's chat (the bot named in the signed link), from
-   * this Telegram account: Telegram opens that chat with START. The claim goes to the bot that opened this
-   * page, which closes it. Both in one go: Telegram keeps a Mini App open while it opens a chat (Bot API 7.0+).
+   * this Telegram account: Telegram opens that chat with START (Android sends it by itself, since the chat
+   * is the one under this page). The claim goes to the bot that opened this page, which closes it. Both in
+   * one go: Telegram keeps a Mini App open while it opens a chat (Bot API 7.0+).
+   * The chat opens only from a tap of its own: Telegram on Android opens a link from a Mini App only within
+   * 10 seconds of a tap on the page, and once per tap (docs/verified-facts.md), and the wallet's window uses
+   * up the tap that asked it to sign. So when the wallet hasn't signed the claim on this page yet (it signs
+   * before the setup is paid; a page opened again hasn't), this tap signs it and the next one sends it.
    */
   async function finish(kind: ClaimKind) {
-    setBusy("Confirm in your wallet…");
     setError(null);
-    try {
-      const made = await signClaim(owner!, kind);
-      setBusy(null);
-      openTelegramLink(`https://t.me/${tg!.bot}?start=${FINISH_PREFIX}${finishCodeText(code)}`);
-      sendDataToBot(JSON.stringify(made));
-    } catch (e) {
-      setError(plainError(e));
-      setBusy(null);
+    const signed = signedFor(kind);
+    if (!signed) {
+      setBusy("Confirm in your wallet…");
+      try {
+        await signClaim(owner!, kind);
+      } catch (e) {
+        setError(plainError(e));
+      } finally {
+        setBusy(null);
+      }
+      return;
     }
+    openTelegramLink(`https://t.me/${tg!.bot}?start=${FINISH_PREFIX}${finishCodeText(code)}`);
+    sendDataToBot(JSON.stringify(signed));
   }
 
   /** One transaction the owner's wallet signs; a refusal is shown by the view the chain then leads to. */
@@ -438,10 +460,10 @@ function Setup() {
         </p>
         <div className="actions">
           <button className="primary" disabled={busy !== null} onClick={() => void finish("connect")}>
-            {busy ?? "Connect it"}
+            {busy ?? (signedFor("connect") ? "Open the GetLeash chat" : "Connect it")}
           </button>
         </div>
-        <p className="hint">Then tap START in the GetLeash chat (@{tg.bot}): that tells the bot it&apos;s you.</p>
+        <p className="hint">{lastStepHint(signedFor("connect") !== null, tg.bot)}</p>
         {error && <p className="error">{error}</p>}
       </section>
     );
@@ -480,16 +502,13 @@ function Setup() {
         <Check ok label="It can receive USDC" />
         <div className="actions">
           <button className="primary" disabled={busy !== null} onClick={() => void finish("setup")}>
-            {busy ?? "Finish"}
+            {busy ?? (signedFor("setup") ? "Open the GetLeash chat" : "Finish")}
           </button>
           <a href={EXPLORER.explorerAccount(ids.policyId)} target="_blank" rel="noreferrer">
             See it on the explorer ↗
           </a>
         </div>
-        <p className="hint">
-          {claim ? "" : "Your wallet signs a message saying this GetLeash is yours; it costs nothing. "}Then tap START in the GetLeash chat (@{tg.bot}): that tells the bot
-          it&apos;s you, and it replies when it has checked everything.
-        </p>
+        <p className="hint">{lastStepHint(signedFor("setup") !== null, tg.bot)}</p>
         {error && <p className="error">{error}</p>}
       </section>
     );
