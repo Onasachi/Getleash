@@ -199,8 +199,9 @@ export async function checkHostedSetup(rpc: Provider, target: SetupTarget, token
 //   2. The owner's claim. Their wallet signs (NEP-413) a message naming the contract, the link's key and
 //      that Telegram account. Its nonce is the SHA-256 of a code the page made and keeps to itself.
 //   3. The finish code. The page opens the real bot's chat (t.me/<bot>, from the signed link) with that
-//      code, and the user taps START: the code reaches the bot from whoever holds the Telegram app the
-//      page runs in, straight from Telegram. The claim goes to the bot the page was opened from (sendData).
+//      code as START (Android sends it, elsewhere the user taps it): the code reaches the bot from whoever
+//      holds the Telegram app the page runs in, straight from Telegram. The claim goes to the bot the page
+//      was opened from (sendData).
 // The bot serves the business only when the claim and the code both came from the account the setup is
 // for. A fake bot that opens the real page with its own owner's setup link gets the claim, never the
 // code: the victim's own Telegram sends the code to the real bot, which sees the wrong account and refuses.

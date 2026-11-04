@@ -323,11 +323,16 @@ does the rest. One service serves many businesses; each keeps everything that ma
      exactly as the bot will (a wallet whose signature the bot would refuse stops before anything is paid),
      and sends it at the end as `web_app_data` to the bot that opened the page.
   3. *The finish code, from the right account.* Finish also opens the real bot's chat
-     (`t.me/<bot>?start=finish_<code>`, the bot from the signed link), where the user taps START: Telegram
-     delivers the code as a message from the account holding the app the page runs in. (Telegram keeps a
-     Mini App open while it opens a chat since Bot API 7.0; the page asks older apps to update.) The bot
-     serves the business only when a claim and its code both came from the account the setup is for, in
-     either order; a code without its claim is let go after a minute.
+     (`t.me/<bot>?start=finish_<code>`, the bot from the signed link), where the user taps START (Android
+     sends it by itself, the chat being the one under the page): Telegram delivers the code as a message
+     from the account holding the app the page runs in. (Telegram keeps a Mini App open while it opens a
+     chat since Bot API 7.0; the page asks older apps to update.) The chat opens from a tap of its own:
+     Telegram on Android opens a link from a Mini App only within 10 seconds of a tap, once per tap, and the
+     wallet's window uses the tap that asked it to sign (verified-facts.md, "Telegram Bot API"). So a page
+     opened again, which has no signed claim, takes two taps: Finish signs, "Open the GetLeash chat" sends
+     (found live on 2026-11-04: the claim reached the bot, the code never did). The bot serves the business
+     only when a claim and its code both came from the account the setup is for, in either order; a code
+     without its claim is let go after a minute.
 
   This closes the lookalike bot. Mallory's bot sends Victor to the real page with her own, signed link; the
   page says the setup is for @mallory; if Victor signs anyway, his claim goes to Mallory's bot and she can

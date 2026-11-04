@@ -55,8 +55,10 @@ wallet would fix the speed and make the fraud worse: one prompt injection and th
   the release's, and initialises it with the owner as owner (D-31: no wallet request can carry the release,
   HOT Wallet's connector would take hours to encode it). The bot signs each setup link with its agent key, which the page checks against the
   chain. Their wallet signs a claim naming the setup and their Telegram account. The page's Finish then
-  sends a one-time code through Telegram to the real bot's chat, from the account using the page, and they
-  tap START. The bot serves a business only when the claim and the code both come from the account the setup
+  sends a one-time code through Telegram to the real bot's chat, from the account using the page, as START
+  (Android sends it; elsewhere they tap it). The chat opens from a tap of its own, since Telegram on Android
+  opens a link from a Mini App only right after a tap: a page opened again takes two taps, Finish to sign and
+  "Open the GetLeash chat" to send. The bot serves a business only when the claim and the code both come from the account the setup
   is for. A lookalike bot that sends someone to the real page with its own link gets the claim but never the
   code, and a forwarded link fails the same way. The bot checks the claim and everything on-chain before it
   serves them, and serves each business only in its owner's private chat, with its own keys, directory and

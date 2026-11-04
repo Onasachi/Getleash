@@ -15,10 +15,10 @@
  * claim their wallet signed (NEP-413: the contract, the link's key, that Telegram account), which the page
  * sends as Telegram's `web_app_data` (a message from that user to the bot that opened the page), and a
  * finish code the page made, whose SHA-256 is the claim's nonce. The page sends the code by opening this
- * bot's chat itself (`t.me/<bot>?start=finish_<code>`, the bot named in the signed link), where the user
- * taps START. A fake bot that opens the real page with its own owner's setup link receives the claim but
- * never the code: the victim's own Telegram delivers the code to this bot, from the victim's account, and
- * the bot refuses it.
+ * bot's chat itself (`t.me/<bot>?start=finish_<code>`, the bot named in the signed link), where Telegram
+ * sends START (Android, the chat being the one under the page) or the user taps it. A fake bot that opens
+ * the real page with its own owner's setup link receives the claim but never the code: the victim's own
+ * Telegram delivers the code to this bot, from the victim's account, and the bot refuses it.
  *
  * The bot believes none of it until it has checked: the claim's signature, by a full-access key of that
  * account (checkSetupClaim); then, from chain state alone, that the contract has no keys, runs the release,
@@ -375,7 +375,10 @@ export class BusinessSignup {
       this.deps.log?.(`[signup] the finish code for the setup of ${setup.user} came from ${other.user}: refused`);
       await this.tell(other.chat, { text: notYoursText(setup.name) });
     }
-    await this.tell(setup.chat, { text: `Last step: tap START at the bottom of this chat. No START button? Open the page again with "${SETUP_BUTTON}" and tap Finish.` });
+    // On Android, Telegram sends START by itself when the page opens this chat; elsewhere it shows the button.
+    await this.tell(setup.chat, {
+      text: `Last step: tap START at the bottom of this chat, if Telegram shows it (it may send START for you). Nothing happens? Open the page again with "${SETUP_BUTTON}", tap Finish, then "Open the GetLeash chat".`,
+    });
     return "signup:claimed";
   }
 

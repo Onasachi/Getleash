@@ -238,8 +238,10 @@ nothing and says which is missing.
   account @…"). The bot signs each link with your agent's key, and the page checks it against the keys
   the chain lists for the agent your dashboard's contract names; it refuses any other link, so nothing new
   needs configuring for this. Opened outside Telegram, or from an expired link, it does nothing. Finish
-  opens your bot's chat with a one-time code and the owner taps START; if the chat doesn't confirm, the
-  owner taps "Set up GetLeash" again: the page sees the setup done and offers Finish again.
+  opens your bot's chat with a one-time code as START (Android sends it; elsewhere the owner taps it); on a
+  page opened again, Finish first has the wallet sign and then shows "Open the GetLeash chat", which sends it
+  (Telegram on Android opens a chat from a Mini App only right after a tap). If the chat doesn't confirm,
+  the owner taps "Set up GetLeash" again: the page sees the setup done and offers Finish again.
 - **Moving a GetLeash to another Telegram account.** An owner with a new phone or a lost account sends
   `/start` from the new account and opens the page with the same wallet: it offers to connect their
   existing GetLeash. The bot moves it (keys and files stay) and tells the account it leaves. The same step
