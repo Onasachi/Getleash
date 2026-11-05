@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Where "Try app" on the landing page leads: the visitor connects their wallet, and the page opens the
+ * Where "Dashboard" on the landing page leads: the visitor connects their wallet, and the page opens the
  * dashboard of the GetLeash that wallet owns. That is the dashboard's own GetLeash when this wallet owns it,
  * else the one the bot sets up for the account (named after it, docs/decisions.md D-30), or one the visitor
  * names. A wallet without one is sent to the bot to set it up. Nothing is signed here, and no other

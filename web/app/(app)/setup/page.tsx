@@ -765,44 +765,67 @@ function Setup() {
               <span className="mono">{ids.policyId}</span>
               <CopyButton text={ids.policyId} label="Copy your contract's name" />
             </div>
-            Holds your USDC. It has no keys and answers only to your wallet.
+            Holds your USDC. Only your wallet controls it.
           </li>
           <li>
-            <Fold summary="Details">
-              <p className="small">
-                Your wallet sends {deposit} NEAR to GetLeash&apos;s factory, <span className="mono">{FACTORY_ID}</span>, which creates your contract and:
-              </p>
-              <ul className="rules small">
-                <li>
-                  <span className="mono">{ids.agentId}</span>, the agent, which proposes payments from your invoices;
-                </li>
-                <li>
-                  <span className="mono">{ids.executorId}</span>, the executor, which sends the cross-chain payments you approve;
-                </li>
-                <li>your contract&apos;s registration on USDC.</li>
-              </ul>
-              <p className="small">
-                The agent and the executor hold only keys GetLeash made for them. GetLeash reads the invoices you send; it can never add a supplier, change a limit or
-                take money out. The factory has no keys and can&apos;t touch your contract.
-              </p>
-              <p className="small">
-                Your contract runs the GetLeash release (SHA-256 <span className="mono">{RELEASE_WASM_SHA256}</span>), copied from{" "}
-                <span className="mono">{RELEASE_STORE_ID}</span> and installed only if that hash matches.
-              </p>
+            <Fold summary="What else is created">
+              <dl className="facts-list">
+                <div>
+                  <dt>Agent</dt>
+                  <dd>
+                    Reads your invoices and suggests payments.
+                    <span className="mono">{ids.agentId}</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Executor</dt>
+                  <dd>
+                    Sends the cross-chain payments you approve.
+                    <span className="mono">{ids.executorId}</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Paid to</dt>
+                  <dd>
+                    {deposit} NEAR to GetLeash&apos;s setup contract, which has no keys.
+                    <span className="mono">{FACTORY_ID}</span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Code</dt>
+                  <dd>
+                    The GetLeash release, checked before it&apos;s installed.
+                    <span className="mono">
+                      {RELEASE_WASM_SHA256.slice(0, 8)}…{RELEASE_WASM_SHA256.slice(-6)}
+                    </span>
+                  </dd>
+                </div>
+              </dl>
+              <p className="small muted">GetLeash can never add a supplier, change your limits or take money out.</p>
             </Fold>
           </li>
         </ul>
 
-        <p className="section-label">Your limits (only your wallet can change them)</p>
-        <ul className="limits">
-          <li>
-            The agent pays alone up to {money(p.approval_threshold, d)} USDC a payment and {money(p.autonomous_daily_budget, d)} USDC a day.
-          </li>
-          <li>At most {money(p.daily_cap, d)} USDC leaves a day in all.</li>
-          <li>
-            New suppliers wait {durationText(p.cooldown_ns)} for your OK, at most {money(p.cooldown_max, d)} USDC a payment.
-          </li>
-        </ul>
+        <p className="section-label">Your limits</p>
+        <dl className="limit-rows">
+          <div>
+            <dt>Agent pays alone</dt>
+            <dd>
+              {money(p.approval_threshold, d)} USDC a payment, {money(p.autonomous_daily_budget, d)} a day
+            </dd>
+          </div>
+          <div>
+            <dt>Daily cap</dt>
+            <dd>{money(p.daily_cap, d)} USDC</dd>
+          </div>
+          <div>
+            <dt>New supplier</dt>
+            <dd>
+              waits {durationText(p.cooldown_ns)}, at most {money(p.cooldown_max, d)} USDC
+            </dd>
+          </div>
+        </dl>
+        <p className="section-sub">Only your wallet can change them, at any time.</p>
 
         <div className="actions">
           <button className={busy ? "primary busy" : "primary"} disabled={busy !== null || short || sent} onClick={() => void create()}>
