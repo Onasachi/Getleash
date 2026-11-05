@@ -358,17 +358,24 @@ ul.made > li:last-child { border-bottom: 0; padding: 0; }
 ul.made > li.main { background: var(--sunken); padding-right: 6px; }
 ul.made .head { display: flex; align-items: center; gap: 2px; }
 ul.made .head .mono { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; }
-ul.made .mono { display: block; font-weight: 500; }
+ul.made > li > .mono { display: block; font-weight: 500; }
 ul.made .what { display: block; color: var(--muted); }
+dl.facts-list { margin: 0 0 12px; display: grid; gap: 12px; font-size: 14px; line-height: 1.45; }
+dl.facts-list > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
+dl.facts-list dt { padding-top: 1px; font-size: 13px; font-weight: 600; color: var(--muted); }
+dl.facts-list dd { margin: 0; }
+dl.facts-list dd .mono { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+dl.limit-rows { margin: 10px 0 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 14px; }
+dl.limit-rows > div { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+dl.limit-rows > div:last-child { border-bottom: 0; }
+dl.limit-rows dt { color: var(--muted); }
+dl.limit-rows dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 ul.made .icon-btn { width: 40px; height: 36px; padding: 0; border: 0; border-radius: 10px; display: grid; place-items: center; background: transparent; color: var(--muted); }
 ul.made .icon-btn:hover { background: var(--plain-bg); color: var(--ink); }
 ul.made button.copied { width: auto; padding: 0 10px; display: inline-flex; gap: 6px; color: var(--good); font-size: 13px; }
 ul.made details.fold { margin: 0; border: 0; border-radius: 0; background: transparent; }
 ul.made details.fold > summary { min-height: 46px; padding: 0 14px; font-weight: 400; color: var(--muted); }
 ul.made details.fold > .fold-body { padding: 0 14px 14px; }
-ul.limits { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums; }
-ul.limits li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; }
-ul.limits li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); margin-top: 8px; }
 .checks { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .checks .check { padding: 11px 14px; }
 .checks .check:last-child { border-bottom: 0; }
