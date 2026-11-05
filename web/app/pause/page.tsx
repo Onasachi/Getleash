@@ -1,7 +1,8 @@
 "use client";
 
 /** Pause (PLAN §4.5): one owner signature stops every new payment; the same to resume. */
-import { Fold, Loading, StatusChip, TerminalOption, TxNote } from "@/components/ui";
+import { PauseIcon, PlayIcon } from "@/components/icons";
+import { Fold, Loading, StatusChip, TerminalOption, TxNote, Waiting } from "@/components/ui";
 import { policy } from "@/lib/chain";
 import { nearCliCommand } from "@/lib/cli";
 import { useOwnerAction } from "@/lib/owner-action";
@@ -20,17 +21,31 @@ export default function PausePage() {
         <h1>{data.paused ? "All payments are paused" : "Pause all payments"}</h1>
         <p className="lead">
           {data.paused
-            ? "Nothing new is paid until you unpause: no proposals, approvals, retries or transfers."
-            : "One signature in your wallet stops every new payment at once. Use it if something looks wrong; unpausing works the same way."}
+            ? "Nothing new is paid until you unpause."
+            : "One signature stops every new payment at once. Use it if something looks wrong."}
         </p>
         <div className="actions">
           {data.paused ? (
-            <button className="primary" disabled={!!busy} onClick={() => set(false)}>
-              {busy ? "Waiting for your wallet…" : "Unpause payments"}
+            <button className={busy ? "primary busy" : "primary"} disabled={!!busy} onClick={() => set(false)}>
+              {busy ? (
+                <Waiting />
+              ) : (
+                <>
+                  <PlayIcon size={18} />
+                  Unpause payments
+                </>
+              )}
             </button>
           ) : (
-            <button className="primary danger" disabled={!!busy} onClick={() => set(true)}>
-              {busy ? "Waiting for your wallet…" : "Pause all payments"}
+            <button className={busy ? "primary danger busy" : "primary danger"} disabled={!!busy} onClick={() => set(true)}>
+              {busy ? (
+                <Waiting />
+              ) : (
+                <>
+                  <PauseIcon size={18} />
+                  Pause all payments
+                </>
+              )}
             </button>
           )}
         </div>

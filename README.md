@@ -281,6 +281,10 @@ WhatsApp, fiat ramps, NGN invoices or FX, KYC, multi-tenant onboarding, on-chain
 
 - Code in this repository is written with AI coding assistance (Claude Code), reviewed and directed
   by the team. The hackathon rules allow this and ask for disclosure.
+- The logo, the dashboard's design system and its payment and setup pages were designed with Claude Design
+  (Anthropic) from `docs/design-brief.md` and built into the dashboard with Claude Code. The font is
+  Instrument Sans (SIL Open Font License 1.1), served by Next.js from the site; the wordmark is outlined
+  to paths.
 - [near/agent-skills](https://github.com/near/agent-skills) (MIT) guide the coding agent; installed
   under `.agents/skills/`, not shipped in the contract.
 - Contract scaffold from `cargo near new`. Libraries: `near-sdk` 5.29 and for tests `proptest`,

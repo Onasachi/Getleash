@@ -6,7 +6,10 @@
  * session, so the wallet connector (near-connect, which routes wallets such as HOT Wallet through
  * Telegram) still knows it runs in Telegram after the first page. Uses Telegram's raw bridge, like
  * near-connect itself, instead of loading a script from telegram.org: https://core.telegram.org/api/web-events
+ * It also follows Telegram's light or dark theme and colours Telegram's own bars to match (lib/theme.ts).
  */
+import { schemeOf } from "@/lib/theme";
+
 type Bridge = {
   TelegramWebviewProxy?: { postEvent(eventType: string, eventData: string): void };
   external?: { notify?: (message: string) => void };
@@ -99,8 +102,71 @@ export function sendDataToBot(data: string): void {
   if (inTelegram()) postEvent("web_app_data_send", { data });
 }
 
+/** The theme Telegram launched the page with (`tgWebAppThemeParams`), kept for later pages; null if none. */
+function launchTheme(): unknown {
+  try {
+    const params = new URLSearchParams(location.hash.includes("tgWebApp") ? location.hash.slice(1) : (sessionStorage.getItem("__telegram__initParams") ?? ""));
+    const raw = params.get("tgWebAppThemeParams");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Follows Telegram's light or dark (lib/theme.ts) and gives Telegram's own bar, background and bottom bar
+ * our colours for it (design system, stage 2: header = --panel, background and bottom bar = --bg).
+ */
+function applyTheme(themeParams: unknown): void {
+  const scheme = schemeOf(themeParams);
+  if (!scheme) return;
+  const root = document.documentElement;
+  root.dataset.theme = scheme;
+  const css = getComputedStyle(root);
+  const colour = (token: string) => css.getPropertyValue(token).trim();
+  postEvent("web_app_set_header_color", { color: colour("--panel") });
+  postEvent("web_app_set_background_color", { color: colour("--bg") });
+  postEvent("web_app_set_bottom_bar_color", { color: colour("--bg") });
+}
+
+type Receiver = { Telegram?: { WebView?: { receiveEvent?: (eventType: string, eventData: unknown) => void } } };
+
+/**
+ * Telegram tells a Mini App the theme changed with `theme_changed` ({theme_params}): apps call
+ * window.Telegram.WebView.receiveEvent, Telegram Web posts a message from the parent frame
+ * (https://core.telegram.org/api/bots/webapps). A receiver someone else set keeps getting every event.
+ */
+function followThemeChanges(): void {
+  const onEvent = (eventType: unknown, eventData: unknown) => {
+    if (eventType === "theme_changed") applyTheme((eventData as { theme_params?: unknown } | null)?.theme_params);
+  };
+  const w = window as unknown as Receiver;
+  const view = ((w.Telegram ??= {}).WebView ??= {});
+  const previous = view.receiveEvent;
+  view.receiveEvent = (eventType, eventData) => {
+    onEvent(eventType, eventData);
+    previous?.(eventType, eventData);
+  };
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent || window.parent === window || typeof event.data !== "string") return;
+    try {
+      const { eventType, eventData } = JSON.parse(event.data) as { eventType?: unknown; eventData?: unknown };
+      onEvent(eventType, eventData);
+    } catch {
+      // Not Telegram's.
+    }
+  });
+}
+
+let started = false;
+
 export function startTelegramMiniApp(): void {
-  if (typeof window === "undefined" || !launchedFromTelegram()) return;
+  if (started || typeof window === "undefined" || !launchedFromTelegram()) return;
+  started = true;
+  document.documentElement.dataset.telegram = "";
   postEvent("web_app_ready");
   postEvent("web_app_expand");
+  followThemeChanges();
+  applyTheme(launchTheme());
+  postEvent("web_app_request_theme");
 }

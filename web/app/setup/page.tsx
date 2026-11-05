@@ -31,7 +31,7 @@
  * move that GetLeash, if this service serves it, to this Telegram account.
  */
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { type ReactNode, Suspense, useEffect, useState } from "react";
 
 import {
   accountExists,
@@ -78,7 +78,8 @@ import {
   walletActions,
 } from "@getleash/shared";
 
-import { Check, Loading, StatusChip } from "@/components/ui";
+import { ArrowIcon, CheckIcon, CrossIcon, InfoIcon, RefreshIcon, WalletIcon, WarningIcon } from "@/components/icons";
+import { Check, CopyButton, Fold, Ident, Loading, Notice, StatusChip, Waiting } from "@/components/ui";
 import { homePolicy, rpc, runsRelease } from "@/lib/chain";
 import { EXPLORER } from "@/lib/config";
 import { plainError } from "@/lib/owner-action";
@@ -155,13 +156,95 @@ async function contractState(policyId: string, owner: string, agentId: string, e
   }
 }
 
-/** Under the last step's button: what the next tap does (the wallet signs, or the GetLeash chat opens). */
-function lastStepHint(signed: boolean, bot: string): string {
-  const chat = `Telegram opens the GetLeash chat (@${bot}) and sends START for you, or shows a START button: tap it. That tells the bot it's you, and it replies when it has checked everything.`;
-  return signed
-    ? `Your wallet has signed. Tap “Open the GetLeash chat”: ${chat}`
-    : `First your wallet signs a message saying this GetLeash is yours; it costs nothing. Then tap “Open the GetLeash chat”: ${chat}`;
+type Stage = "done" | "current" | "todo" | "bad";
+const STAGES = ["Connect wallet", "Create", "Finish"] as const;
+
+/** Where the setup is (Claude Design, stage 4): three steps; a dead end marks its step "stopped"; the current one turns while the page waits. */
+function SetupSteps({ steps, busy }: { steps: [Stage, Stage, Stage]; busy?: boolean }) {
+  return (
+    <ol className="setup-steps" aria-label="Setting up GetLeash">
+      {steps.map((stage, i) => (
+        <li key={STAGES[i]} className={stage} aria-current={stage === "current" ? "step" : undefined}>
+          <span className="track">
+            <span className="dot">
+              {stage === "done" ? (
+                <CheckIcon size={14} />
+              ) : stage === "bad" ? (
+                <CrossIcon size={14} />
+              ) : stage === "current" && busy ? (
+                <RefreshIcon size={14} className="spin" />
+              ) : (
+                i + 1
+              )}
+            </span>
+          </span>
+          <span>{stage === "bad" ? `${STAGES[i]}: stopped` : STAGES[i]}</span>
+        </li>
+      ))}
+    </ol>
+  );
 }
+
+/** The page: the step indicator (on the states that are part of the flow) above one hero card. */
+function Frame({ steps, busy, children }: { steps?: [Stage, Stage, Stage]; busy?: boolean; children: ReactNode }) {
+  return (
+    <div className="setup">
+      {steps && <SetupSteps steps={steps} busy={busy} />}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The last two taps, spelled out: the wallet signs the claim, then the chat opens. Each needs a tap of its
+ * own on Android (finish(), below), so the second one must be the obvious next thing once the first is done.
+ */
+function Taps({ first, signed, bot }: { first: string; signed: boolean; bot: string }) {
+  const rows = [
+    { head: `${first}:`, body: "your wallet signs a message (free).", stage: signed ? "done" : "current" },
+    { head: "Open the GetLeash chat:", body: `tap START in @${bot} if Telegram shows it. The bot replies when it's done.`, stage: signed ? "current" : "todo" },
+  ];
+  return (
+    <>
+      <p className="section-label">Two taps to finish</p>
+      <ol className="taps">
+        {rows.map((row, i) => (
+          <li key={row.head} className={row.stage}>
+            <span className="num">{row.stage === "done" ? <CheckIcon size={13} /> : i + 1}</span>
+            <span>
+              <strong>{row.head}</strong> {row.body}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+
+/** A line under the button: what failed, what blocks, or what the page is waiting for. */
+function Line({ tone, children }: { tone: "error" | "blocked"; children: ReactNode }) {
+  return (
+    <p className="note bad">
+      {tone === "error" ? <CrossIcon size={16} /> : <WarningIcon size={16} />}
+      <span>{children}</span>
+    </p>
+  );
+}
+
+function Caption({ icon: Icon, children }: { icon: typeof WalletIcon; children: ReactNode }) {
+  return (
+    <p className="caption">
+      <Icon size={16} />
+      <span>{children}</span>
+    </p>
+  );
+}
+
+// What the Create button says while it works (and which wallet window is open).
+const CHECKING = "Checking GetLeash's factory…";
+const SIGN_CLAIM = "Confirm in your wallet: a message saying this GetLeash is yours…";
+const SIGN_SETUP = "Confirm the setup in your wallet…";
+const CONFIRM = "Confirm in your wallet…";
 
 async function load(owner: string | null, agentKey: string, executorKey: string) {
   const home = await homePolicy.state();
@@ -184,9 +267,16 @@ async function load(owner: string | null, agentKey: string, executorKey: string)
   return { home, owner, ids, steps: { agent, executor, contract, registered }, available, gasPrice };
 }
 
+
 export default function SetupPage() {
   return (
-    <Suspense fallback={<Loading error={null} />}>
+    <Suspense
+      fallback={
+        <Frame>
+          <Loading error={null} text="Checking this setup link on NEAR…" />
+        </Frame>
+      }
+    >
       <Setup />
     </Suspense>
   );
@@ -225,6 +315,8 @@ function Setup() {
   const [failure, setFailure] = useState<{ receiver: string; reasons: string } | null>(null);
   /** The owner's signed claim, kept until the bot has it. */
   const [claim, setClaim] = useState<SetupClaim | null>(null);
+  /** Whether the claim was signed by Finish on this page (a page opened again), so one more tap is left. */
+  const [signedHere, setSignedHere] = useState(false);
 
   const steps = data?.steps ?? null;
   const ready = !!steps && Object.values(steps).every((s) => s === "done");
@@ -249,49 +341,63 @@ function Setup() {
 
   if (!keysOk || !tg) {
     return (
-      <section className="hero">
-        <StatusChip label="Set up GetLeash" tone="plain" />
-        <h1>Open this from the GetLeash bot</h1>
-        <p className="lead">
-          In Telegram, send /start to the GetLeash bot and tap &ldquo;Set up GetLeash&rdquo; under the message box. This page works only from that button, inside
-          Telegram: the button is yours, and the setup is yours.
-        </p>
-      </section>
+      <Frame>
+        <section className="hero">
+          <StatusChip label="Set up GetLeash" tone="plain" />
+          <h1>Open this from the GetLeash bot</h1>
+          <p className="lead">In Telegram, send /start to the GetLeash bot and tap &ldquo;Set up GetLeash&rdquo;. This page works only from that button.</p>
+        </section>
+      </Frame>
     );
   }
   if (until <= now) {
     return (
-      <section className="hero">
-        <StatusChip label="Expired" tone="warn" />
-        <h1>This setup link has expired</h1>
-        <p className="lead">Send /start to the GetLeash bot again: it gives you a fresh button. Nothing was signed.</p>
-      </section>
+      <Frame steps={["bad", "todo", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Expired" tone="warn" />
+          <h1>This setup link has expired</h1>
+          <p className="lead">Send /start to the bot for a new one. Nothing was signed.</p>
+        </section>
+      </Frame>
     );
   }
   // Still checking the link's signature (or NEAR can't be reached: Loading shows why).
-  if (genuine === null) return <Loading error={linkError} />;
+  if (genuine === null) {
+    return (
+      <Frame steps={["current", "todo", "todo"]} busy={!linkError}>
+        <Loading error={linkError} text="Checking this setup link on NEAR…" />
+      </Frame>
+    );
+  }
   if (!genuine) {
     return (
-      <section className="hero">
-        <StatusChip label="Can't set up" tone="bad" />
-        <h1>This setup link isn&apos;t from GetLeash</h1>
-        <p className="lead">
-          GetLeash signs every setup link it makes, and this one doesn&apos;t carry its signature, so nothing here will be signed. If a bot sent you here, it isn&apos;t
-          GetLeash&apos;s. Send /start to the GetLeash bot for your own link.
-        </p>
-      </section>
+      <Frame steps={["bad", "todo", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Can't set up" tone="bad" />
+          <h1>This setup link isn&apos;t from GetLeash</h1>
+          <p className="lead">It isn&apos;t signed by GetLeash, so nothing here will be signed. For your own link, send /start to the GetLeash bot.</p>
+        </section>
+      </Frame>
     );
   }
   if (version && !versionAtLeast(version, "7.0")) {
     return (
-      <section className="hero">
-        <StatusChip label="Update Telegram" tone="warn" />
-        <h1>Update Telegram to set up GetLeash</h1>
-        <p className="lead">The last step opens the GetLeash chat from this page, which this version of Telegram can&apos;t do. Update the app, then tap the button again.</p>
-      </section>
+      <Frame>
+        <section className="hero">
+          <StatusChip label="Update Telegram" tone="warn" />
+          <h1>Update Telegram to set up GetLeash</h1>
+          <p className="lead">This version of Telegram can&apos;t finish the setup. Update the app, then tap the button again.</p>
+        </section>
+      </Frame>
     );
   }
-  if (!data || (data.owner ?? null) !== (owner ?? null)) return <Loading error={loadError} />;
+  if (!data || (data.owner ?? null) !== (owner ?? null)) {
+    return (
+      <Frame steps={owner ? ["done", "current", "todo"] : ["current", "todo", "todo"]} busy={!loadError}>
+        <Loading error={loadError} text={owner ? "Reading your account on NEAR…" : "Checking this setup link on NEAR…"} />
+      </Frame>
+    );
+  }
   const p = DEFAULT_POLICY;
   const d = data.home.token_decimals;
 
@@ -334,9 +440,10 @@ function Setup() {
     setError(null);
     const signed = signedFor(kind);
     if (!signed) {
-      setBusy("Confirm in your wallet…");
+      setBusy(CONFIRM);
       try {
         await signClaim(owner!, kind);
+        setSignedHere(true);
       } catch (e) {
         setError(plainError(e));
       } finally {
@@ -367,150 +474,181 @@ function Setup() {
 
   /** The factory asks the contract's installer to install the release again (only for the owner it recorded). */
   async function retry() {
-    await sign(retryInstallTransaction(), "Confirm in your wallet…");
+    await sign(retryInstallTransaction(), CONFIRM);
   }
+
+  /** The button that finishes (Finish or Connect it, then Open the GetLeash chat), with the line that says the wallet has signed. */
+  const finishing = (kind: ClaimKind, first: string) => {
+    const signed = signedFor(kind) !== null;
+    return (
+      <>
+        <Taps first={first} signed={signed} bot={tg.bot} />
+        {signed && signedHere && (
+          <p className="signed">
+            <CheckIcon size={18} />
+            Your wallet has signed. One more tap.
+          </p>
+        )}
+        <div className="actions">
+          <button className={busy ? "primary busy" : signed && signedHere ? "primary next" : "primary"} disabled={busy !== null} onClick={() => void finish(kind)}>
+            {busy ? (
+              <Waiting label={busy} />
+            ) : signed ? (
+              <>
+                <ArrowIcon size={18} />
+                Open the GetLeash chat
+              </>
+            ) : (
+              first
+            )}
+          </button>
+        </div>
+        {error && <Line tone="error">{error}</Line>}
+      </>
+    );
+  };
+  const anotherAccount = (
+    <div className="actions">
+      <button className="ghost" onClick={() => void wallet.disconnect()}>
+        Use another account
+      </button>
+    </div>
+  );
+  const busyLabel = (text: string) => (busy ? <Waiting label={busy} /> : text);
 
   if (!owner) {
     return (
-      <section className="hero">
-        <StatusChip label="Set up GetLeash" tone="plain" />
-        <h1>Set up GetLeash for your business</h1>
-        <p className="lead">
-          Your wallet creates your own GetLeash on NEAR: a contract that holds your USDC, has no keys, and pays only the suppliers you add, within your limits. Only
-          your wallet can change it.
-        </p>
-        <p className="notice small">
-          This setup is for the Telegram account <strong>{tg.name}</strong>. Continue only if that account is yours: whoever holds it will run this GetLeash in
-          Telegram.
-        </p>
-        <div className="actions">
-          <button className="primary" disabled={busy !== null} onClick={() => void wallet.connect().catch((e: unknown) => setError(plainError(e)))}>
-            Connect your wallet
-          </button>
-        </div>
-        <p className="hint">HOT Wallet opens here in Telegram. Connecting signs nothing.</p>
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["current", "todo", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Set up GetLeash" tone="plain" />
+          <h1>Set up GetLeash for your business</h1>
+          <p className="lead">Your wallet creates your own GetLeash on NEAR. It holds your USDC, and only your wallet can change it.</p>
+          <Notice icon={InfoIcon}>
+            For the Telegram account <strong>{tg.name}</strong>. Continue only if that&apos;s you.
+          </Notice>
+          <div className="actions">
+            <button
+              className={busy ? "primary busy" : "primary"}
+              disabled={busy !== null}
+              onClick={() => void wallet.connect().catch((e: unknown) => setError(plainError(e)))}
+            >
+              Connect your wallet
+            </button>
+          </div>
+          <p className="hint">HOT Wallet opens here. Connecting signs nothing.</p>
+          {error && <Line tone="error">{error}</Line>}
+        </section>
+      </Frame>
     );
   }
 
   if (!steps || !data.ids) {
     return (
-      <section className="hero">
-        <StatusChip label="Can't set up" tone="bad" />
-        <h1>This account can&apos;t hold GetLeash</h1>
-        <p className="lead">
-          GetLeash names your contract after your account (<span className="mono">your-account.{FACTORY_ID}</span>), and <span className="mono">{owner}</span> is too
-          long for that: you need a NEAR account of at most 41 characters, like acme.near or acme.tg. Create one in your wallet, then connect it here.
-        </p>
-        <div className="actions">
-          <button className="ghost" onClick={() => void wallet.disconnect()}>
-            Use another account
-          </button>
-        </div>
-      </section>
+      <Frame steps={["bad", "todo", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Can't set up" tone="bad" />
+          <h1>This account can&apos;t hold GetLeash</h1>
+          <p className="lead">
+            <span className="mono">{owner}</span> is too long to name your contract after. Use a NEAR account of at most 41 characters, like acme.near.
+          </p>
+          {anotherAccount}
+        </section>
+      </Frame>
     );
   }
 
   const { ids } = data;
+  const contract = (label: string) => <Ident address={ids.policyId} grouped={false} explorer={EXPLORER.explorerAccount(ids.policyId)} meta={<span>{label}</span>} />;
   // Created with the installer, which hasn't installed the release yet (D-31): usually seconds away, unless
   // this page saw the setup fail after the accounts were made.
   const stuck = failure ? failure.reasons : null;
   if (installing) {
     return (
-      <section className="hero">
-        <StatusChip label="Almost there" tone="warn" />
-        <h1>Your contract is waiting for its code</h1>
-        {stuck ? (
-          <p className="lead">
-            <span className="mono">{ids.policyId}</span> exists, with no keys, for your wallet, but the GetLeash code didn&apos;t install ({stuck}), and nothing more is on
-            its way. Try again: your wallet asks GetLeash&apos;s factory to install it; that costs only a little gas.
-          </p>
-        ) : (
-          <>
-            <p className="lead">
-              <span className="mono">{ids.policyId}</span> exists, with no keys, for your wallet, but the GetLeash code isn&apos;t in it yet. That usually takes a few
-              seconds, and this page checks again.
-            </p>
-            <p className="lead small">If it stays like this, try again: your wallet asks GetLeash&apos;s factory to install it; that costs only a little gas.</p>
-          </>
-        )}
-        <div className="actions">
-          <button className="ghost" disabled={busy !== null} onClick={() => void retry()}>
-            {busy ?? "Try again"}
-          </button>
-        </div>
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["done", "current", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Almost there" tone="warn" />
+          <h1>Your contract is waiting for its code</h1>
+          {contract("Your contract")}
+          {stuck ? (
+            <p className="lead">Its code didn&apos;t install ({stuck}). Tap Try again (a small network fee).</p>
+          ) : (
+            <p className="lead">Its code isn&apos;t installed yet. This usually takes a few seconds. If it stays like this, tap Try again (a small network fee).</p>
+          )}
+          <div className="actions">
+            <button className={busy ? "ghost busy" : "ghost"} disabled={busy !== null} onClick={() => void retry()}>
+              {busyLabel("Try again")}
+            </button>
+          </div>
+          {error && <Line tone="error">{error}</Line>}
+        </section>
+      </Frame>
     );
   }
   // Their GetLeash already exists (the contract is theirs, its role accounts hold other keys than this link's): move it to this Telegram account.
   if (steps.contract === "done" && steps.registered === "done" && (steps.agent === "taken" || steps.executor === "taken")) {
     return (
-      <section className="hero">
-        <StatusChip label="Already set up" tone="plain" />
-        <h1>Connect your GetLeash to this Telegram account</h1>
-        <p className="lead">
-          <span className="mono">{ids.policyId}</span> already exists, owned by your wallet <span className="mono">{owner}</span>. Connect it to the Telegram account{" "}
-          <strong>{tg.name}</strong>: GetLeash then answers that account about it, and no longer any account it answered before.
-        </p>
-        <p className="notice small">
-          Continue only if {tg.name} is your account. Your wallet signs a message saying so; it costs nothing. If GetLeash doesn&apos;t serve this contract (you set it
-          up yourself, or with someone else&apos;s setup link), the bot says so and nothing changes.
-        </p>
-        <div className="actions">
-          <button className="primary" disabled={busy !== null} onClick={() => void finish("connect")}>
-            {busy ?? (signedFor("connect") ? "Open the GetLeash chat" : "Connect it")}
-          </button>
-        </div>
-        <p className="hint">{lastStepHint(signedFor("connect") !== null, tg.bot)}</p>
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["done", "done", "current"]}>
+        <section className="hero">
+          <StatusChip label="Already set up" tone="plain" />
+          <h1>Connect your GetLeash to this Telegram account</h1>
+          {contract(`Your contract, owned by ${owner}`)}
+          <p className="lead">
+            Move it to the Telegram account <strong>{tg.name}</strong>. The account it served before stops getting its messages.
+          </p>
+          <Notice icon={InfoIcon}>Continue only if {tg.name} is yours.</Notice>
+          {finishing("connect", "Connect it")}
+          {/* Inside Telegram the header has no Disconnect: the only way out of a wrong wallet. */}
+          <p className="hint">
+            Not {owner}&apos;s GetLeash?{" "}
+            <button className="link" onClick={() => void wallet.disconnect()}>
+              Use another account
+            </button>
+          </p>
+        </section>
+      </Frame>
     );
   }
   const taken = (Object.entries(steps) as Array<[keyof typeof steps, StepState]>).filter(([, s]) => s === "taken").map(([k]) => k);
   if (taken.length > 0) {
     const names = { agent: ids.agentId, executor: ids.executorId, contract: ids.policyId, registered: ids.policyId };
     return (
-      <section className="hero">
-        <StatusChip label="Can't set up" tone="bad" />
-        <h1>Those accounts are in use</h1>
-        <p className="lead">
-          {taken.map((k) => names[k]).join(" and ")} already {taken.length > 1 ? "exist" : "exists"} for <span className="mono">{owner}</span>, but not as this setup
-          needs, so nothing was signed. If you set GetLeash up before, keep using that one; otherwise use another NEAR account here.
-        </p>
-        <div className="actions">
-          <button className="ghost" onClick={() => void wallet.disconnect()}>
-            Use another account
-          </button>
-        </div>
-      </section>
+      <Frame steps={["done", "bad", "todo"]}>
+        <section className="hero">
+          <StatusChip label="Can't set up" tone="bad" />
+          <h1>Those accounts are in use</h1>
+          <p className="lead">
+            {taken.map((k) => names[k]).join(" and ")} already {taken.length > 1 ? "exist" : "exists"} for <span className="mono">{owner}</span>, set up differently.
+            Nothing was signed. If that&apos;s your earlier GetLeash, keep using it; otherwise use another account.
+          </p>
+          {anotherAccount}
+        </section>
+      </Frame>
     );
   }
 
   if (ready) {
     return (
-      <section className="hero">
-        <StatusChip label="Ready" tone="good" />
-        <h1>Your GetLeash is ready</h1>
-        <p className="lead">
-          <span className="mono">{ids.policyId}</span>, owned by your wallet <span className="mono">{owner}</span>, for your Telegram account {tg.name}. Next: send it
-          USDC, and add the people you pay with /addsupplier in the chat.
-        </p>
-        <Check ok label="Your contract runs the GetLeash release, has no keys and answers to your wallet" />
-        <Check ok label="The agent and the executor hold only the keys GetLeash generated for you" />
-        <Check ok label="It can receive USDC" />
-        <div className="actions">
-          <button className="primary" disabled={busy !== null} onClick={() => void finish("setup")}>
-            {busy ?? (signedFor("setup") ? "Open the GetLeash chat" : "Finish")}
-          </button>
-          <a href={EXPLORER.explorerAccount(ids.policyId)} target="_blank" rel="noreferrer">
-            See it on the explorer ↗
-          </a>
-        </div>
-        <p className="hint">{lastStepHint(signedFor("setup") !== null, tg.bot)}</p>
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["done", "done", "current"]}>
+        <section className="hero">
+          <StatusChip label="Ready" tone="good" />
+          <h1>Your GetLeash is ready</h1>
+          {contract(`Your contract, owned by ${owner}`)}
+          <Fold
+            className="group checks"
+            summary={
+              <>
+                <CheckIcon size={18} className="tone-good" />
+                <span className="tone-good">All 3 checks passed</span>
+              </>
+            }
+          >
+            <Check ok label="It runs the GetLeash release, has no keys and answers to your wallet" />
+            <Check ok label="The agent and the executor hold only the keys GetLeash made for you" />
+            <Check ok label="It can receive USDC" />
+          </Fold>
+          {finishing("setup", "Finish")}
+        </section>
+      </Frame>
     );
   }
 
@@ -519,32 +657,36 @@ function Setup() {
   // Everything is there but the USDC registration (the factory's failed): the owner's wallet registers it.
   if (steps.agent === "done" && steps.executor === "done" && steps.contract === "done" && steps.registered === "todo") {
     return (
-      <section className="hero">
-        <StatusChip label="Almost there" tone="warn" />
-        <h1>Register your contract on USDC</h1>
-        <p className="lead">
-          <span className="mono">{ids.policyId}</span> is ready, but not yet registered on USDC, so it can&apos;t hold any. Your wallet registers it: 0.00125 NEAR.
-        </p>
-        <div className="actions">
-          <button className="primary" disabled={busy !== null} onClick={() => void sign(treasuryTransaction(plan), "Confirm in your wallet…")}>
-            {busy ?? "Register it"}
-          </button>
-        </div>
-        {failure && <p className="error">That didn&apos;t go through: {failure.reasons}.</p>}
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["done", "current", "todo"]} busy={busy !== null}>
+        <section className="hero">
+          <StatusChip label="Almost there" tone="warn" />
+          <h1>Register your contract on USDC</h1>
+          {contract("Your contract")}
+          <p className="lead">It can&apos;t hold USDC until it&apos;s registered on USDC. That costs 0.00125 NEAR.</p>
+          <div className="actions">
+            <button className={busy ? "primary busy" : "primary"} disabled={busy !== null} onClick={() => void sign(treasuryTransaction(plan), CONFIRM)}>
+              {busyLabel("Register it")}
+            </button>
+          </div>
+          {failure && <Line tone="error">That didn&apos;t go through: {failure.reasons}.</Line>}
+          {error && <Line tone="error">{error}</Line>}
+        </section>
+      </Frame>
     );
   }
 
   // The factory's receipts are still landing (or this page was opened while they were).
   if (creating) {
     return (
-      <section className="hero">
-        <StatusChip label="Almost there" tone="warn" />
-        <h1>Your GetLeash is being created</h1>
-        <p className="lead">Some of its accounts are on NEAR already. That usually takes a few seconds, and this page checks again.</p>
-        {error && <p className="error">{error}</p>}
-      </section>
+      <Frame steps={["done", "current", "todo"]} busy>
+        <section className="hero">
+          <StatusChip label="Almost there" tone="warn" />
+          <h1>Your GetLeash is being created</h1>
+          <p className="lead">This takes a few seconds.</p>
+          <Caption icon={RefreshIcon}>This page updates by itself.</Caption>
+          {error && <Line tone="error">{error}</Line>}
+        </section>
+      </Frame>
     );
   }
 
@@ -552,67 +694,127 @@ function Setup() {
   const cost = setupCost();
   const needs = setupNeeds(data.gasPrice);
   const short = data.available < needs;
+  const deposit = nearRoundedUp(factoryDeposit(), 3);
 
   async function create() {
-    setBusy("Checking GetLeash's factory…");
+    setBusy(CHECKING);
     setError(null);
     setFailure(null);
     try {
       const why = await setupReady(data!.home.token_id);
       if (why) throw new Error(`${why}, so nothing was signed. Try again later, or tell the GetLeash team.`);
       // The claim first: a wallet that can't sign it has spent nothing.
-      setBusy("Confirm in your wallet: a message saying this GetLeash is yours…");
+      setBusy(SIGN_CLAIM);
       await signClaim(owner!, "setup");
     } catch (e) {
       setError(plainError(e));
       setBusy(null);
       return;
     }
-    await sign(hostedSetupTransaction(plan), "Confirm the setup in your wallet…");
+    await sign(hostedSetupTransaction(plan), SIGN_SETUP);
   }
 
-  const left = [
-    `${ids.agentId}: the agent, which proposes payments from the invoices you send. It holds only a key GetLeash generated, for proposing to your contract.`,
-    `${ids.executorId}: the executor, which sends cross-chain payments you've approved. It holds only a key GetLeash generated, for that alone.`,
-    `${ids.policyId}: your contract. It holds your USDC, runs the published GetLeash release (code ${RELEASE_WASM_SHA256.slice(0, 12)}…, which it copies from ${RELEASE_STORE_ID} on NEAR and checks), has no keys and answers only to ${owner}.`,
-    `Its registration on USDC, so it can hold your treasury.`,
-  ];
+  // Which wallet window is open, or what the page waits for, instead of the hint.
+  const caption =
+    busy === SIGN_CLAIM ? (
+      <Caption icon={WalletIcon}>Wallet window 1 of 2: a message. It&apos;s free.</Caption>
+    ) : busy === SIGN_SETUP ? (
+      <Caption icon={WalletIcon}>
+        Wallet window 2 of 2: the setup, {deposit} NEAR to {FACTORY_ID}.
+      </Caption>
+    ) : sent && !busy ? (
+      <Caption icon={RefreshIcon}>Almost done. This page updates by itself.</Caption>
+    ) : null;
 
   return (
-    <section className="hero">
-      <StatusChip label={sent ? "Almost there" : "Set up GetLeash"} tone={sent ? "warn" : "plain"} />
-      <h1>Create your GetLeash</h1>
-      <p className="lead">
-        As <span className="mono">{owner}</span>, for the Telegram account <strong>{tg.name}</strong> (continue only if that&apos;s you). Your wallet sends{" "}
-        {nearRoundedUp(factoryDeposit(), 3)} NEAR to GetLeash&apos;s factory, <span className="mono">{FACTORY_ID}</span>, which creates for you:
-      </p>
-      <ul className="rules">
-        {left.map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ul>
-      <p className="lead small">
-        Your limits, which only your wallet can change: the agent pays a supplier you added up to {money(p.approval_threshold, d)} USDC a payment and{" "}
-        {money(p.autonomous_daily_budget, d)} USDC a day on its own, and asks you above that. At most {money(p.daily_cap, d)} USDC leaves a day in all. For a new
-        supplier&apos;s first {durationText(p.cooldown_ns)}, every payment to them waits for you and is at most {money(p.cooldown_max, d)} USDC.
-      </p>
-      <p className="lead small">
-        GetLeash, the service behind the bot, holds the agent&apos;s and the executor&apos;s keys and reads the invoices you send it. It can never add a supplier, change
-        a limit or take money out: those need your wallet. The factory has no keys and can&apos;t touch your contract once it exists. Your wallet first signs a message
-        saying this GetLeash is yours (free), then the setup.
-      </p>
-      <Check
-        ok={!short}
-        label={`About ${nearRoundedUp(cost)} NEAR from your wallet, network fees included. It needs ${nearRoundedUp(needs, 3)} NEAR while it signs (the rest comes back); you have ${nearRoundedDown(data.available, 3)} NEAR available.`}
-      />
-      <div className="actions">
-        <button className="primary" disabled={busy !== null || short || sent} onClick={() => void create()}>
-          {busy ?? (sent ? "Waiting for the chain…" : "Create my GetLeash")}
-        </button>
-      </div>
-      {short && <p className="blocked">Add NEAR to {owner} first: about {nearRoundedUp(needs - data.available, 3)} more.</p>}
-      {failure && <p className="error">The setup didn&apos;t go through: {failure.reasons}. Nothing was created, and the NEAR went back to your wallet.</p>}
-      {error && <p className="error">{error}</p>}
-    </section>
+    <Frame steps={["done", "current", "todo"]} busy={busy !== null || sent}>
+      <section className="hero">
+        <StatusChip label={sent ? "Almost there" : "Set up GetLeash"} tone={sent ? "warn" : "plain"} />
+        <h1>Create your GetLeash</h1>
+        <div className="who">
+          <div className="row">
+            <span>Wallet</span>
+            <span className="mono">{owner}</span>
+          </div>
+          <div className="row">
+            <span>Telegram</span>
+            <strong>{tg.name}</strong>
+          </div>
+          <div className="confirm">
+            <span>Continue only if that&apos;s you.</span>
+            {/* Inside Telegram the header has no Disconnect: the only way out of a wrong wallet. */}
+            <button className="link" disabled={busy !== null} onClick={() => void wallet.disconnect()}>
+              Use another account
+            </button>
+          </div>
+        </div>
+        <div className={short ? "check box fail" : "check box ok"}>
+          {short ? <CrossIcon size={18} aria-label="Not enough NEAR" aria-hidden={false} role="img" /> : <CheckIcon size={18} aria-label="Enough NEAR" aria-hidden={false} role="img" />}
+          <span>
+            <strong>About {nearRoundedUp(cost)} NEAR</strong>, fees included
+            <span className="sub">
+              You have {nearRoundedDown(data.available, 3)} NEAR; it needs {nearRoundedUp(needs, 3)} while it signs (the rest comes back).
+            </span>
+          </span>
+        </div>
+
+        <p className="section-label">Your contract</p>
+        <ul className="made">
+          <li className="main">
+            <div className="head">
+              <span className="mono">{ids.policyId}</span>
+              <CopyButton text={ids.policyId} label="Copy your contract's name" />
+            </div>
+            Holds your USDC. It has no keys and answers only to your wallet.
+          </li>
+          <li>
+            <Fold summary="Details">
+              <p className="small">
+                Your wallet sends {deposit} NEAR to GetLeash&apos;s factory, <span className="mono">{FACTORY_ID}</span>, which creates your contract and:
+              </p>
+              <ul className="rules small">
+                <li>
+                  <span className="mono">{ids.agentId}</span>, the agent, which proposes payments from your invoices;
+                </li>
+                <li>
+                  <span className="mono">{ids.executorId}</span>, the executor, which sends the cross-chain payments you approve;
+                </li>
+                <li>your contract&apos;s registration on USDC.</li>
+              </ul>
+              <p className="small">
+                The agent and the executor hold only keys GetLeash made for them. GetLeash reads the invoices you send; it can never add a supplier, change a limit or
+                take money out. The factory has no keys and can&apos;t touch your contract.
+              </p>
+              <p className="small">
+                Your contract runs the GetLeash release (SHA-256 <span className="mono">{RELEASE_WASM_SHA256}</span>), copied from{" "}
+                <span className="mono">{RELEASE_STORE_ID}</span> and installed only if that hash matches.
+              </p>
+            </Fold>
+          </li>
+        </ul>
+
+        <p className="section-label">Your limits (only your wallet can change them)</p>
+        <ul className="limits">
+          <li>
+            The agent pays alone up to {money(p.approval_threshold, d)} USDC a payment and {money(p.autonomous_daily_budget, d)} USDC a day.
+          </li>
+          <li>At most {money(p.daily_cap, d)} USDC leaves a day in all.</li>
+          <li>
+            New suppliers wait {durationText(p.cooldown_ns)} for your OK, at most {money(p.cooldown_max, d)} USDC a payment.
+          </li>
+        </ul>
+
+        <div className="actions">
+          <button className={busy ? "primary busy" : "primary"} disabled={busy !== null || short || sent} onClick={() => void create()}>
+            {busy ? <Waiting label={busy} /> : sent ? <Waiting label="Waiting for the chain…" /> : "Create my GetLeash"}
+          </button>
+        </div>
+        {caption}
+        {!caption && !short && <p className="hint">Your wallet opens twice: a free message, then the setup.</p>}
+        {short && <Line tone="blocked">Add NEAR to {owner} first: about {nearRoundedUp(needs - data.available, 3)} more.</Line>}
+        {failure && <Line tone="error">The setup didn&apos;t go through: {failure.reasons}. Nothing was created, and the NEAR went back to your wallet.</Line>}
+        {error && <Line tone="error">{error}</Line>}
+      </section>
+    </Frame>
   );
 }

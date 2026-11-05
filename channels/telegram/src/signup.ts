@@ -162,16 +162,15 @@ function limitsText(p: Pick<Policy, "approval_threshold" | "autonomous_daily_bud
 function offerText(): string {
   const p = DEFAULT_POLICY;
   return [
-    "👋 GetLeash pays your suppliers for you. Send me an invoice: I pay it in USDC (or USDT on Tron) if it fits the limits your own wallet sets on NEAR, and ask you first when it doesn't.",
+    "👋 GetLeash pays your suppliers for you. Send me an invoice: I pay it in USDC (or USDT on Tron) within limits your own wallet sets, and ask you first when it's more.",
     "",
     "Set it up in a minute:",
-    `1. Tap "${SETUP_BUTTON}" below. It opens here in Telegram and connects your NEAR wallet (HOT Wallet works inside Telegram).`,
-    `2. Your wallet creates your own GetLeash: a contract that holds your USDC, has no keys, and that only your wallet can change. It costs about ${nearRoundedUp(setupCost())} NEAR, from your wallet, which needs about ${nearRoundedUp(setupNeeds(), 3)} NEAR while it signs (the rest comes back).`,
-    "3. Tap Finish on the page, then START here. I'll tell you when it's ready; then you send it USDC and add the people you pay.",
+    `1. Tap "${SETUP_BUTTON}" below and connect your NEAR wallet (HOT Wallet works inside Telegram).`,
+    `2. Tap "Create my GetLeash" and confirm in your wallet. It costs about ${nearRoundedUp(setupCost())} NEAR; your wallet needs ${nearRoundedUp(setupNeeds(), 3)} NEAR while it signs (the rest comes back).`,
+    `3. Tap "Open the GetLeash chat", then START here if Telegram shows it. I'll tell you when it's ready.`,
     "",
-    `What you trust this service with: it reads the invoices you send, and pays suppliers you added on its own up to ${money(p.approval_threshold)} USDC a payment and ${money(p.autonomous_daily_budget)} USDC a day. Everything else waits for your OK in your wallet.`,
-    "Already set up GetLeash here from another Telegram account? The same button moves it to this one, with your wallet.",
-    "The button is yours, in this chat, for a day.",
+    `On my own I pay only suppliers you added, up to ${money(p.approval_threshold)} USDC a payment and ${money(p.autonomous_daily_budget)} USDC a day. Everything else waits for your OK.`,
+    "The button works for a day. Already have a GetLeash from another Telegram account? The same button moves it here.",
   ].join("\n");
 }
 
