@@ -12,3 +12,4 @@ export * from "./installer.ts";
 export * from "./hosted.ts";
 export * from "./words.ts";
 export * from "./wallets.ts";
+export * from "./limits.ts";

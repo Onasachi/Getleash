@@ -109,6 +109,7 @@ export function coveredNotices(outcome: AgentOutcome): string[] {
 export const COMMANDS = [
   { command: "pending", description: "Payments waiting for you" },
   { command: "status", description: "Your treasury and what was spent today" },
+  { command: "limits", description: "Your limits, and a button to change them" },
   { command: "suppliers", description: "Who can be paid" },
   { command: "addsupplier", description: "Add someone you pay" },
   { command: "invite", description: "Ask a supplier to send their payment details" },
@@ -537,6 +538,17 @@ export class TelegramChannel implements Channel<Update> {
           ].join("\n"),
           buttons: [{ text: "Open HOT Wallet", url: HOT_WALLET_TELEGRAM }, ...(check ? [{ text: "Check my wallet", url: check }] : [])],
         };
+      }
+      case "limits": {
+        const { policy: p, token_decimals: d } = await view.state();
+        const text = [
+          "Your limits, which only your wallet can change:",
+          `• The agent pays alone up to ${money(p.approval_threshold, d)} USDC a payment and ${money(p.autonomous_daily_budget, d)} USDC a day.`,
+          `• At most ${money(p.daily_cap, d)} USDC leaves a day in all.`,
+          `• After a supplier's address changes, payments wait ${durationText(p.cooldown_ns)} for your OK, at most ${money(p.cooldown_max, d)} USDC each.`,
+        ].join("\n");
+        const link = this.link("/limits");
+        return link ? { text, link, action: "Change limits" } : { text };
       }
       case "pause": {
         const link = this.link("/pause");

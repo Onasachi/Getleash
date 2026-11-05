@@ -15,15 +15,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AGENT_METHODS,
   AgentClient,
+  applyLimits,
   ContractCallError,
   createRoleAccount,
   defaultRoleIds,
   deployPolicy,
   encodeId,
   EXECUTOR_METHODS,
+  limitsForm,
   near,
   OwnerClient,
   type Policy,
+  policyProblem,
   PolicyView,
   registerOnToken,
   registerTreasury,
@@ -153,5 +156,23 @@ describe("setup on a local node", () => {
     // The same invoice cannot be paid twice.
     const again = await agent.propose({ obligationId: "cd".repeat(32), supplierId, amountOut: 10n * USDC, reviewFlag: null });
     expect(again.value).toMatchObject({ accepted: false, reason: "OBLIGATION_OPEN_OR_PAID" });
+  });
+
+  it("takes new limits as the dashboard's Limits page sends them, and refuses what the page refuses", async () => {
+    const view = new PolicyView(net.rpc, plan.policyId);
+    const owner = new OwnerClient(net.owner.account, plan.policyId);
+    const before = (await view.state()).policy;
+    const raised = applyLimits(before, { ...limitsForm(before, 6), perPayment: "25", perDay: "60", dailyCap: "500", waitDays: "1.5" }, 6);
+    expect(raised.problem).toBeNull();
+    expect((await owner.setPolicy(raised.policy!)).ok).toBe(true);
+    expect((await view.state()).policy).toEqual(raised.policy);
+
+    // The agent's daily amount above the daily cap: the page says why, and the contract refuses it too.
+    const over = { ...raised.policy!, autonomous_daily_budget: (501n * USDC).toString() };
+    expect(policyProblem(over)).toBe("The agent's daily amount can't be more than the daily cap.");
+    const refused = await owner.setPolicy(over).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ContractCallError);
+    expect((refused as ContractCallError).code).toBe("POLICY_ABOVE_DAILY_CAP");
+    expect((await view.state()).policy).toEqual(raised.policy);
   });
 });

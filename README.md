@@ -262,7 +262,7 @@ mock-1click/       local 1Click stand-in that settles real (mock) tokens on a lo
 ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer
 agent/             extraction (NEAR AI Cloud), deterministic checks, TEE verification, encrypted store
 channels/          channel interface + Telegram bot (grammY)
-web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, pause, private view
+web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, limits, pause, private view
 devkit/            local NEAR node harness and the integration tests
 deploy/            the mainnet policy (one tenth of v1's default limits)
 fixtures/invoices/ demo invoices (clean, duplicates, injection, address swap, fabricated, NGN, …)
