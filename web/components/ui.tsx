@@ -51,8 +51,9 @@ export function Shell({ children }: { children: ReactNode }) {
     if (HOSTED) void runsRelease(POLICY_ID).then(setRelease, () => undefined); // unchecked stays "checking"; signing re-checks (lib/wallet.tsx)
   }, []);
   const hosted = contract !== HOME_POLICY_ID;
-  // The setup page connects the wallet itself, and its contract doesn't exist yet. "Try app" (/app) finds the
-  // visitor's own GetLeash first, so until then no page names one: no tabs, and the logo leads home.
+  // The setup page connects the wallet itself, and its contract doesn't exist yet. The landing page's
+  // "Dashboard" (/app) finds the visitor's own GetLeash first, so until then no page names one: no tabs,
+  // and the logo leads home.
   const setup = path.startsWith("/setup");
   const entry = path === "/app";
   return (
