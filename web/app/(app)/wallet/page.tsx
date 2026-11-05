@@ -124,7 +124,7 @@ export default function WalletPage() {
       <Check ok label={`Signs as ${owner}, the owner of your GetLeash contract`} />
       {near !== null && <Check ok={enough} label={`${moneyRounded(near, 24)} NEAR for network fees`} />}
       <div className="actions">
-        <Link href="/">See payments</Link>
+        <Link href="/payments">See payments</Link>
         <button className="ghost" onClick={() => void wallet.disconnect()}>
           Disconnect
         </button>

@@ -115,7 +115,7 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
    NEXT_PUBLIC_NEAR_NETWORK=mainnet NEXT_PUBLIC_POLICY_CONTRACT_ID=getleash.you.near pnpm dashboard
    ```
    → `executor executor-1.you.near → getleash.you.near on mainnet`, `@<your bot> is listening`, and the
-   dashboard at http://localhost:3000. One Telegram bot token serves one process at a time: stop a
+   dashboard at http://localhost:3000/payments. One Telegram bot token serves one process at a time: stop a
    testnet bot first, or use a second bot.
 
 7. **Check:**

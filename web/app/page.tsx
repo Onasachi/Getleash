@@ -1,220 +1,381 @@
-"use client";
-
 /**
- * The owner's overview (PLAN §4.5; v2, docs/decisions.md D-28): the treasury, what needs the owner,
- * and recent payments, in plain words. Read from the chain in this browser. v2 keeps no ledger
- * on-chain: the treasury is the token balance, and today's counters only go up. How the money is
- * protected (the contract's limits, roles and keys) is one click away.
+ * The landing page (getleash.xyz): what GetLeash does, how a business sets it up in Telegram, who it is for,
+ * how the money stays safe, and two ways in: the bot, where setting up starts, and "Try app". It names no
+ * account: "Try app" opens the visitor's own dashboard, found from their wallet. Costs and limits are read from the
+ * same shared code the setup uses, so they always match what a new GetLeash gets.
  */
-import Link from "next/link";
+import type { Metadata } from "next";
 
-import {
-  assetName,
-  durationText,
-  type ExecutionStatus,
-  type Intent,
-  isExpired,
-  isNative,
-  money,
-  moneyRounded,
-  paymentState,
-  shortAddress,
-  type Supplier,
-  TERMINAL_STATUSES,
-  waitReason,
-} from "@getleash/shared";
+import { DEFAULT_POLICY, durationText, money, nearRoundedUp, setupCost, setupNeeds } from "@getleash/shared";
 
-import { ArrowIcon, CheckIcon, CrossIcon, PauseIcon } from "@/components/icons";
-import { Fold, Loading, Notice, StatusChip } from "@/components/ui";
-import { accessKeyCount, oneclick, policy } from "@/lib/chain";
-import { EXPLORER, POLICY_ID } from "@/lib/config";
-import { whenText } from "@/lib/format";
-import { useSupplierNames } from "@/lib/names";
-import { useChain } from "@/lib/use-chain";
+import { ArrowIcon, CheckIcon, PauseIcon, WalletIcon, WarningIcon } from "@/components/icons";
+import { LeashMark, Wordmark } from "@/components/logo";
 
-async function load() {
-  const state = await policy.state();
-  const [balance, intents, suppliers, keys] = await Promise.all([
-    policy.treasuryBalance(state.token_id),
-    policy.recentIntents(50),
-    policy.suppliers(),
-    accessKeyCount(POLICY_ID),
-  ]);
-  // 1Click's word on recent cross-chain payouts: delivered, refunded, or still on its way.
-  const swaps = new Map<number, string>();
-  await Promise.all(
-    intents
-      .filter((i) => i.status === "PAID" && i.attempt)
-      .slice(-10)
-      .map(async (i) => {
-        try {
-          swaps.set(i.id, (await oneclick.status(i.attempt!.deposit)).status);
-        } catch {
-          // Unreachable: shown as "On its way" until the payment page can check.
-        }
-      }),
-  );
-  return { state, balance, intents, suppliers, keys, swaps };
-}
+const BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT || "GetLeash_bot";
+const BOT_URL = `https://t.me/${BOT}`;
+const SOURCE_URL = "https://bitbucket.org/crackedstudios/getleash";
 
-type Task = { intent: Intent; line: string; cta: string };
+export const metadata: Metadata = {
+  title: "GetLeash: pay your suppliers from Telegram",
+  description: "An AI agent that pays your suppliers in USDC, under limits on NEAR that only your wallet can change. Set up in minutes in Telegram.",
+};
 
-/** How much of a daily limit is used, as a bar (design system, stage 2). */
-function Meter({ label, used, cap, decimals, brand }: { label: string; used: string; cap: string; decimals: number; brand?: boolean }) {
-  const limit = BigInt(cap);
-  const share = limit > 0n ? Number((BigInt(used) * 1000n) / limit) / 10 : 0;
+const p = DEFAULT_POLICY;
+const COST = nearRoundedUp(setupCost());
+const NEEDS = nearRoundedUp(setupNeeds(), 2);
+const LIMITS = {
+  alone: money(p.approval_threshold),
+  daily: money(p.autonomous_daily_budget),
+  cap: money(p.daily_cap),
+  wait: durationText(p.cooldown_ns),
+};
+
+/** "Try app": the visitor's own dashboard, found from their wallet (app/(app)/app/page.tsx). */
+function TryApp({ big, light }: { big?: boolean; light?: boolean }) {
   return (
-    <div className="meter">
-      <div className="meter-row">
-        <span>{label}</span>
-        <span>
-          <strong>{moneyRounded(used, decimals)}</strong> <span className="muted">of {moneyRounded(cap, decimals)} USDC</span>
-        </span>
-      </div>
-      <div className="bar" role="presentation">
-        <span className={brand ? "fill brand" : "fill"} style={{ width: `${Math.min(100, share)}%` }} />
-      </div>
-    </div>
+    <a className={`btn${big ? " big" : ""}${light ? " light" : ""}`} href="/app">
+      Try app
+      <ArrowIcon size={18} />
+    </a>
   );
 }
 
-export default function Overview() {
-  const { names, available } = useSupplierNames();
-  const { data, error } = useChain(load);
-
-  if (!POLICY_ID) return <p className="error">Set NEXT_PUBLIC_POLICY_CONTRACT_ID to the policy contract.</p>;
-  if (!data) return <Loading error={error} />;
-  const { state, balance, intents, suppliers, keys, swaps } = data;
-  const d = state.token_decimals;
-  const p = state.policy;
-  const b = state.budgets;
-  const nowNs = BigInt(Date.now()) * 1_000_000n;
-  const byId = new Map(suppliers.map((s) => [s.id, s]));
-  const who = (i: Intent) => names.get(i.supplier_id) ?? (byId.get(i.supplier_id) ? shortAddress(byId.get(i.supplier_id)!.recipient) : `supplier #${i.supplier_id}`);
-  const amount = (i: Intent, s: Supplier | undefined) => (s ? `${money(i.amount_out, s.decimals)} ${assetName(s, state.token_id)}` : `${money(i.value, d)}`);
-  const refunded = (i: Intent) => {
-    const swap = swaps.get(i.id);
-    return !!swap && swap !== "SUCCESS" && TERMINAL_STATUSES.has(swap as ExecutionStatus);
-  };
-
-  const tasks: Task[] = [];
-  for (const i of intents) {
-    const pastGrace = i.status === "PAYING" && nowNs >= BigInt(i.since) + BigInt(p.callback_grace_ns);
-    if (i.status === "PENDING" && !isExpired(i, p, nowNs)) tasks.push({ intent: i, line: `Needs your OK: ${waitReason(i.route, p, d)}.`, cta: "Review" });
-    else if (i.status === "APPROVED" && i.attempt && !i.attempt.authorized)
-      tasks.push({ intent: i, line: `Ready to send: confirm ${money(i.attempt.amount_in, d)} USDC from your treasury.`, cta: "Confirm" });
-    else if (i.status === "FAILED") tasks.push({ intent: i, line: "Didn't go through: nothing left your treasury.", cta: "Try again" });
-    else if (refunded(i)) tasks.push({ intent: i, line: "Not delivered: the USDC came back to your treasury.", cta: "Try again" });
-    else if (pastGrace) tasks.push({ intent: i, line: "The transfer has not confirmed: please check it.", cta: "Check" });
-  }
-  const taskIds = new Set(tasks.map((t) => t.intent.id));
-  const recent = intents
-    .filter((i) => !taskIds.has(i.id))
-    .slice(-12)
-    .reverse();
-
+/** Setting up starts in the bot. */
+function OpenBot() {
   return (
-    <>
-      <section className="hero">
-        <div className="label">Treasury</div>
-        <div className="amount" title={`${money(balance, d)} USDC exactly`}>
-          {moneyRounded(balance, d)} USDC
-        </div>
-        <div className="meters">
-          <Meter label="Sent today" used={b.outflow} cap={p.daily_cap} decimals={d} />
-          <Meter label="Paid by the agent on its own" used={b.autonomous} cap={p.autonomous_daily_budget} decimals={d} brand />
-        </div>
-        <p className="lead small">Above {money(p.approval_threshold, d)} USDC, a payment waits for you.</p>
-        {state.paused && (
-          <Notice icon={PauseIcon}>
-            Payments are paused. <Link href="/pause">Unpause</Link>
-          </Notice>
-        )}
-      </section>
+    <a className="btn big" href={BOT_URL} target="_blank" rel="noreferrer">
+      Open @{BOT} in Telegram
+      <ArrowIcon size={18} />
+    </a>
+  );
+}
 
-      <h2>Needs you{tasks.length > 0 && ` (${tasks.length})`}</h2>
-      {tasks.length === 0 ? (
-        <div className="card calm">
-          <CheckIcon size={18} />
-          Nothing needs you right now.
+export default function Landing() {
+  return (
+    <div className="site">
+      <header className="site-top">
+        <div className="site-top-in">
+          <a href="#top" className="brand" aria-label="GetLeash">
+            <LeashMark size={24} className="mark" />
+            <Wordmark height={19} className="word" />
+          </a>
+          <nav aria-label="Sections">
+            <a href="#how">How it works</a>
+            <a href="#setup">Set up</a>
+            <a href="#business">For business</a>
+            <a href="#security">Security</a>
+            <a href="#faq">FAQ</a>
+          </nav>
+          <span className="spacer" />
+          <TryApp />
         </div>
-      ) : (
-        tasks.map(({ intent: i, line, cta }) => (
-          <Link key={i.id} href={`/intent/${i.id}`} className="task">
-            <div>
-              <div>
-                <strong>{who(i)}</strong> · {amount(i, byId.get(i.supplier_id))}
-              </div>
-              <div className="muted small">{line}</div>
+      </header>
+
+      <main className="site-main" id="top">
+        <section className="site-hero">
+          <div>
+            <p className="eyebrow">Supplier payments for small businesses</p>
+            <h1>Pay your suppliers from Telegram, under limits only you can change.</h1>
+            <p className="sub">
+              Send GetLeash an invoice. It pays suppliers you trust in USDC right away when the amount is small, and asks you first for everything else. Your money stays
+              in your own contract on NEAR.
+            </p>
+            <div className="ctas">
+              <TryApp big />
+              <a className="btn big ghost" href="#how">
+                See how it works
+              </a>
             </div>
-            <span className="go">
-              {cta}
-              <ArrowIcon size={16} />
-            </span>
-          </Link>
-        ))
-      )}
-
-      <h2>Recent payments</h2>
-      {recent.length === 0 ? (
-        <p className="muted">None yet. Send an invoice to the bot to start.</p>
-      ) : (
-        <ul className="payments">
-          {recent.map((i) => {
-            const s = byId.get(i.supplier_id);
-            return (
-              <li key={i.id}>
-                <Link href={`/intent/${i.id}`}>
-                  <StatusChip {...paymentState(i, !!s && isNative(s, state.token_id), swaps.get(i.id))} />
-                  <span className="who">
-                    {who(i)}
-                    {i.route === "AUTONOMOUS" && <span className="muted small"> · paid by the agent</span>}
-                  </span>
-                  <span className="amt">{amount(i, s)}</span>
-                  <span className="when">{whenText(i.since)}</span>
-                </Link>
+            <ul className="facts">
+              <li>
+                <CheckIcon size={16} />
+                Your own contract, with no keys
               </li>
-            );
-          })}
-        </ul>
-      )}
-      {!available && (
-        <p className="muted small">
-          Supplier names are private: <Link href="/private">sign in</Link> to see them instead of addresses.
-        </p>
-      )}
+              <li>
+                <CheckIcon size={16} />
+                Limits enforced on NEAR
+              </li>
+              <li>
+                <CheckIcon size={16} />
+                Set up in minutes
+              </li>
+            </ul>
+          </div>
 
-      <Fold summary="How your money is protected">
-        <ul className="rules">
-          <li>
-            {keys === 0 ? <CheckIcon size={16} className="inline-icon tone-good" /> : <CrossIcon size={16} className="inline-icon tone-bad" />}
-            The treasury is held by a contract with <strong>{keys === 0 ? "no keys" : `${keys} access keys`}</strong>: only its rules move
-            money, and only you can change them.
-          </li>
-          <li>
-            The agent can pay on its own up to {money(p.approval_threshold, d)} USDC per payment and {money(p.autonomous_daily_budget, d)} USDC per day. Everything
-            else waits for you.
-          </li>
-          <li>At most {money(p.daily_cap, d)} USDC can leave per day, whoever approves it.</li>
-          <li>
-            Only suppliers on your list can be paid, and only to the address on file. When an address changes, payments to that supplier wait for you for{" "}
-            {durationText(p.cooldown_ns)}, and you can approve at most {money(p.cooldown_max, d)} USDC until then.
-          </li>
-          <li>
-            {BigInt(p.executor_trust_daily_budget) === 0n
-              ? "You confirm every cross-chain transfer yourself."
-              : `The executor may send up to ${money(p.executor_trust_daily_budget, d)} USDC of cross-chain transfers per day on its own; you confirm the rest.`}
-          </li>
-        </ul>
-        <p className="muted small">
-          Contract{" "}
-          <a href={EXPLORER.explorerAccount(POLICY_ID)} target="_blank" rel="noreferrer" className="mono">
-            {POLICY_ID}
-          </a>{" "}
-          · owner {state.owner_id} · agent {state.agent_id} · executor {state.executor_id} · {state.paying} payment(s) in flight ·{" "}
-          {state.stored_intents} of 50 payment slots in use
-        </p>
-      </Fold>
-    </>
+          {/* An illustration of the product: the bot's message, and the page its button opens. */}
+          <div className="shot" aria-hidden="true">
+            <div className="tg">
+              <div className="tg-who">
+                <span className="tg-avatar">
+                  <LeashMark size={18} />
+                </span>
+                GetLeash
+              </div>
+              <p>
+                👋 Lagos Fabrics asks for 3.20 USDC. It needs your OK because it is above the {LIMITS.alone} USDC the agent may pay on its own (payment #14).
+              </p>
+              <span className="tg-btn">Review and approve</span>
+            </div>
+            <div className="shot-card">
+              <span className="chip warn">Needs your OK</span>
+              <p className="shot-title">Pay Lagos Fabrics?</p>
+              <div className="amt-row">
+                <span className="num">3.20</span>
+                <span className="unit">USDC</span>
+              </div>
+              <div className="ident">
+                <div className="meta">
+                  <span>To</span>
+                  <span>NEAR · Payment #14</span>
+                </div>
+                <div className="row">
+                  <div className="addr">
+                    <span>lagosfabrics.near</span>
+                  </div>
+                </div>
+              </div>
+              <span className="btn big wide">Approve and pay 3.20 USDC</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="band" id="how">
+          <div className="band-in">
+            <p className="eyebrow">How it works</p>
+            <h2>From invoice to paid in three steps</h2>
+            <ol className="cards three steps-list">
+              <li className="tile">
+                <span className="n">1</span>
+                <h3>Send the invoice</h3>
+                <p>Forward a PDF, a photo or the text to @{BOT} in Telegram.</p>
+              </li>
+              <li className="tile">
+                <span className="n">2</span>
+                <h3>GetLeash checks it</h3>
+                <p>The agent reads it and matches the supplier against your list. It never pays an address taken from an invoice.</p>
+              </li>
+              <li className="tile">
+                <span className="n">3</span>
+                <h3>Paid, or your OK first</h3>
+                <p>Small payments to known suppliers go out at once. Anything bigger waits for one tap in your wallet.</p>
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section className="band alt" id="setup">
+          <div className="band-in split">
+            <div>
+              <p className="eyebrow">Get started</p>
+              <h2>Set up in Telegram in a few minutes</h2>
+              <p className="intro">
+                Everything happens in the chat with @{BOT}. You need a NEAR wallet (HOT Wallet works inside Telegram) with about {NEEDS} NEAR for the one-time setup.
+              </p>
+              <ol className="how-steps">
+                <li>
+                  <span>
+                    Open <strong>@{BOT}</strong> and tap <strong>START</strong>.
+                  </span>
+                </li>
+                <li>
+                  <span>
+                    Tap <strong>Set up GetLeash</strong> and connect your NEAR wallet.
+                  </span>
+                </li>
+                <li>
+                  <span>
+                    Tap <strong>Create my GetLeash</strong> and confirm in your wallet. It costs about {COST} NEAR, once.
+                  </span>
+                </li>
+                <li>
+                  <span>
+                    Tap <strong>Open the GetLeash chat</strong>. The bot tells you when your GetLeash is ready.
+                  </span>
+                </li>
+                <li>
+                  <span>
+                    Send USDC to your contract and add the people you pay with <strong>/addsupplier</strong>.
+                  </span>
+                </li>
+              </ol>
+            </div>
+            <aside className="tile have">
+              <h3>What you get</h3>
+              <ul className="ticks">
+                <li>
+                  <CheckIcon size={18} />A contract on NEAR that holds your USDC and answers only to your wallet
+                </li>
+                <li>
+                  <CheckIcon size={18} />
+                  An agent that reads your invoices and proposes payments
+                </li>
+                <li>
+                  <CheckIcon size={18} />
+                  Limits that only your wallet can change
+                </li>
+                <li>
+                  <CheckIcon size={18} />
+                  Approvals, status and pause, all from Telegram
+                </li>
+              </ul>
+              <OpenBot />
+            </aside>
+          </div>
+        </section>
+
+        <section className="band" id="business">
+          <div className="band-in">
+            <p className="eyebrow">For business</p>
+            <h2>Built for businesses that pay suppliers every week</h2>
+            <div className="cards three">
+              <div className="tile">
+                <h3>Importers and traders</h3>
+                <p>Pay overseas suppliers in USDT on Tron straight from your USDC. The fee is shown before you confirm.</p>
+              </div>
+              <div className="tile">
+                <h3>Shops and distributors</h3>
+                <p>Routine invoices from your wholesalers are paid on their own, within the limits you set.</p>
+              </div>
+              <div className="tile">
+                <h3>Teams with contractors</h3>
+                <p>Pay freelancers and service providers on time, without sharing a card or a wallet&apos;s keys.</p>
+              </div>
+            </div>
+            <div className="cards three gains">
+              <div>
+                <strong>Save time</strong>
+                <span>No more copying amounts and addresses by hand.</span>
+              </div>
+              <div>
+                <strong>Stop invoice fraud</strong>
+                <span>Money goes only to addresses on your list.</span>
+              </div>
+              <div>
+                <strong>Stay in control</strong>
+                <span>Approve, reject or pause from your phone.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="band alt" id="security">
+          <div className="band-in">
+            <p className="eyebrow">Security</p>
+            <h2>Your money stays under your rules</h2>
+            <p className="intro">GetLeash is self-custodial: it holds no key that can withdraw or redirect your money.</p>
+            <div className="cards three">
+              <div className="tile">
+                <span className="ic">
+                  <WalletIcon size={20} />
+                </span>
+                <h3>Your own contract</h3>
+                <p>Your USDC sits in a contract on NEAR with no keys. Only its rules move money, and only your wallet can change them.</p>
+              </div>
+              <div className="tile">
+                <span className="ic">
+                  <CheckIcon size={20} />
+                </span>
+                <h3>Limits on-chain</h3>
+                <p>
+                  New setups start small: the agent pays alone up to {LIMITS.alone} USDC a payment and {LIMITS.daily} USDC a day, and at most {LIMITS.cap} USDC leaves a
+                  day.
+                </p>
+              </div>
+              <div className="tile">
+                <span className="ic">
+                  <WarningIcon size={20} />
+                </span>
+                <h3>Known suppliers only</h3>
+                <p>Payments go only to suppliers you added, at the address on file. After an address changes, payments wait for you for {LIMITS.wait}.</p>
+              </div>
+              <div className="tile">
+                <span className="ic">
+                  <ArrowIcon size={20} />
+                </span>
+                <h3>You approve the rest</h3>
+                <p>Bigger or unusual payments wait for your OK, signed in your own wallet with the exact amount and recipient.</p>
+              </div>
+              <div className="tile">
+                <span className="ic">
+                  <PauseIcon size={20} />
+                </span>
+                <h3>One-tap pause</h3>
+                <p>One signature in your wallet stops every payment at once; another starts them again.</p>
+              </div>
+              <div className="tile">
+                <span className="ic">
+                  <CheckIcon size={20} />
+                </span>
+                <h3>AI that can&apos;t break the rules</h3>
+                <p>The agent only proposes; the contract decides. A fake or tampered invoice can&apos;t move money outside your rules.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="band" id="faq">
+          <div className="band-in narrow">
+            <p className="eyebrow">FAQ</p>
+            <h2>Questions businesses ask</h2>
+            <div className="faq">
+              <details>
+                <summary>Do I need to understand crypto?</summary>
+                <p>No. You need a NEAR wallet and some USDC. HOT Wallet works inside Telegram, and the setup page explains each step.</p>
+              </details>
+              <details>
+                <summary>What does it cost?</summary>
+                <p>
+                  About {COST} NEAR once, from your wallet, to create your contract. Approving a payment costs a tiny network fee. Payments to Tron include a NEAR Intents
+                  fee, shown before you confirm.
+                </p>
+              </details>
+              <details>
+                <summary>Can GetLeash take my money?</summary>
+                <p>
+                  No. Its two helper accounts can only propose and send payments within your contract&apos;s rules. Adding suppliers, changing limits and withdrawing all need
+                  your wallet.
+                </p>
+              </details>
+              <details>
+                <summary>What happens with a fake invoice?</summary>
+                <p>GetLeash pays only suppliers on your list, and only at the address on file. It never pays an invoice from someone else, or to an address an invoice asks for.</p>
+              </details>
+              <details>
+                <summary>Which currencies does it pay in?</summary>
+                <p>Your treasury holds USDC on NEAR. Suppliers can be paid in USDC on NEAR, or in USDT on Tron.</p>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section className="band last">
+          <div className="band-in">
+            <div className="cta-band">
+              <h2>Start paying suppliers from Telegram</h2>
+              <p>Set up in a few minutes. You stay in control.</p>
+              <TryApp big light />
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="site-foot">
+        <div className="site-foot-in">
+          <a href="#top" className="brand" aria-label="GetLeash">
+            <LeashMark size={22} className="mark" />
+            <Wordmark height={18} className="word" />
+          </a>
+          <span className="muted">An AI agent that pays your suppliers under on-chain rules it cannot break.</span>
+          <span className="spacer" />
+          <a href={BOT_URL} target="_blank" rel="noreferrer">
+            Telegram bot
+          </a>
+          <a href={SOURCE_URL} target="_blank" rel="noreferrer">
+            Source code
+          </a>
+          <span className="muted">© 2026 GetLeash · Built on NEAR</span>
+        </div>
+      </footer>
+    </div>
   );
 }

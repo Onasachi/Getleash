@@ -91,7 +91,7 @@ function NewSupplier() {
               Back to the chat
             </button>
           ) : (
-            <Link href="/">See payments</Link>
+            <Link href="/payments">See payments</Link>
           )}
           <a href={EXPLORER.explorerTx(added.txHash)} target="_blank" rel="noreferrer">
             View the transaction <ExternalIcon size={14} className="inline-icon" />
