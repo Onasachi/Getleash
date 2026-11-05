@@ -34,6 +34,7 @@ const PAGES = [
   { href: "/payments", label: "Payments", here: (path: string) => path.startsWith("/payments") || path.startsWith("/intent"), own: false },
   { href: "/private", label: "Suppliers & invoices", here: (path: string) => path.startsWith("/private") || path.startsWith("/suppliers"), own: true },
   { href: "/pause", label: "Pause", here: (path: string) => path.startsWith("/pause"), own: false },
+  { href: "/limits", label: "Limits", here: (path: string) => path.startsWith("/limits"), own: false },
   { href: "/wallet", label: "Wallet", here: (path: string) => path.startsWith("/wallet"), own: false },
 ];
 

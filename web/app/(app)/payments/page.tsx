@@ -124,7 +124,9 @@ export default function Overview() {
           <Meter label="Sent today" used={b.outflow} cap={p.daily_cap} decimals={d} />
           <Meter label="Paid by the agent on its own" used={b.autonomous} cap={p.autonomous_daily_budget} decimals={d} brand />
         </div>
-        <p className="lead small">Above {money(p.approval_threshold, d)} USDC, a payment waits for you.</p>
+        <p className="lead small">
+          Above {money(p.approval_threshold, d)} USDC, a payment waits for you. <Link href="/limits">Change limits</Link>
+        </p>
         {state.paused && (
           <Notice icon={PauseIcon}>
             Payments are paused. <Link href="/pause">Unpause</Link>

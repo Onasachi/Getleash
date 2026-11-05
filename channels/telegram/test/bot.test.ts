@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import { UpdateLog } from "@getleash/ingestion";
-import type { Intent, IntentStatus, PolicyView } from "@getleash/shared";
+import { DEFAULT_POLICY, type Intent, type IntentStatus, type PolicyView } from "@getleash/shared";
 
 import { coveredNotices, parseIdList, TelegramChannel } from "../src/bot.ts";
 import { telegramMessage, TelegramNotifier } from "../src/notifier.ts";
@@ -41,6 +41,8 @@ function setup(
     dashboardUrl?: string;
     refuseButtons?: boolean;
     intents?: Array<Partial<Intent>>;
+    /** The contract's whole policy; by default only the cooldown is there. */
+    fullPolicy?: boolean;
   } = {},
 ) {
   const sent: Array<{ chatId: string | number; text: string; other?: Record<string, unknown> }> = [];
@@ -63,7 +65,7 @@ function setup(
     },
   } as unknown as InvoiceAgent;
   const view = {
-    state: async () => ({ owner_id: "owner.near", paused: false, token_decimals: 6, policy: { cooldown_ns: "0" } }),
+    state: async () => ({ owner_id: "owner.near", paused: false, token_decimals: 6, policy: overrides.fullPolicy ? DEFAULT_POLICY : { cooldown_ns: "0" } }),
     recentIntents: async () => overrides.intents ?? [],
     suppliers: async () => [],
   } as unknown as PolicyView;
@@ -134,6 +136,11 @@ describe("Telegram channel", () => {
     expect(sent.at(-1)!.text).toBe("Nothing is waiting for you.");
     expect(await channel.handle(message(507, { text: "/pause" }))).toBe("command:pause");
     expect(sent.at(-1)!.other?.reply_markup).toEqual({ inline_keyboard: [[{ text: "Pause payments", web_app: { url: "https://getleash.example/pause" } }]] });
+    const limits = setup({ fullPolicy: true });
+    expect(await limits.channel.handle(message(508, { text: "/limits" }))).toBe("command:limits");
+    expect(limits.sent.at(-1)!.text).toContain("Your limits, which only your wallet can change:");
+    expect(limits.sent.at(-1)!.text).toContain("up to 2.50 USDC a payment and 5.00 USDC a day");
+    expect(limits.sent.at(-1)!.other?.reply_markup).toEqual({ inline_keyboard: [[{ text: "Change limits", web_app: { url: "https://getleash.example/limits" } }]] });
 
     const waiting = setup({ intents: [{ id: 4, status: "PENDING", supplier_id: 1, value: "500000", attempt: null }, { id: 3, status: "PAID", supplier_id: 1, value: "1", attempt: null }] });
     await waiting.channel.handle(message(514, { text: "/pending" }));
