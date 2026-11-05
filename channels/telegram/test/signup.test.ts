@@ -226,8 +226,8 @@ describe("someone new sets up their own GetLeash", () => {
     const w = world({ now: () => now });
     expect(await w.say("/start")).toBe("signup:offered");
     const reply = w.last(NEWCOMER)!;
-    expect(reply.text).toContain("Your wallet creates your own GetLeash");
-    expect(reply.text).toContain("about 1.43 NEAR, from your wallet, which needs about 1.491 NEAR while it signs");
+    expect(reply.text).toContain('Tap "Create my GetLeash" and confirm in your wallet');
+    expect(reply.text).toContain("about 1.43 NEAR; your wallet needs 1.491 NEAR while it signs");
     expect(reply.text).toContain("up to 2.50 USDC a payment and 5.00 USDC a day");
     const first = w.offered();
     expect(first.button.text).toBe(SETUP_BUTTON);

@@ -15,6 +15,7 @@ import { Suspense, useState } from "react";
 
 import { decodeU32, durationText, FT_STORAGE_DEPOSIT, money, paidAt, type Payee, payeeOf, supplierTerms, USDT_TRON_CONTRACT } from "@getleash/shared";
 
+import { ExternalIcon } from "@/components/icons";
 import { Check, Loading, StatusChip, TerminalOption } from "@/components/ui";
 import { policy, rpc } from "@/lib/chain";
 import { nearCliCommand } from "@/lib/cli";
@@ -82,7 +83,7 @@ function NewSupplier() {
         <h1>{added.id !== null ? `Supplier #${added.id} is on your list` : "The supplier is on your list"}</h1>
         <p className="lead">
           {payee ? `Paid in ${paidAt(payee)}. ` : ""}
-          {telegram ? "The bot confirms it in the chat in a few seconds, with the name you gave it." : "The bot confirms it in Telegram in a few seconds, with the name you gave it."}
+          The bot confirms it in a few seconds.
         </p>
         <div className="actions">
           {telegram ? (
@@ -93,7 +94,7 @@ function NewSupplier() {
             <Link href="/">See payments</Link>
           )}
           <a href={EXPLORER.explorerTx(added.txHash)} target="_blank" rel="noreferrer">
-            View the transaction ↗
+            View the transaction <ExternalIcon size={14} className="inline-icon" />
           </a>
         </div>
       </section>
@@ -129,12 +130,11 @@ function NewSupplier() {
         <StatusChip label="New supplier" tone="plain" />
         <h1>Add a supplier</h1>
         <p className="lead">
-          Their NEAR account (paid in USDC) or their Tron address (paid in USDT). Use the address they gave you themselves, not one copied from an invoice:
-          invoices can be faked.
+          Their NEAR account (paid in USDC) or Tron address (paid in USDT). Use the address they gave you, not one from an invoice: invoices can be faked.
         </p>
         {form}
         {address && <p className="error">That&apos;s not a NEAR account (like acme.near) or a Tron address (T…, 34 characters, with a valid checksum).</p>}
-        <p className="hint">In Telegram, /addsupplier and /invite bring you here with the address filled in, and the bot keeps the supplier&apos;s name.</p>
+        <p className="hint">Tip: /addsupplier in the bot fills this in for you.</p>
       </section>
     );
   }
@@ -209,10 +209,10 @@ function NewSupplier() {
       {!blocked && (
         <p className="lead small">
           {cooldown
-            ? `For the first ${durationText(state.policy.cooldown_ns)}, every payment to them waits for your OK and can be at most ${money(state.policy.cooldown_max, state.token_decimals)} USDC: send a small test payment and check with them that it arrived. `
+            ? `For ${durationText(state.policy.cooldown_ns)}, payments to them wait for your OK, at most ${money(state.policy.cooldown_max, state.token_decimals)} USDC each: send a small test first. `
             : ""}
-          {payee.chain === "TRON" ? "Payments to Tron go through NEAR Intents, which charges a network fee on each one. " : ""}
-          Adding them costs a network fee of well under 0.01 NEAR.
+          {payee.chain === "TRON" ? "Each Tron payment pays a NEAR Intents fee. " : ""}
+          Adding costs under 0.01 NEAR.
         </p>
       )}
       <div className="actions">

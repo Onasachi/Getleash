@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { DirectoryEntry } from "@getleash/shared";
 
+import { CheckIcon, CrossIcon } from "@/components/icons";
 import { Pill } from "@/components/ui";
 import { HOSTED, POLICY_ID } from "@/lib/config";
 import { useWallet } from "@/lib/wallet";
@@ -162,7 +163,8 @@ export default function PrivatePage() {
             <ul className="small">
               {inv.verification.checks.map((c) => (
                 <li key={c.name} className={c.ok ? "success" : "error"}>
-                  {c.ok ? "✓" : "✗"} {c.name} <span className="muted mono">{c.detail}</span>
+                  {c.ok ? <CheckIcon size={16} className="inline-icon" /> : <CrossIcon size={16} className="inline-icon" />} {c.name}{" "}
+                  <span className="muted mono">{c.detail}</span>
                 </li>
               ))}
             </ul>

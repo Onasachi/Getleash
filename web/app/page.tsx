@@ -24,7 +24,8 @@ import {
   waitReason,
 } from "@getleash/shared";
 
-import { Fold, Loading, StatusChip } from "@/components/ui";
+import { ArrowIcon, CheckIcon, CrossIcon, PauseIcon } from "@/components/icons";
+import { Fold, Loading, Notice, StatusChip } from "@/components/ui";
 import { accessKeyCount, oneclick, policy } from "@/lib/chain";
 import { EXPLORER, POLICY_ID } from "@/lib/config";
 import { whenText } from "@/lib/format";
@@ -57,6 +58,25 @@ async function load() {
 }
 
 type Task = { intent: Intent; line: string; cta: string };
+
+/** How much of a daily limit is used, as a bar (design system, stage 2). */
+function Meter({ label, used, cap, decimals, brand }: { label: string; used: string; cap: string; decimals: number; brand?: boolean }) {
+  const limit = BigInt(cap);
+  const share = limit > 0n ? Number((BigInt(used) * 1000n) / limit) / 10 : 0;
+  return (
+    <div className="meter">
+      <div className="meter-row">
+        <span>{label}</span>
+        <span>
+          <strong>{moneyRounded(used, decimals)}</strong> <span className="muted">of {moneyRounded(cap, decimals)} USDC</span>
+        </span>
+      </div>
+      <div className="bar" role="presentation">
+        <span className={brand ? "fill brand" : "fill"} style={{ width: `${Math.min(100, share)}%` }} />
+      </div>
+    </div>
+  );
+}
 
 export default function Overview() {
   const { names, available } = useSupplierNames();
@@ -100,20 +120,24 @@ export default function Overview() {
         <div className="amount" title={`${money(balance, d)} USDC exactly`}>
           {moneyRounded(balance, d)} USDC
         </div>
-        <p className="lead small">
-          Sent today: {moneyRounded(b.outflow, d)} of {moneyRounded(p.daily_cap, d)} USDC · paid by the agent on its own: {moneyRounded(b.autonomous, d)} of{" "}
-          {moneyRounded(p.autonomous_daily_budget, d)} USDC · anything above {money(p.approval_threshold, d)} USDC waits for you
-        </p>
+        <div className="meters">
+          <Meter label="Sent today" used={b.outflow} cap={p.daily_cap} decimals={d} />
+          <Meter label="Paid by the agent on its own" used={b.autonomous} cap={p.autonomous_daily_budget} decimals={d} brand />
+        </div>
+        <p className="lead small">Above {money(p.approval_threshold, d)} USDC, a payment waits for you.</p>
         {state.paused && (
-          <p className="notice">
-            ⏸ Payments are paused. <Link href="/pause">Unpause</Link>
-          </p>
+          <Notice icon={PauseIcon}>
+            Payments are paused. <Link href="/pause">Unpause</Link>
+          </Notice>
         )}
       </section>
 
       <h2>Needs you{tasks.length > 0 && ` (${tasks.length})`}</h2>
       {tasks.length === 0 ? (
-        <div className="card calm">✓ Nothing needs you right now.</div>
+        <div className="card calm">
+          <CheckIcon size={18} />
+          Nothing needs you right now.
+        </div>
       ) : (
         tasks.map(({ intent: i, line, cta }) => (
           <Link key={i.id} href={`/intent/${i.id}`} className="task">
@@ -123,7 +147,10 @@ export default function Overview() {
               </div>
               <div className="muted small">{line}</div>
             </div>
-            <span className="go">{cta} →</span>
+            <span className="go">
+              {cta}
+              <ArrowIcon size={16} />
+            </span>
           </Link>
         ))
       )}
@@ -160,7 +187,8 @@ export default function Overview() {
       <Fold summary="How your money is protected">
         <ul className="rules">
           <li>
-            {keys === 0 ? "✓" : "✗"} The treasury is held by a contract with <strong>{keys === 0 ? "no keys" : `${keys} access keys`}</strong>: only its rules move
+            {keys === 0 ? <CheckIcon size={16} className="inline-icon tone-good" /> : <CrossIcon size={16} className="inline-icon tone-bad" />}
+            The treasury is held by a contract with <strong>{keys === 0 ? "no keys" : `${keys} access keys`}</strong>: only its rules move
             money, and only you can change them.
           </li>
           <li>

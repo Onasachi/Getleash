@@ -64,8 +64,7 @@ export default function WalletPage() {
         <StatusChip label="Not connected" tone="warn" />
         <h1>Check your wallet</h1>
         <p className="lead">
-          Payments you approve are signed in your wallet, as <span className="mono">{owner}</span>. Connect it to see that it&apos;s ready. Connecting pays
-          nothing.
+          You approve payments in your wallet, as <span className="mono">{owner}</span>. Connect it to check it&apos;s ready. It&apos;s free.
         </p>
         <div className="actions">
           <button className="primary" disabled={busy} onClick={() => void connect()}>
@@ -74,7 +73,7 @@ export default function WalletPage() {
         </div>
         {telegram && (
           <p className="hint">
-            HOT Wallet not set up yet?{" "}
+            Not in HOT Wallet yet?{" "}
             <a
               href={HOT_WALLET_TELEGRAM}
               onClick={(e) => {
@@ -84,7 +83,7 @@ export default function WalletPage() {
             >
               Open HOT Wallet
             </a>
-            , choose to import a wallet and enter the recovery phrase of {owner}, then come back here.
+, import {owner} with its recovery phrase, then come back.
           </p>
         )}
         {error && <p className="error">{error}</p>}
@@ -98,8 +97,8 @@ export default function WalletPage() {
         <StatusChip label="Wrong account" tone="bad" />
         <h1>This isn&apos;t the owner&apos;s account</h1>
         <p className="lead">
-          Your wallet is connected as <span className="mono">{account}</span>, but only <span className="mono">{owner}</span> can approve payments.{" "}
-          {telegram ? `In HOT Wallet, switch to ${owner} (or import it with its recovery phrase), then connect again.` : `Switch to ${owner} in your wallet, then connect again.`}
+          Connected as <span className="mono">{account}</span>, but only <span className="mono">{owner}</span> can approve.{" "}
+          {telegram ? `Switch to ${owner} in HOT Wallet, then connect again.` : `Switch to ${owner} in your wallet, then connect again.`}
         </p>
         <div className="actions">
           <button className="primary" disabled={busy} onClick={() => void connect(true)}>
@@ -120,7 +119,7 @@ export default function WalletPage() {
       <p className="lead">
         {enough
           ? "When the bot asks for your OK, tap its button and confirm in your wallet."
-          : `Each approval needs a little NEAR for network fees. Send at least 0.05 NEAR to ${owner}.`}
+          : `Approvals need a little NEAR for fees. Send at least 0.05 NEAR to ${owner}.`}
       </p>
       <Check ok label={`Signs as ${owner}, the owner of your GetLeash contract`} />
       {near !== null && <Check ok={enough} label={`${moneyRounded(near, 24)} NEAR for network fees`} />}

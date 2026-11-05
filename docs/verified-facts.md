@@ -354,6 +354,15 @@ Source: `GET https://cloud-api.near.ai/v1/models` (no key needed), 64 entries.
   that bot's (`sameDialogId`, the chat under the Mini App), calls `minimizeBotWebViews` and
   `ChatActivity.setBotUser(botUser)`, which calls `sendBotStart(currentUser, botUser = value)`: Android
   sends `/start <parameter>` by itself and shows no START button. Other chats open with START.
+- Mini App theme, checked 2026-11-05 (https://core.telegram.org/api/bots/webapps,
+  https://core.telegram.org/api/web-events, https://telegram.org/js/telegram-web-app.js): the launch fragment
+  carries `tgWebAppThemeParams` (JSON), and Telegram's script sets `colorScheme` to dark when `bg_color`'s
+  brightness `sqrt(0.299 r² + 0.587 g² + 0.114 b²)` is below 120. Clients send `theme_changed` with
+  `{theme_params}` by calling `window.Telegram.WebView.receiveEvent(eventType, eventData)`; Telegram Web posts
+  `JSON.stringify({eventType, eventData})` from the parent frame. A Mini App asks for it with
+  `web_app_request_theme`, and colours Telegram's own bars with `web_app_set_header_color` (`{color_key:
+  "bg_color" | "secondary_bg_color"}` or `{color: "#rrggbb"}`, not both), `web_app_set_background_color`
+  (`{color}`) and `web_app_set_bottom_bar_color` (`{color}`). The dashboard follows that theme (web/lib/theme.ts).
 
 ## Hosted setup from a browser wallet (checked 2026-11-03)
 
