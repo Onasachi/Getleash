@@ -2,9 +2,7 @@ import type { Metadata } from "next";
 import { Instrument_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 
-import { Shell } from "@/components/ui";
 import { THEME_SCRIPT } from "@/lib/theme";
-import { WalletProvider } from "@/lib/wallet";
 
 import "./globals.css";
 
@@ -27,6 +25,7 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image", images: [PREVIEW] },
 };
 
+// The landing page (app/page.tsx) and the dashboard ((app)/layout.tsx, with the wallet and its header) share this.
 export default function RootLayout({ children }: { children: ReactNode }) {
   // THEME_SCRIPT sets <html data-theme> (and data-telegram) before the first paint, hence suppressHydrationWarning.
   return (
@@ -34,11 +33,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
-      <body>
-        <WalletProvider>
-          <Shell>{children}</Shell>
-        </WalletProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

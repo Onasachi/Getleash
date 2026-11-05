@@ -368,7 +368,7 @@ export default function PaymentPage({ params }: { params: Promise<{ id: string }
   return (
     <div className="pay">
       <div className="pay-main">
-        <Link href="/" className="back">
+        <Link href="/payments" className="back">
           <BackIcon size={16} />
           All payments
         </Link>

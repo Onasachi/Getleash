@@ -31,7 +31,7 @@ import { useWallet } from "@/lib/wallet";
 
 /** The header's pages. "Suppliers & invoices" reads the bot's private data, which only GetLeash's own instance has. */
 const PAGES = [
-  { href: "/", label: "Payments", here: (path: string) => path === "/" || path.startsWith("/intent"), own: false },
+  { href: "/payments", label: "Payments", here: (path: string) => path.startsWith("/payments") || path.startsWith("/intent"), own: false },
   { href: "/private", label: "Suppliers & invoices", here: (path: string) => path.startsWith("/private") || path.startsWith("/suppliers"), own: true },
   { href: "/pause", label: "Pause", here: (path: string) => path.startsWith("/pause"), own: false },
   { href: "/wallet", label: "Wallet", here: (path: string) => path.startsWith("/wallet"), own: false },
@@ -50,13 +50,15 @@ export function Shell({ children }: { children: ReactNode }) {
     if (HOSTED) void runsRelease(POLICY_ID).then(setRelease, () => undefined); // unchecked stays "checking"; signing re-checks (lib/wallet.tsx)
   }, []);
   const hosted = contract !== HOME_POLICY_ID;
-  // The setup page connects the wallet itself, and its contract doesn't exist yet.
+  // The setup page connects the wallet itself, and its contract doesn't exist yet. "Try app" (/app) finds the
+  // visitor's own GetLeash first, so until then no page names one: no tabs, and the logo leads home.
   const setup = path.startsWith("/setup");
+  const entry = path === "/app";
   return (
     <>
-      <header className={setup ? "top for-setup" : "top"}>
+      <header className={setup ? "top for-setup" : entry ? "top for-entry" : "top"}>
         <div className="top-in">
-          <Link href="/" className="brand" aria-label="GetLeash">
+          <Link href={entry ? "/" : "/payments"} className="brand" aria-label="GetLeash">
             <LeashMark size={24} className="mark" />
             <Wordmark height={19} className="word" />
           </Link>
@@ -101,7 +103,7 @@ export function Shell({ children }: { children: ReactNode }) {
         {children}
       </main>
       <footer>
-        {setup ? (
+        {setup || entry ? (
           <p>
             Everything here is read straight from the NEAR blockchain in your browser. Money moves only within the rules of your contract, and anything you approve is
             signed in your own wallet.

@@ -199,7 +199,7 @@ Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API.
    pnpm devnet          # terminal 1: node + contract + executor + mock 1Click, prints the env for terminal 2
    NEXT_PUBLIC_NEAR_NETWORK=testnet NEXT_PUBLIC_NEAR_RPC_URL=… NEXT_PUBLIC_POLICY_CONTRACT_ID=getleash.biz.near NEXT_PUBLIC_ONECLICK_URL=… pnpm dashboard
    ```
-   → open http://localhost:3000 (use `localhost`, not `127.0.0.1`, in dev mode). "Needs you"
+   → open http://localhost:3000/payments (use `localhost`, not `127.0.0.1`, in dev mode). "Needs you"
    lists three payments. `/intent/5` reads "Confirm the transfer": 8.00 USDT on Tron, its cost from
    the treasury and its fee, and one button. Before the button works, the browser fetches 1Click's
    record of the deposit address and checks it against the 12 terms the contract committed, plus
@@ -262,7 +262,7 @@ mock-1click/       local 1Click stand-in that settles real (mock) tokens on a lo
 ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer
 agent/             extraction (NEAR AI Cloud), deterministic checks, TEE verification, encrypted store
 channels/          channel interface + Telegram bot (grammY)
-web/               dashboard (Next.js): overview, intent page, pause, private view
+web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, pause, private view
 devkit/            local NEAR node harness and the integration tests
 deploy/            the mainnet policy (one tenth of v1's default limits)
 fixtures/invoices/ demo invoices (clean, duplicates, injection, address swap, fabricated, NGN, …)
