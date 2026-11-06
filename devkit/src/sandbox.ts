@@ -12,28 +12,49 @@ import { join } from "node:path";
 import { Account, actions, JsonRpcProvider, KeyPair, KeyPairSigner, type KeyPairString } from "near-api-js";
 import { GenesisAccount, Sandbox } from "near-sandbox";
 
-import { FACTORY_ID, FACTORY_WASM, near, nearApiActions, parseOutcome, releaseStoreTransaction, tgas } from "@getleash/shared";
+import {
+  FACTORY_ID,
+  FACTORY_WASM,
+  near,
+  nearApiActions,
+  parseOutcome,
+  RELEASE_WASM_SHA256,
+  releaseStoreTransaction,
+  sha256Hex,
+  tgas,
+} from "@getleash/shared";
 
-import { MOCK_FT_WASM, POLICY_WASM, REPO_ROOT } from "./paths.ts";
+import { MOCK_FT_WASM, POLICY_WASM, RELEASE_WASM, REPO_ROOT } from "./paths.ts";
 
-export { MOCK_FT_WASM, POLICY_WASM, REPO_ROOT };
+export { MOCK_FT_WASM, POLICY_WASM, RELEASE_WASM, REPO_ROOT };
 
 export const USDC = 1_000_000n;
 
-/** Builds the contract wasm files with cargo-near if they are missing. */
+/**
+ * Loads the policy wasm (the committed release, checked against its published sha256, unless
+ * GETLEASH_POLICY_WASM names another build) and the mock USDC token, which it builds with cargo-near the
+ * first time.
+ */
 export function ensureWasm(): { policy: Uint8Array; mockFt: Uint8Array } {
-  const build = (dir: string, extra: string[]) => {
-    const result = spawnSync("cargo", ["near", "build", "non-reproducible-wasm", ...extra], {
-      cwd: dir,
-      stdio: "inherit",
-    });
+  if (!existsSync(MOCK_FT_WASM)) {
+    const dir = join(REPO_ROOT, "contract/tests/mock-ft");
+    const result = spawnSync("cargo", ["near", "build", "non-reproducible-wasm", "--no-abi"], { cwd: dir, stdio: "inherit" });
     if (result.status !== 0) {
-      throw new Error(`cargo near build failed in ${dir}; install cargo-near (see contract/README.md)`);
+      throw new Error(`cargo near build failed in ${dir} (the error is above); cargo-near must be installed, see README "Run it locally"`);
     }
-  };
-  if (!existsSync(POLICY_WASM)) build(join(REPO_ROOT, "contract"), []);
-  if (!existsSync(MOCK_FT_WASM)) build(join(REPO_ROOT, "contract/tests/mock-ft"), ["--no-abi", "--no-locked"]);
-  return { policy: readFileSync(POLICY_WASM), mockFt: readFileSync(MOCK_FT_WASM) };
+  }
+  if (!existsSync(POLICY_WASM)) {
+    throw new Error(
+      POLICY_WASM === RELEASE_WASM
+        ? `${RELEASE_WASM} is missing: restore it with \`git checkout -- contract/release\``
+        : `GETLEASH_POLICY_WASM=${POLICY_WASM} does not exist: build it first (\`cd contract && cargo near build non-reproducible-wasm --no-embed-abi\`)`,
+    );
+  }
+  const policy = readFileSync(POLICY_WASM);
+  if (POLICY_WASM === RELEASE_WASM && sha256Hex(policy) !== RELEASE_WASM_SHA256) {
+    throw new Error(`${RELEASE_WASM} has sha256 ${sha256Hex(policy)}, not the release's ${RELEASE_WASM_SHA256}`);
+  }
+  return { policy, mockFt: readFileSync(MOCK_FT_WASM) };
 }
 
 export type DevAccount = { id: string; privateKey: string; publicKey: string; account: Account };
