@@ -19,11 +19,11 @@
 > payments to authorized destinations and budgets, makes the owner's approvals name the exact
 > payment terms, and makes its remaining settlement trust dependencies explicit.
 
-- **Live on NEAR mainnet** since 2 Nov 2026. The team's own GetLeash has paid four supplier invoices, and the
-  first business to set up from the bot has its own contract. See [Live on NEAR mainnet](#live-on-near-mainnet).
+- **Live on NEAR mainnet** since 2 Nov 2026. The team's own GetLeash has paid five supplier invoices, one sent
+  as a PDF, and the first business to set up from the bot has its own contract. See [Live on NEAR mainnet](#live-on-near-mainnet).
 - **Built for the NEAR Hackathon** (1–14 Nov 2026), tracks `security`, `business`, `realworld`, `privacy`,
   `agents` and `open`. See [Hackathon tracks](#hackathon-tracks).
-- **Tested:** 47 Rust tests, 38 integration tests on a local NEAR node, 169 TypeScript tests, and an offline
+- **Tested:** 47 Rust tests, 38 integration tests on a local NEAR node, 174 TypeScript tests, and an offline
   demo of 14 invoices, attacks included. See [Quick verify](#quick-verify) and [Run it locally](#run-it-locally).
 
 ## Contents
@@ -105,7 +105,8 @@ sequenceDiagram
 ```
 
 1. **An invoice arrives.** The owner sends the bot a PDF, a photo or pasted text. Ingestion caps sizes,
-   processes each Telegram update once, and reads a PDF's text layer.
+   processes each Telegram update once, and reads a PDF's text layer in a process of its own, which gets no
+   secrets (D-33).
 2. **The agent reads it on NEAR AI Cloud.** A model in a TEE (`Qwen/Qwen3.8-27B` on the live bot) extracts
    the supplier's name, the invoice number, currency, total, due date and payment details. The agent then
    checks the response's signature and the TEE's attestation ([Privacy](#privacy)).
@@ -477,7 +478,7 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 
 | Account | What it is | State on 6 Nov 2026 |
 |---|---|---|
-| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; four payments made; 3.21 USDC in the treasury |
+| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made; 2.96 USDC in the treasury |
 | `agent-1.onanikes.near`, `executor-1.onanikes.near` | Its agent and executor | One function-call key each |
 | [`getleash.near`](https://nearblocks.io/address/getleash.near) | The factory that setups from the bot call | 0 access keys |
 | [`release-8eaccbf1.onanikes.near`](https://nearblocks.io/address/release-8eaccbf1.onanikes.near) | The release store the installer copies from | 0 access keys |
@@ -494,6 +495,11 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 3. **4 Nov:** 0.50 USDC to `onasachi.tg`.
 4. **5 Nov:** 0.20 USDC to `onasachi.tg`, held because the supplier had been added the day before and was in its
    2-day cooldown, and approved in HOT Wallet inside Telegram. The demo video shows the real screens.
+5. **6 Nov:** 0.25 USDC to its first supplier, from a PDF invoice sent to the bot. It was within the owner's
+   limits, so the agent's own call paid it
+   ([`propose`](https://nearblocks.io/txns/6pBLAr4zhk6m4bCE6uPEdjAJDQcUgWcbM2WLbX5Bco2X)). The same PDF sent
+   again was refused on-chain as a duplicate, `OBLIGATION_OPEN_OR_PAID`
+   ([`propose`](https://nearblocks.io/txns/3s17YcBAnwzuC7KbyEcMc4NPB7vRDQ9trQNHZC9Lvo4Z)).
 
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
 https://www.getleash.xyz/payments?c=getleash.onanikes.near.
@@ -504,11 +510,11 @@ https://www.getleash.xyz/payments?c=getleash.onanikes.near.
 |---|---|
 | Policy contract v2 (`contract/`) | **Live.** Rewritten lean for a ~1.5 NEAR mainnet deployment (D-28): the release wasm is 83,900 bytes instead of v1's 370,399. 47 Rust tests plus a real-node test. v1, with full on-chain accounting, is tagged `v1-full-contract`. |
 | Factory, installer, release store (`contract/bootstrap/`) | **Live.** `getleash.near` and `release-8eaccbf1.onanikes.near`, both keyless. The first business set up through them is `onasachi-tg.getleash.near`. |
-| Agent, ingestion, Telegram bot (`agent/`, `ingestion/`, `channels/`) | **Live** as [@GetLeash_bot](https://t.me/GetLeash_bot). Checked against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Adding suppliers from Telegram (`/addsupplier`, `/invite`) is covered by unit tests and has not yet been run live. |
+| Agent, ingestion, Telegram bot (`agent/`, `ingestion/`, `channels/`) | **Live** as [@GetLeash_bot](https://t.me/GetLeash_bot). Checked against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Adding suppliers from Telegram (`/addsupplier`, `/invite`) is covered by unit tests and has not yet been run live. A PDF invoice was read and paid on 6 Nov (payment 5), after the bot began reading PDFs in a process of its own (D-33). |
 | Executor and mock 1Click (`executor/`, `mock-1click/`) | **Implemented and running.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes; tested on a local node and on testnet with mock 1Click. No cross-chain payment has been made on mainnet yet. |
 | Dashboard and landing page (`web/`) | **Live** at https://www.getleash.xyz: the landing page, whose "Dashboard" finds the visitor's own GetLeash from their wallet; "Needs you" with one button per payment; payment pages (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record); pause; limits; adding a supplier; setup; the NEP-413 private view; any hosted business's pages (`?c=`). Signed with near-connect's NEAR CLI wallet on testnet, and with HOT Wallet inside Telegram on mainnet. |
 | Testnet rehearsal | **Done 2 Nov** at `getleash.getleash-owner.testnet` with Circle's testnet USDC. Four invoices sent to the live bot: 1.80 paid inside the agent's call; the same invoice re-sent as a reworded reminder, refused on-chain (`OBLIGATION_OPEN_OR_PAID`); 3.00 held (`ABOVE_THRESHOLD`) and paid when the owner approved it; 1.00 USDT to a Tron address through mock-1click (nothing reaches Tron), its deposit authorized by the owner and funded by the executor. Gas and NEAR per step: `docs/verified-facts.md`. |
-| Hosting | **Live.** The bot and the executor run on Render (`https://getleash.onrender.com/healthz`), the website and dashboard on Vercel, both deployed from `main`. |
+| Hosting | **Live.** The bot and the executor run on Render (`https://getleash.onrender.com/healthz`), deployed from `feature/getleash-core` (`render.yaml`); the website and dashboard on Vercel. |
 
 ## Quick verify
 
@@ -564,13 +570,14 @@ and steps 1–4 and 6 need no `.env`.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 169 passed` (19 files).
+   → `Tests 174 passed` (20 files).
 
    <details>
-   <summary>What the 169 tests cover</summary>
+   <summary>What the 174 tests cover</summary>
 
    The Borsh layout against golden vectors written by the Rust types, outcome parsing, 1Click quote checks
-   (against the shape of a live quote), obligation ids, input limits, the Telegram channel (replayed update
+   (against the shape of a live quote), obligation ids, input limits, the PDF reader (a real PDF's text, read in
+   a process of its own; the page and time limits; a broken PDF), the Telegram channel (replayed update
    processed once, allowlist, size limits, replies in plain words with the enum code kept, payment pages and
    `/wallet` as Mini App buttons), adding suppliers from Telegram (details read without a model, bad or unknown
    addresses refused, one-time invites that strangers get no answer from, the name saved once the supplier is
@@ -581,7 +588,7 @@ and steps 1–4 and 6 need no `.env`.
    another account (its invites follow), and copied public keys never take someone else's open setup; display
    names can't pass for a username; the bot serves a business once, only after the chain shows its contract
    with the keys generated for it, answers each business only in its owner's chat, routes invites across
-   businesses, keeps their keys 0600, and replays updates a restart interrupted), the installer, its store and
+   businesses, keeps their keys 0600, and replays the updates still queued at a restart), the installer, its store and
    the factory (the bytes are their pinned build, built for this release, this store, USDC and the default
    limits; a whole setup is one call to the factory under 1,000 characters, with nothing HOT Wallet calls
    dangerous, where deploying the release took 960,000; the wallet is asked for the gas NEAR holds while it
@@ -726,7 +733,7 @@ shared/            Borsh types and decoders, role-scoped clients, 1Click client,
 scripts/           owner CLIs: keygen, setup:owner, topup, seed, status, rotate, publish:release, publish:factory; demo:mock, devnet, build:installer
 executor/          deterministic cross-chain payout loop, journal, owner notices
 mock-1click/       local 1Click stand-in that settles real (mock) tokens on a local node
-ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer
+ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer (read in a child process)
 agent/             extraction (NEAR AI Cloud), deterministic checks, TEE verification, encrypted store
 channels/          channel interface + Telegram bot (grammY)
 web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, limits, pause, private view
@@ -757,6 +764,8 @@ AGENTS.md          rules for coding agents (CLAUDE.md imports it)
 - Amounts, destination addresses and timing are public on-chain.
 - Telegram cloud chats are not end-to-end encrypted, and the running bot process holds each business's invoice
   key; for a hosted business, the operator runs that process.
+- A message the bot is in the middle of when its host restarts (a deploy, for instance) is dropped without a
+  reply: the update log keeps any update from being acted on twice, so the owner sends it again.
 - A verified badge proves where the inference ran, not that an invoice is genuine.
 - New or changed suppliers have no separate verification step: the 2-day cooldown is the gate.
 - During a cross-chain swap the funds sit briefly with NEAR Intents 1Click, and Circle can freeze USDC.
@@ -774,7 +783,7 @@ and reconciliation are off-chain in v2), a second cross-chain route (Base is a s
 | Document | What is in it |
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | The implementation plan (v3, post-audit): architecture, component specs, privacy, the required adversarial tests (§9) |
-| [docs/decisions.md](docs/decisions.md) | Where the code deliberately departs from or tightens the plan, D-01 to D-32 |
+| [docs/decisions.md](docs/decisions.md) | Where the code deliberately departs from or tightens the plan, D-01 to D-33 |
 | [docs/audit-response.md](docs/audit-response.md) | Each finding of the design audit, what the code does about it, and the tests that show it |
 | [docs/verified-facts.md](docs/verified-facts.md) | Endpoints, field names, asset ids and fees checked against live docs, with dates; gas and NEAR measured per step |
 | [docs/deployment.md](docs/deployment.md) | Deploying on mainnet: every step, what it prints and what it costs; hosting the services |
