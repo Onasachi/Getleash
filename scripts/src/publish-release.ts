@@ -69,7 +69,7 @@ if (await accountExists(common.rpc, RELEASE_STORE_ID)) {
 }
 
 const wasmPath = (values.wasm as string | undefined) ?? POLICY_WASM;
-if (!existsSync(wasmPath)) fail(`${wasmPath} not found; build the release with \`cd contract && cargo near build reproducible-wasm\``);
+if (!existsSync(wasmPath)) fail(`${wasmPath} not found; restore it with \`git checkout -- contract/release\`, or rebuild it with \`cd contract && cargo near build reproducible-wasm\``);
 const release = new Uint8Array(readFileSync(wasmPath));
 if (sha256Hex(release) !== INSTALLER_BUILD.release) {
   fail(`${wasmPath} has sha256 ${sha256Hex(release)}, but the installer installs ${INSTALLER_BUILD.release} (the published release)`);

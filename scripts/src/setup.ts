@@ -56,7 +56,7 @@ Usage: pnpm setup --network <mainnet|testnet> --owner <you.near> [options]
   --agent-public-key <key>    default: read from .keys/<network>/agent-N.<owner>.json (pnpm keygen)
   --executor-public-key <key> default: read from .keys/<network>/executor-N.<owner>.json
   --token <account>           treasury token (default: Circle USDC for the network)
-  --wasm <path>               contract wasm (default contract/target/near/getleash_policy.wasm)
+  --wasm <path>               contract wasm (default contract/release/getleash_policy.wasm, the release)
   --wasm-sha256 <hex>         required on mainnet: the published hash the wasm must match
   --policy <file.json>        full Policy JSON (default: deploy/mainnet-policy.json's values)
   --policy-near <NEAR>        NEAR for the policy account (default: code storage + 0.2)
@@ -80,7 +80,7 @@ function publicKeyFor(role: "agent" | "executor", accountId: string, network: Ne
 }
 
 const wasmPath = (values.wasm as string | undefined) ?? POLICY_WASM;
-if (!existsSync(wasmPath)) fail(`${wasmPath} not found; build it with \`cd contract && cargo near build\``);
+if (!existsSync(wasmPath)) fail(`${wasmPath} not found; restore the release with \`git checkout -- contract/release\`, or build one with \`cd contract && cargo near build\``);
 const wasm = readFileSync(wasmPath);
 const wasmSha = sha256Hex(wasm);
 const expectedSha = values["wasm-sha256"] as string | undefined;
