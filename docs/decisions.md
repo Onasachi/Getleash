@@ -543,3 +543,16 @@ through the owner-signed `upgrade`", and once, at creation, through the installe
 Amends D-30 (the wallet calls the factory; the accounts are named under it) and D-31 (the factory deploys the
 installer, and a stuck install is retried through the factory rather than cancelled; `abandon` stays in the
 installer for contracts their owner created themselves).
+
+**D-33 · The bot reads a PDF's text in a process of its own, one PDF at a time.**
+- **Why.** On 6 Nov the first PDF sent to the hosted bot was never answered: the Render instance (512 MB for
+  the bot, the executor and their supervisor together) restarted within the minute, and the update log then
+  skipped the interrupted update. Measured locally, pdf.js loaded in the bot's process, which runs through
+  tsx, raised that process from 124 MB to 518 MB and kept it there; under plain Node it needs about 90 MB.
+- **What.** `pdfText` (`ingestion/src/pdf.ts`) runs `ingestion/src/pdf-worker.mjs` with plain Node: no tsx,
+  no environment (so no secrets), a 128 MB heap. It sends the PDF on stdin and reads one JSON answer,
+  checked with zod. One reader runs at a time, and the 30 s limit (PLAN §4.4) now kills the reader instead
+  of only giving up on it. The page limit and the extracted text are unchanged. After a PDF the bot's
+  process stays at 124 MB; the reader peaks at 93 MB for about 0.3 s.
+- Tests: `ingestion/test/pdf.test.ts`, the first to read a real PDF: the text layer, the page limit, a broken
+  PDF, the time limit, several PDFs at once.

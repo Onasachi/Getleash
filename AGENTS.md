@@ -32,8 +32,10 @@ funds terms already committed on-chain, and the owner's wallet holds every key t
   owner, or for hosted setups the factory (D-32), which writes `new`'s arguments with its caller as owner.
   The factory, the store and every account they create stay keyless; the factory adds only role keys.
 - Budget counters **only go up**: refunds, returned change and failed transfers never give budget back.
-- The agent's LLM output is untrusted. Nothing model-generated goes on-chain except the enum `review_flag`; the
-  obligation id is an HMAC computed by deterministic ingestion code.
+- The agent's LLM output is untrusted. No model text goes on-chain, and the model never supplies an address or
+  an id: a proposal carries the supplier id from a deterministic directory match, the obligation id (an HMAC
+  computed by deterministic ingestion code), the amount the model read (flagged for review unless it appears
+  in the invoice's text), and at most the enum `review_flag` (PLAN §4.3, step 7).
 - The callback is `#[private] on_paid(intent_id, since)` (its arguments never change across upgrades): a no-op
   unless that payout is still `Paying` with the same `since`, **never panics**, and never grows storage.
 - Checked arithmetic everywhere in accounting; no saturating subtraction to hide a bug. `budget.rs` and
