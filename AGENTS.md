@@ -64,11 +64,16 @@ shared/          Borsh types and decoders, role clients, 1Click client, setup fl
                  "@getleash/shared" is browser-safe (the dashboard uses it); Node-only helpers
                  (key files, data dir) live in "@getleash/shared/node"
 scripts/         owner CLIs (keygen, setup:owner, topup, seed, status, rotate), demo:mock, devnet
-executor/        cross-chain payout loop over stored intents; mock-1click/ is its local 1Click stand-in
-ingestion/       obligation HMAC, update dedupe, limits; agent/ extraction, checks, TEE verification
-channels/        channel interface + Telegram (grammY); web/ Next.js dashboard
+executor/        cross-chain payout loop over stored intents
+mock-1click/     the executor's local 1Click stand-in
+ingestion/       obligation HMAC, update dedupe, limits; PDF text in a plain-Node child process (pdf-worker.mjs, D-33)
+agent/           extraction (NEAR AI Cloud; an offline reader for tests), deterministic checks, TEE verification
+channels/        channel interface + Telegram (grammY)
+web/             landing page and Next.js dashboard
 devkit/          local NEAR node harness ("world") and every TypeScript integration test
-fixtures/        demo invoices; docs/ plan, decisions, audit response, verified facts, deployment runbook
+deploy/          the mainnet policy
+fixtures/        demo invoices
+docs/            plan, decisions, audit response, verified facts, deployment runbook
 .agents/skills/  near/agent-skills (do not edit; reinstall with npx skills)
 ```
 
