@@ -24,7 +24,7 @@
 - **Built for the NEAR Hackathon** (1–14 Nov 2026), tracks `security`, `business`, `realworld`, `privacy`,
   `agents` and `open`. See [Hackathon tracks](#hackathon-tracks).
 - **Tested:** 47 Rust tests, 38 integration tests on a local NEAR node, 174 TypeScript tests, and an offline
-  demo of 14 invoices, attacks included. See [Quick verify](#quick-verify) and [Run it locally](#run-it-locally).
+  demo of 14 steps over 13 invoices, attacks included. See [Quick verify](#quick-verify) and [Run it locally](#run-it-locally).
 
 ## Contents
 
@@ -476,9 +476,9 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 
 ## Live on NEAR mainnet
 
-| Account | What it is | State on 6 Nov 2026 |
+| Account | What it is | State on 7 Nov 2026 |
 |---|---|---|
-| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made; 2.96 USDC in the treasury |
+| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made, and intent 6 is an attack test (below); 2.96 USDC in the treasury |
 | `agent-1.onanikes.near`, `executor-1.onanikes.near` | Its agent and executor | One function-call key each |
 | [`getleash.near`](https://nearblocks.io/address/getleash.near) | The factory that setups from the bot call | 0 access keys |
 | [`release-8eaccbf1.onanikes.near`](https://nearblocks.io/address/release-8eaccbf1.onanikes.near) | The release store the installer copies from | 0 access keys |
@@ -492,19 +492,35 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 2. **3 Nov:** 0.50 USDC to the same supplier, approved from Telegram. The bot's button opened the payment page
    inside Telegram, and the owner signed in HOT Wallet
    ([`decide`](https://nearblocks.io/txns/Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9)).
-3. **4 Nov:** 0.50 USDC to `onasachi.tg`.
+3. **4 Nov:** 0.50 USDC to `onasachi.tg`, held because the supplier had just been added and was in its 2-day
+   cooldown, and approved by the owner
+   ([`propose`](https://nearblocks.io/txns/ijQNuBMqjjBBfTmpe5X2HNfhsGzw4mKcDTKYWrTMxKt),
+   [`decide`](https://nearblocks.io/txns/7ZbUjEL8v3qn5y7Fa53Dj948EFiD2mUUjwzeUbhArxA)).
 4. **5 Nov:** 0.20 USDC to `onasachi.tg`, held because the supplier had been added the day before and was in its
-   2-day cooldown, and approved in HOT Wallet inside Telegram. The demo video shows the real screens.
+   2-day cooldown, and approved in HOT Wallet inside Telegram
+   ([`propose`](https://nearblocks.io/txns/BBt4Ni5zs4oNSyXHFNwvPmuY855yfzWDTCenLxnk8h16),
+   [`decide`](https://nearblocks.io/txns/Fz6hPkLxzQqJw3zjooywvn4xGrPexKxHki5KEbWKjjBa)). The demo video shows
+   the real screens.
 5. **6 Nov:** 0.25 USDC to its first supplier, from a PDF invoice sent to the bot. It was within the owner's
    limits, so the agent's own call paid it
    ([`propose`](https://nearblocks.io/txns/6pBLAr4zhk6m4bCE6uPEdjAJDQcUgWcbM2WLbX5Bco2X)). The same PDF sent
    again was refused on-chain as a duplicate, `OBLIGATION_OPEN_OR_PAID`
    ([`propose`](https://nearblocks.io/txns/3s17YcBAnwzuC7KbyEcMc4NPB7vRDQ9trQNHZC9Lvo4Z)).
 
+**Attack tests on mainnet (7 Nov), nothing paid:**
+
+- An invoice from a supplier that isn't on file, whose note told the AI the owner had pre-approved it: refused
+  on-chain, `UNKNOWN_SUPPLIER`
+  ([`propose`](https://nearblocks.io/txns/GUpgQAMnrjbyf95TNzexxtWLk5SSz7WCEfwaBwDnrB5X)).
+- An invoice in Chisolu's name asking to be paid at a new wallet: flagged `ADDRESS_MISMATCH` and held for the
+  owner as intent 6, route `REVIEW_FLAG`
+  ([`propose`](https://nearblocks.io/txns/AD44VQyYvCkFjiWAcRpdo31ojkBfNpiPU5q6QWXXrPkf)). Approving it could
+  pay only `chisolu.near`, the address on file. Until the owner decides, `pnpm status` lists it as `PENDING`.
+
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
 https://www.getleash.xyz/payments?c=getleash.onanikes.near.
 
-**Status (6 Nov 2026)**
+**Status (7 Nov 2026)**
 
 | Part | State |
 |---|---|
@@ -604,9 +620,10 @@ and steps 1–4 and 6 need no `.env`.
    ```bash
    pnpm test:sandbox
    ```
-   → `Tests 38 passed` (5 files) in about a minute, with the role accounts funded as on mainnet. To run another
-   build of the contract, set `GETLEASH_POLICY_WASM` to its path; the 15 installer, factory and hosted-setup tests
-   then fail by design, because the installer installs only the release.
+   → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
+   accounts funded as on mainnet. To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
+   the 15 installer, factory and hosted-setup tests then don't pass, by design, because the installer installs
+   only the release: Vitest reports `10 failed | 23 passed | 5 skipped`.
 
    <details>
    <summary>What the 38 tests cover</summary>
@@ -640,8 +657,8 @@ and steps 1–4 and 6 need no `.env`.
    ```bash
    pnpm demo:mock
    ```
-   → 14 invoices from `fixtures/invoices/` go through ingestion → agent → contract (→ executor) on a local node,
-   each checked against its expected outcome, ending in `All checks passed.` The demo's contract,
+   → the 13 invoices in `fixtures/invoices/`, one of them sent twice (14 steps), go through ingestion → agent →
+   contract (→ executor) on a local node, each checked against its expected outcome, ending in `All checks passed.` The demo's contract,
    `getleash.biz.near`, runs the same release and holds 500 USDC, with v1's default amounts (approval above 25,
    50 a day for the agent, a daily cap of 200) and an executor trust budget of 5 a day; its suppliers have no
    cooldown until Act 4 sets one of 2 days (`devkit/src/world.ts`). The agent here is an offline text reader, so
@@ -669,7 +686,8 @@ and steps 1–4 and 6 need no `.env`.
    pnpm devnet          # terminal 1: node + contract + executor + mock 1Click, prints the env for terminal 2
    NEXT_PUBLIC_NEAR_NETWORK=testnet NEXT_PUBLIC_NEAR_RPC_URL=… NEXT_PUBLIC_POLICY_CONTRACT_ID=getleash.biz.near NEXT_PUBLIC_ONECLICK_URL=… pnpm dashboard
    ```
-   → open http://localhost:3000/payments (use `localhost`, not `127.0.0.1`, in dev mode). "Needs you" lists
+   → open `/payments` at the `Local:` address that `pnpm dashboard` prints (http://localhost:3000 unless that
+   port is taken; use `localhost`, not `127.0.0.1`, in dev mode). "Needs you" lists
    three payments. `/intent/5` reads "Confirm the transfer": 8.00 USDT on Tron, its cost from the treasury and
    its fee, and one button. Before the button works, the browser fetches 1Click's record of the deposit address
    and checks it against the 12 terms the contract committed, plus that no other payment uses the address
@@ -683,10 +701,12 @@ and steps 1–4 and 6 need no `.env`.
    A local build's bytes differ from the release's, because a build records its commit and environment; step 7
    reproduces the release itself.
 
-7. **Reproduce the release wasm** (needs Docker).
+7. **Reproduce the release wasm** (needs Docker, running). It checks out an older commit, so start from a clean
+   working tree.
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
-   git checkout -    # back to the branch you were on
+   git checkout -                 # back to the branch you were on
+   rm -rf contract/target/near    # otherwise the release's bytes stay here, and a later step 6 build keeps them
    ```
    → 83,900 bytes, sha256 `8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d` (NEAR shows it
    as code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2`). The wasm records its source commit and build
