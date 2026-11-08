@@ -484,6 +484,10 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 | [`release-8eaccbf1.onanikes.near`](https://nearblocks.io/address/release-8eaccbf1.onanikes.near) | The release store the installer copies from | 0 access keys |
 | [`onasachi-tg.getleash.near`](https://nearblocks.io/address/onasachi-tg.getleash.near) | The first business set up from the bot, created by the factory for `onasachi.tg` | 0 access keys and the release's code hash; `onasachi-tg-agent.getleash.near` and `onasachi-tg-executor.getleash.near` hold one function-call key each |
 
+The transaction links open NearBlocks, whose pages answer HTTP 403 to scripts and AI fetchers. To check a
+transaction without a browser, use the archival-node `curl` command after the attack tests (it prints the
+contract's events), or GET `https://api.nearblocks.io/v1/txns/<hash>` (signer, method and success; no events).
+
 **Payments by `getleash.onanikes.near`:**
 
 1. **3 Nov:** 0.50 USDC to its first supplier, held because the supplier was in its 2-day cooldown, and approved
@@ -561,7 +565,7 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
 | Fabricated small invoices are bounded | `pnpm demo:mock` | The first is paid, the next `waits for the owner (AUTONOMOUS_BUDGET_USED)` |
 | A changed address can't be paid in full | `pnpm demo:mock` | `SUPPLIER_COOLDOWN`, and `even the owner cannot approve more than 0.50` (`OVER_COOLDOWN_MAX`) |
-| The dashboard checks 1Click before a signature | `pnpm devnet`, then the `pnpm dashboard` line it prints ([step 5](#run-it-locally)) | `/intent/5`: "Confirm the transfer to …", and under "Safety checks", "NEAR Intents' quote matches what the contract will pay (13 checks)" |
+| The dashboard checks 1Click before a signature | `pnpm devnet`, then the `pnpm dashboard` line it prints ([step 5](#run-it-locally)) | http://localhost:3000/intent/5 (or the port `pnpm dashboard` prints): "Confirm the transfer to …", and under "Safety checks", "NEAR Intents' quote matches what the contract will pay (13 checks)" |
 
 Every `pnpm` row needs Node.js ≥ 22 and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`). The `pnpm demo:mock`
 and `pnpm devnet` rows also need the other prerequisites of [Run it locally](#run-it-locally): their first run
@@ -601,13 +605,16 @@ and steps 1–4 and 6 need no `.env`.
    ```bash
    (cd contract && cargo test)
    ```
-   → `test result: ok. 47 passed`: about 2 minutes to compile the first time, then about 2 minutes to run. Run in
-   debug mode, not `--release` (see `AGENTS.md`). Single adversarial rows, from `contract/`: `cargo test executor_supplies_its_own_deposit_address_above_the_trust_budget`,
+   → three `test result: ok` lines: `47 passed` (unit, scenario and property tests), `1 ignored` (the real-node
+   test, run below) and `0 passed` (doc-tests). About 2 minutes to compile the first time, then about 2 minutes
+   to run. Run in debug mode, not `--release` (see `AGENTS.md`).
+   Single adversarial rows, from `contract/`: `cargo test executor_supplies_its_own_deposit_address_above_the_trust_budget`,
    `cargo test autonomous_budget_caps_a_fabricated_small_invoice_stream`; the full mapping is in
    `docs/audit-response.md`. Deeper random walks: `PROPTEST_CASES=200 cargo test contract_invariants_hold`
    (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`. The first
    run takes about 1½ minutes: the test builds the contract and a mock USDC with cargo-near, then downloads a
-   NEAR node, `near-sandbox` 2.13.4. Later runs take about 30 seconds. If the download times out, fetch the
+   NEAR node, `near-sandbox` 2.13.4 (the default of the `near-sandbox` crate 0.3.16 in `contract/Cargo.lock`;
+   `docs/verified-facts.md`). Later runs take about 30 seconds. If the download times out, fetch the
    node yourself and point the test at it:
    ```bash
    mkdir -p /tmp/near-sandbox && curl -L https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore/$(uname -s)-$(uname -m)/2.13.4/near-sandbox.tar.gz | tar xz -C /tmp/near-sandbox
@@ -726,7 +733,10 @@ and steps 1–4 and 6 need no `.env`.
    and its fee, and two buttons, "Confirm and send … USDC" and "Reject". Before "Confirm and send" works, the
    browser fetches 1Click's record of the deposit address and checks it against the 12 terms the contract
    committed, plus that no other payment uses the address: under "Safety checks", "NEAR Intents' quote matches
-   what the contract will pay (13 checks)" → Show. Wallet buttons cannot sign on a local node.
+   what the contract will pay (13 checks)" → Show. Wallet buttons cannot sign on a local node. Expected in dev
+   mode: `/api/private/names` answers 401 without a private-view session (the pages then show addresses instead
+   of supplier names), and a browser extension that edits pages, such as a wallet, can make the Next.js dev
+   overlay show a hydration warning.
 
 6. **Build the contract.**
    ```bash
@@ -737,7 +747,8 @@ and steps 1–4 and 6 need no `.env`.
    reproduces the release itself.
 
 7. **Reproduce the release wasm** (needs Docker, running; on Linux without `shasum`, use `sha256sum`). It checks
-   out an older commit, so start from a clean working tree.
+   out an older commit, so start from a clean working tree. About 3 minutes once Docker has the build image (the
+   first run also pulls it).
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on
@@ -770,6 +781,7 @@ pnpm keygen --network mainnet --account executor-1.<you>.near
 pnpm setup:owner --network mainnet --owner <you>.near --wasm-sha256 8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d --policy deploy/mainnet-policy.json
 pnpm seed --network mainnet --owner <you>.near --file <suppliers.json>   # or later, one by one: /addsupplier in Telegram
 pnpm topup --network mainnet --owner <you>.near --amount 20
+# .env.mainnet (git-ignored, you write it): the mainnet accounts and two fresh secrets, read over .env (docs/deployment.md, Deploy, step 5)
 pnpm exec tsx --env-file=.env --env-file=.env.mainnet executor/src/main.ts       # and in another terminal:
 pnpm exec tsx --env-file=.env --env-file=.env.mainnet channels/telegram/src/main.ts
 pnpm status --network mainnet --policy getleash.<you>.near

@@ -25,6 +25,7 @@ Source: https://nearhackathon.com/ and https://nearhackathon.com/HACKATHON.md (t
 |---|---|---|
 | near-api-js | 7.4.0 (latest, 2026-11-02); defaults: views at `optimistic` finality, transactions wait for `EXECUTED_OPTIMISTIC` | npm, installed source |
 | near-sandbox (npm) | 0.3.4, runs sandbox node 2.13.4; genesis accounts via `GenesisAccount` | npm, installed types |
+| near-sandbox (Rust crate, `contract/tests/sandbox.rs`) | 0.3.16 (`contract/Cargo.lock`); `DEFAULT_NEAR_SANDBOX_VERSION` is 2.13.4, downloaded into the build's `OUT_DIR` on the first run; `NEAR_SANDBOX_BIN_PATH` points it at a node fetched by hand (checked 2026-11-08) | crate source (`src/lib.rs`, `src/runner/mod.rs`) |
 | Testnet RPC | `https://rpc.testnet.fastnear.com` answers `status` (HTTP 200, 2026-11-02) | live |
 | near-sdk (Rust) | 5.29.1 locked (5.30.0 latest on crates.io) | `cargo search`, `contract/Cargo.lock` |
 | cargo-near | 0.22.0 installed (`cargo install --locked cargo-near`) | local |
