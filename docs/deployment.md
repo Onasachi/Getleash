@@ -30,7 +30,9 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
 
 ## Before you start
 
-1. **Tools.** Node.js 22 or later and pnpm (`corepack enable`), then `pnpm install` in the repository.
+1. **Tools.** Node.js 22 or later and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`; `corepack enable` fails
+   with `Cannot find matching keyid` when corepack is old, such as 0.30.0 in Node 23.4.0), then
+   `pnpm install` in the repository.
    near-cli-rs: `npm install -g near-cli-rs` (with asdf-managed Node, run `asdf reshim nodejs` afterwards).
 2. **Owner account.** A named mainnet account (`you.near`), because setup creates accounts under it, with
    at least 1.6 NEAR.
@@ -149,7 +151,7 @@ function-call keys.
    → `.env.render` and `.env.vercel` (mode 0600, git-ignored). They hold secrets, so paste them into the
    two hosts only and then delete them (`rm .env.render .env.vercel`). Only variable names are printed.
    Both carry the supplier names as `GETLEASH_DIRECTORY_BASE64`, because neither host has your files.
-3. **Render:** New → Web Service → connect the repository → branch `feature/getleash-core`, language
+3. **Render:** New → Web Service → connect the repository → branch `main`, language
    Node, build command `npm install -g pnpm@10.33.0 && pnpm install --frozen-lockfile`, start command
    `node --import tsx scripts/src/services.ts`, health check path `/healthz`, instance type Starter. Add a
    disk (mount path `/var/data`, 1 GB) and the variable `GETLEASH_DATA_DIR=/var/data`. Paste `.env.render`

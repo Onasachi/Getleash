@@ -15,7 +15,7 @@ services:
     name: getleash-services
     runtime: node
     plan: starter
-    branch: feature/getleash-core
+    branch: main
     # pnpm straight from npm: the corepack bundled with Node 23.4.0 has npm's old signing keys and refuses
     # to download pnpm ("Cannot find matching keyid"). The version is package.json's packageManager.
     buildCommand: npm install -g pnpm@10.33.0 && pnpm install --frozen-lockfile
