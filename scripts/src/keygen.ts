@@ -1,6 +1,6 @@
 /**
  * Generates a service key ON THE MACHINE THAT WILL RUN THE SERVICE (PLAN §3.1 step 2) and prints
- * only the public key. The owner then authorises it as a function-call key with `pnpm setup`.
+ * only the public key. The owner then authorises it as a function-call key with `pnpm setup:owner`.
  *
  *   pnpm keygen --network mainnet --account agent-1.yourbusiness.near
  */

@@ -112,7 +112,7 @@ export async function accountExists(rpc: Provider, accountId: string): Promise<b
 // by the owner's browser wallet (the dashboard's /setup page, D-30): both send exactly these.
 
 /**
- * The published release build (README, "Try it", step 7; 83,900 bytes): the only code the dashboard's
+ * The published release build (README, "Run it locally", step 7; 83,900 bytes): the only code the dashboard's
  * setup page deploys, and what the bot checks a hosted business's contract runs before it serves it.
  */
 export const RELEASE_WASM_SHA256 = "8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d";

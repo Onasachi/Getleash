@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://www.getleash.xyz">Website and dashboard</a> ·
   <a href="https://t.me/GetLeash_bot">Telegram bot</a> ·
-  <a href="https://youtu.be/FJgs8wseBbk">Demo video (1:40)</a> ·
+  <a href="https://youtu.be/FJgs8wseBbk">Demo video (1:41)</a> ·
   <a href="https://x.com/usegetleash/status/2118637512897831054">Demo post on X</a>
 </p>
 
@@ -476,9 +476,9 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 
 ## Live on NEAR mainnet
 
-| Account | What it is | State on 7 Nov 2026 |
+| Account | What it is | State on 8 Nov 2026 |
 |---|---|---|
-| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made, and intent 6 is an attack test (below); 2.96 USDC in the treasury |
+| [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made; intent 6, an attack test (below), rejected by the owner; 2.96 USDC in the treasury |
 | `agent-1.onanikes.near`, `executor-1.onanikes.near` | Its agent and executor | One function-call key each |
 | [`getleash.near`](https://nearblocks.io/address/getleash.near) | The factory that setups from the bot call | 0 access keys |
 | [`release-8eaccbf1.onanikes.near`](https://nearblocks.io/address/release-8eaccbf1.onanikes.near) | The release store the installer copies from | 0 access keys |
@@ -515,12 +515,29 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 - An invoice in Chisolu's name asking to be paid at a new wallet: flagged `ADDRESS_MISMATCH` and held for the
   owner as intent 6, route `REVIEW_FLAG`
   ([`propose`](https://nearblocks.io/txns/AD44VQyYvCkFjiWAcRpdo31ojkBfNpiPU5q6QWXXrPkf)). Approving it could
-  pay only `chisolu.near`, the address on file. Until the owner decides, `pnpm status` lists it as `PENDING`.
+  have paid only `chisolu.near`, the address on file. The owner rejected it the same day
+  ([`decide`](https://nearblocks.io/txns/FJjBQq6WFWGfQpMb4cJWBQ2h3e67Nz4hrYoRGJgnxsQa)); a rejected invoice stays
+  blocked (D-07), and `pnpm status` lists no open intents.
 
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
 https://www.getleash.xyz/payments?c=getleash.onanikes.near.
 
-**Status (7 Nov 2026)**
+Check a transaction without a browser, with `curl` and `jq`. This asks an archival node, because regular RPC
+nodes keep transactions for only a few days:
+
+```bash
+curl -s https://archival-rpc.mainnet.fastnear.com -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"tx","params":{"tx_hash":"6pBLAr4zhk6m4bCE6uPEdjAJDQcUgWcbM2WLbX5Bco2X","sender_account_id":"agent-1.onanikes.near"}}' \
+  | jq '.result | {status, logs: [.receipts_outcome[].outcome.logs[]]}'
+```
+
+→ payment 5's events: `intent_created` with route `AUTONOMOUS`, `paying` to `chisolu.near`, USDC's
+`ft_transfer` of `250000` (0.25 USDC) and `payout` with status `PAID`. Put any hash above in `tx_hash`; the
+signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `decide`. The attack tests show
+`proposal_refused` with reason `UNKNOWN_SUPPLIER`, and `intent_created` with route `REVIEW_FLAG`; the owner's
+`decide` shows `intent_decided` with status `REJECTED`.
+
+**Status (8 Nov 2026)**
 
 | Part | State |
 |---|---|
@@ -530,20 +547,23 @@ https://www.getleash.xyz/payments?c=getleash.onanikes.near.
 | Executor and mock 1Click (`executor/`, `mock-1click/`) | **Implemented and running.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes; tested on a local node and on testnet with mock 1Click. No cross-chain payment has been made on mainnet yet. |
 | Dashboard and landing page (`web/`) | **Live** at https://www.getleash.xyz: the landing page, whose "Dashboard" finds the visitor's own GetLeash from their wallet; "Needs you" with one button per payment; payment pages (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record); pause; limits; adding a supplier; setup; the NEP-413 private view; any hosted business's pages (`?c=`). Signed with near-connect's NEAR CLI wallet on testnet, and with HOT Wallet inside Telegram on mainnet. |
 | Testnet rehearsal | **Done 2 Nov** at `getleash.getleash-owner.testnet` with Circle's testnet USDC. Four invoices sent to the live bot: 1.80 paid inside the agent's call; the same invoice re-sent as a reworded reminder, refused on-chain (`OBLIGATION_OPEN_OR_PAID`); 3.00 held (`ABOVE_THRESHOLD`) and paid when the owner approved it; 1.00 USDT to a Tron address through mock-1click (nothing reaches Tron), its deposit authorized by the owner and funded by the executor. Gas and NEAR per step: `docs/verified-facts.md`. |
-| Hosting | **Live.** The bot and the executor run on Render (`https://getleash.onrender.com/healthz`), deployed from `feature/getleash-core` (`render.yaml`); the website and dashboard on Vercel. |
+| Hosting | **Live.** The bot and the executor run on Render (`https://getleash.onrender.com/healthz`), set up by `render.yaml`; the website and dashboard on Vercel. |
 
 ## Quick verify
 
 | Claim | Do | See |
 |---|---|---|
 | The live treasury has no keys and enforces its limits | `pnpm install && pnpm status --network mainnet --policy getleash.onanikes.near` | `✓ getleash.onanikes.near: 0 access keys (must be 0)`, `approval above 2.5`, `of 5 today`, `of 20`, and two role accounts with one function-call key each |
-| Real payments on mainnet | Open the transactions in [Live on NEAR mainnet](#live-on-near-mainnet), or https://www.getleash.xyz/payments?c=getleash.onanikes.near | The payments, each with its own page |
+| Real payments on mainnet | Open the transactions in [Live on NEAR mainnet](#live-on-near-mainnet) (or fetch one with the `curl` command there), or https://www.getleash.xyz/payments?c=getleash.onanikes.near | The payments, each with its own page |
 | USDC and Tron payouts | `pnpm demo:mock` | `paid 18 USDC to acme.near inside the agent's call (no executor)`; `→ 2 USDT to the supplier on Tron (executor-trust budget)` |
 | A prompt injection is refused on-chain | `pnpm demo:mock` | `refused by the contract: UNKNOWN_SUPPLIER` |
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
 | Fabricated small invoices are bounded | `pnpm demo:mock` | The first is paid, the next `waits for the owner (AUTONOMOUS_BUDGET_USED)` |
 | A changed address can't be paid in full | `pnpm demo:mock` | `SUPPLIER_COOLDOWN`, and `even the owner cannot approve more than 0.50` (`OVER_COOLDOWN_MAX`) |
-| The dashboard checks 1Click before a signature | `pnpm devnet`, then `pnpm dashboard` ([step 5](#run-it-locally)) | `/intent/5`: "Confirm the transfer", with "Safety checks" |
+| The dashboard checks 1Click before a signature | `pnpm devnet`, then the `pnpm dashboard` line it prints ([step 5](#run-it-locally)) | `/intent/5`: "Confirm the transfer to …", and under "Safety checks", "NEAR Intents' quote matches what the contract will pay (13 checks)" |
+
+The `pnpm demo:mock` and `pnpm devnet` rows need the prerequisites of [Run it locally](#run-it-locally), not
+just `pnpm install`: their first run builds the mock USDC token with cargo-near and downloads `near-sandbox`.
 
 ## Try the live product
 
@@ -558,9 +578,10 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
    the setup page, which names the contract it will create (`<your account, dots made dashes>.getleash.near`)
    and its limits → **Create my GetLeash** is one call to the factory, signed in your wallet → back in the chat,
    the bot says when your GetLeash is ready.
-4. `/addsupplier Acme acme.near` → a button opens the page where your wallet adds that supplier. Send USDC to
-   your contract, then send the bot an invoice from that supplier (a PDF, a photo or pasted text) → it is read
-   on NEAR AI Cloud, checked against your list and proposed to your contract. For 2 days after a supplier is
+4. `/addsupplier Acme acme.near` → a button opens the dashboard's "Add a supplier" page, where your wallet adds
+   that supplier. (Unit tests cover this command; it has not been run on mainnet yet.) Send USDC to your
+   contract, then send the bot an invoice from that supplier (a PDF, a photo or pasted text) → it is read on
+   NEAR AI Cloud, checked against your list and proposed to your contract. For 2 days after a supplier is
    added, every payment to it waits for you; after that, one within your limits is paid in the same call, and
    anything else comes with a button to approve or reject it in your wallet.
 5. `/limits` → your limits, and a button to change them with one signature.
@@ -580,7 +601,13 @@ and steps 1–4 and 6 need no `.env`.
    debug mode, not `--release` (see `AGENTS.md`). Single adversarial rows, from `contract/`: `cargo test executor_supplies_its_own_deposit_address_above_the_trust_budget`,
    `cargo test autonomous_budget_caps_a_fabricated_small_invoice_stream`; the full mapping is in
    `docs/audit-response.md`. Deeper random walks: `PROPTEST_CASES=200 cargo test contract_invariants_hold`
-   (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored`.
+   (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`, about
+   30 seconds after it compiles. Its first run downloads a NEAR node, `near-sandbox` 2.13.4. If that download
+   times out, fetch the node yourself and point the test at it:
+   ```bash
+   mkdir -p /tmp/near-sandbox && curl -L https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore/$(uname -s)-$(uname -m)/2.13.4/near-sandbox.tar.gz | tar xz -C /tmp/near-sandbox
+   (cd contract && NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox cargo test --test sandbox -- --ignored)
+   ```
 
 2. **TypeScript unit tests.**
    ```bash
@@ -622,8 +649,9 @@ and steps 1–4 and 6 need no `.env`.
    ```
    → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
    accounts funded as on mainnet. To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
-   the 15 installer, factory and hosted-setup tests then don't pass, by design, because the installer installs
-   only the release: Vitest reports `10 failed | 23 passed | 5 skipped`.
+   15 of the 24 installer, factory and hosted-setup tests then don't pass, by design, because the installer
+   installs only the release: 10 fail and the hosted-setup file's 5 are skipped, so Vitest reports
+   `10 failed | 23 passed | 5 skipped`.
 
    <details>
    <summary>What the 38 tests cover</summary>
@@ -684,14 +712,16 @@ and steps 1–4 and 6 need no `.env`.
 5. **The dashboard against a local node.**
    ```bash
    pnpm devnet          # terminal 1: node + contract + executor + mock 1Click, prints the env for terminal 2
+   # terminal 2: the line pnpm devnet prints; its two local URLs change every run
    NEXT_PUBLIC_NEAR_NETWORK=testnet NEXT_PUBLIC_NEAR_RPC_URL=… NEXT_PUBLIC_POLICY_CONTRACT_ID=getleash.biz.near NEXT_PUBLIC_ONECLICK_URL=… pnpm dashboard
    ```
    → open `/payments` at the `Local:` address that `pnpm dashboard` prints (http://localhost:3000 unless that
    port is taken; use `localhost`, not `127.0.0.1`, in dev mode). "Needs you" lists
-   three payments. `/intent/5` reads "Confirm the transfer": 8.00 USDT on Tron, its cost from the treasury and
-   its fee, and one button. Before the button works, the browser fetches 1Click's record of the deposit address
-   and checks it against the 12 terms the contract committed, plus that no other payment uses the address
-   ("Safety checks" → Show). Wallet buttons cannot sign on a local node.
+   three payments. `/intent/5` reads "Confirm the transfer to …": 8.00 USDT on Tron, its cost from the treasury
+   and its fee, and two buttons, "Confirm and send … USDC" and "Reject". Before "Confirm and send" works, the
+   browser fetches 1Click's record of the deposit address and checks it against the 12 terms the contract
+   committed, plus that no other payment uses the address: under "Safety checks", "NEAR Intents' quote matches
+   what the contract will pay (13 checks)" → Show. Wallet buttons cannot sign on a local node.
 
 6. **Build the contract.**
    ```bash
@@ -711,7 +741,11 @@ and steps 1–4 and 6 need no `.env`.
    → 83,900 bytes, sha256 `8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d` (NEAR shows it
    as code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2`). The wasm records its source commit and build
    image (NEP-330); a deployed contract returns them from the `contract_source_metadata` view. Rebuilding at
-   any other commit gives a different hash, because the commit is part of that record. These are the bytes of
+   any other commit gives a different hash, because the commit is part of that record. The build runs in the
+   Docker image pinned by digest in `contract/Cargo.toml`, `sourcescan/cargo-near:0.21.1-rust-1.96.0`, so the
+   record names that image's Rust and cargo-near, not the versions in the prerequisites. Its `link` and
+   `source_code_snapshot` point to the team's Bitbucket repository, which this GitHub repository mirrors;
+   `b11e68a` is the same commit in both. These are the bytes of
    `contract/release/getleash_policy.wasm`, which the integration tests and the offline demo run. The hosted setups' contracts (`contract/bootstrap`, D-31,
    D-32): the installer is 1,932 bytes, sha256
    `cfd051b8791ab61bf06dfba5abd41739b18b2efa019c831619895b814381f09c`; the factory 7,921 bytes, sha256
