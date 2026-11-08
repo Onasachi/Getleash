@@ -567,9 +567,11 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | A changed address can't be paid in full | `pnpm demo:mock` | `SUPPLIER_COOLDOWN`, and `even the owner cannot approve more than 0.50` (`OVER_COOLDOWN_MAX`) |
 | The dashboard checks 1Click before a signature | `pnpm devnet`, then the `pnpm dashboard` line it prints ([step 5](#run-it-locally)) | http://localhost:3000/intent/5 (or the port `pnpm dashboard` prints): "Confirm the transfer to …", and under "Safety checks", "NEAR Intents' quote matches what the contract will pay (13 checks)" |
 
-Every `pnpm` row needs Node.js ≥ 22 and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`). The `pnpm demo:mock`
-and `pnpm devnet` rows also need the other prerequisites of [Run it locally](#run-it-locally): their first run
-builds the mock USDC token with cargo-near and downloads `near-sandbox`.
+The `pnpm` rows run in a clone of this repository
+(`git clone https://github.com/Onasachi/Getleash.git && cd Getleash`) and need Node.js ≥ 22 and pnpm 10.33.0
+(`npm install -g pnpm@10.33.0`). The `pnpm demo:mock` and `pnpm devnet` rows also need the other prerequisites
+of [Run it locally](#run-it-locally): their first run builds the mock USDC token with cargo-near and downloads
+`near-sandbox`.
 
 ## Try the live product
 
@@ -598,8 +600,17 @@ Prerequisites: [Rust via rustup](https://rustup.rs) (the pinned toolchain, 1.93.
 cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`), Node.js ≥ 22 and pnpm 10.33.0
 (`npm install -g pnpm@10.33.0`). Avoid `corepack enable` with an old corepack: 0.30.0, the one in Node 23.4.0,
 lacks npm's current signing keys and fails with `Cannot find matching keyid`. Step 7 also needs Docker.
-Run every step from the repository's root. Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API,
-and steps 1–4 and 6 need no `.env`.
+Clone the repository and run every step from its root:
+
+```bash
+git clone https://github.com/Onasachi/Getleash.git && cd Getleash
+```
+
+Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API, and steps 1–4 and 6 need no `.env`. The
+times below are from an Apple Silicon Mac (M1) on a fast connection. First runs also download the Rust crates
+in `contract/Cargo.lock` (75 MB in all), the NEAR node twice, once for step 1 and once for steps 3–5 (a 29 MB
+archive each time on an Apple Silicon Mac, 35 MB on Linux x86-64), and step 7's build image (0.5 GB), so they
+take longer on a slow connection. Steps 1 and 3 say what to do when the node's download times out.
 
 1. **Contract tests.**
    ```bash
@@ -614,12 +625,14 @@ and steps 1–4 and 6 need no `.env`.
    (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`. The first
    run takes about 1½ minutes: the test builds the contract and a mock USDC with cargo-near, then downloads a
    NEAR node, `near-sandbox` 2.13.4 (the default of the `near-sandbox` crate 0.3.16 in `contract/Cargo.lock`;
-   `docs/verified-facts.md`). Later runs take about 30 seconds. If the download times out, fetch the
-   node yourself and point the test at it:
+   `docs/verified-facts.md`). Later runs take about 30 seconds. If the download times out
+   (`Download error: timeout`), fetch the node yourself and point the test at it:
    ```bash
    mkdir -p /tmp/near-sandbox && curl -L https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore/$(uname -s)-$(uname -m)/2.13.4/near-sandbox.tar.gz | tar xz -C /tmp/near-sandbox
    (cd contract && NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox cargo test --test sandbox -- --ignored)
    ```
+   `pnpm test:sandbox`, `pnpm demo:mock` and `pnpm devnet` (steps 3–5) read the same variable, and this node
+   is the version they run.
 
 2. **TypeScript unit tests.**
    ```bash
@@ -655,12 +668,17 @@ and steps 1–4 and 6 need no `.env`.
 
 3. **Integration tests on a local NEAR node.** They run the release wasm committed at
    `contract/release/getleash_policy.wasm`, the bytes deployed on mainnet, after checking its sha256 (step 7
-   rebuilds it from source). The first run builds the mock USDC token with cargo-near and downloads `near-sandbox`.
+   rebuilds it from source). The first run builds the mock USDC token with cargo-near and downloads the NEAR
+   node again: the npm package `near-sandbox` 0.3.4 keeps its own copy of 2.13.4 under `node_modules`.
    ```bash
    pnpm test:sandbox
    ```
    → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
-   accounts funded as on mainnet. To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
+   accounts funded as on mainnet. On a slow connection the first file can fail with
+   `Hook timed out in 300000ms` while the node downloads. The download goes on while the other files run, so
+   running it again normally passes all 38; to skip the download, reuse the node fetched in step 1:
+   `NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox pnpm test:sandbox`.
+   To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
    15 of the 24 installer, factory and hosted-setup tests then don't pass, by design, because the installer
    installs only the release: 10 fail and the hosted-setup file's 5 are skipped, so Vitest reports
    `10 failed | 23 passed | 5 skipped`.
@@ -735,8 +753,10 @@ and steps 1–4 and 6 need no `.env`.
    committed, plus that no other payment uses the address: under "Safety checks", "NEAR Intents' quote matches
    what the contract will pay (13 checks)" → Show. Wallet buttons cannot sign on a local node. Expected in dev
    mode: `/api/private/names` answers 401 without a private-view session (the pages then show addresses instead
-   of supplier names), and a browser extension that edits pages, such as a wallet, can make the Next.js dev
-   overlay show a hydration warning.
+   of supplier names), and a wallet extension in the browser can add `[browser]` lines to the `pnpm dashboard`
+   log: a hydration warning (the extension edited the page; the Next.js dev overlay shows it too) or an
+   `unhandledRejection` thrown in the extension's own code (`chrome-extension://…`). Neither comes from the
+   dashboard.
 
 6. **Build the contract.**
    ```bash
@@ -747,8 +767,11 @@ and steps 1–4 and 6 need no `.env`.
    reproduces the release itself.
 
 7. **Reproduce the release wasm** (needs Docker, running; on Linux without `shasum`, use `sha256sum`). It checks
-   out an older commit, so start from a clean working tree. About 3 minutes once Docker has the build image (the
-   first run also pulls it).
+   out an older commit, so start from a clean working tree. About 3 minutes on a fast connection once Docker has
+   the build image (the first run also pulls it, 0.5 GB). The image is built for linux/amd64 only, so an Apple
+   Silicon Mac runs it emulated; the 3 minutes include that. Every run starts a fresh container that downloads
+   the crates in `contract/Cargo.lock` again (75 MB), so on a slow connection the download takes most of the
+   time: about 18 minutes in all at about 90 KB/s.
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on
