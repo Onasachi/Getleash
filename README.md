@@ -672,12 +672,14 @@ fails.
 3. **Integration tests on a local NEAR node.** They run the release wasm committed at
    `contract/release/getleash_policy.wasm`, the bytes deployed on mainnet, after checking its sha256 (step 7
    rebuilds it from source). The first run builds the mock USDC token with cargo-near. On its own, the npm
-   package `near-sandbox` 0.3.4 would also download the NEAR node again, into `node_modules`; the first line
-   below points it at the copy that step 1's real-node test downloaded, the same 2.13.4. If that test hasn't
-   run, the line finds nothing and the node is downloaded as usual. `pnpm demo:mock` and `pnpm devnet` (steps
-   4 and 5) read the same variable, so run them in this shell too.
+   package `near-sandbox` 0.3.4 would also download the NEAR node again, into `node_modules`; the first two
+   lines below point it at the copy that step 1's real-node test downloaded, the same 2.13.4. If that copy
+   isn't there (the test hasn't run, or ran with a node fetched by hand), they leave the variable unset, since
+   an empty one would break step 1's real-node test in this shell, and the node is downloaded as usual.
+   `pnpm demo:mock` and `pnpm devnet` (steps 4 and 5) read the same variable, so run them in this shell too.
    ```bash
-   export NEAR_SANDBOX_BIN_PATH=$(find "$PWD/contract/target/debug/build" -path '*/near-sandbox-2.13.4/near-sandbox' -type f 2>/dev/null | head -1)
+   sandbox_bin=$(find "$PWD/contract/target/debug/build" -path '*/near-sandbox-2.13.4/near-sandbox' -type f 2>/dev/null | head -1)
+   if [ -n "$sandbox_bin" ]; then export NEAR_SANDBOX_BIN_PATH="$sandbox_bin"; fi
    pnpm test:sandbox
    ```
    → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
