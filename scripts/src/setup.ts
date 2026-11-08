@@ -1,7 +1,7 @@
 /**
  * The owner's setup, run on the owner's machine with the owner's key (PLAN §3.1, D-11).
  *
- *   pnpm setup --network mainnet --owner yourbusiness.near --wasm-sha256 <published hash>
+ *   pnpm setup:owner --network mainnet --owner yourbusiness.near --wasm-sha256 <published hash>
  *
  * Creates agent-N / executor-N with only their function-call keys, creates the policy account in one
  * keyless batch (create, fund, deploy, init), registers it on USDC, then verifies everything from
@@ -49,7 +49,7 @@ const { values, common } = parse(
     "executor-allowance": { type: "string", default: "1" },
   },
   `
-Usage: pnpm setup --network <mainnet|testnet> --owner <you.near> [options]
+Usage: pnpm setup:owner --network <mainnet|testnet> --owner <you.near> [options]
 
   --owner-key-file <path>     owner credentials (default ~/.near-credentials/<network>/<owner>.json)
   --n <N>                     role account number: agent-N / executor-N (default 1)

@@ -48,9 +48,9 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
 5. **Service secrets** in `.env` (copy `.env.example`): `NEAR_AI_API_KEY`, `TELEGRAM_BOT_TOKEN`,
    `TELEGRAM_OWNER_CHAT_ID`, `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TENANT_SECRET`,
    `INVOICE_STORE_KEY`, and optionally `ONECLICK_JWT`, which lowers 1Click's fee on stablecoin routes.
-6. **The release wasm** at `contract/target/near/getleash_policy.wasm`, sha256
+6. **The release wasm**, committed at `contract/release/getleash_policy.wasm` (setup's default), sha256
    `8eaccbf19a011b67eb70f603a97b992831bec2485478587ae6973768b7640a3d` (to rebuild it yourself, see the
-   README, "Try it", step 7). Setup refuses any other file on mainnet.
+   README, "Run it locally", step 7). Setup refuses any other file on mainnet.
 
 ## Deploy
 
@@ -178,10 +178,10 @@ Vercel deployment.
 Once the bot and the dashboard run, another business needs none of the steps above (docs/decisions.md
 D-30, D-32). It sends your bot `/start`, taps "Set up GetLeash", connects its NEAR wallet on the page that
 opens inside Telegram, and confirms twice: a free message saying this GetLeash is theirs, then one call to
-GetLeash's factory that sends 1.404 NEAR (about 1.43 NEAR leaves its wallet in all; it needs about 1.491
-while it signs, and the rest comes back). The factory creates its contract, `<its account, dots made
-dashes>.getleash.near`: the same keyless contract, the same release, the limits of
-`deploy/mainnet-policy.json`, owned by its wallet, with its agent and executor accounts next to it.
+GetLeash's factory with 1.40325 NEAR attached, which the page shows rounded up as 1.404 (about 1.43 NEAR
+leaves its wallet in all; it needs about 1.491 while it signs, and the rest comes back). The factory creates
+its contract, `<its account, dots made dashes>.getleash.near`: the same keyless contract, the same release,
+the limits of `deploy/mainnet-policy.json`, owned by its wallet, with its agent and executor accounts next to it.
 The bot checks everything on-chain, says "✅ Your GetLeash is ready", and from then on serves that business
 in its owner's private chat only. Everything else works for it as for you: invoices, `/addsupplier`,
 `/invite`, approvals in HOT Wallet, `/pause`.
