@@ -571,7 +571,8 @@ The `pnpm` rows run in a clone of this repository
 (`git clone https://github.com/Onasachi/Getleash.git && cd Getleash`) and need Node.js ≥ 22 and pnpm 10.33.0
 (`npm install -g pnpm@10.33.0`). The `pnpm demo:mock` and `pnpm devnet` rows also need the other prerequisites
 of [Run it locally](#run-it-locally): their first run builds the mock USDC token with cargo-near and downloads
-`near-sandbox`.
+the NEAR node (about 30 MB). On a slow connection, fetch the node first with step 1's `curl` command and set
+`NEAR_SANDBOX_BIN_PATH` to it, as step 3 of [Run it locally](#run-it-locally) shows.
 
 ## Try the live product
 
@@ -597,7 +598,8 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
 ## Run it locally
 
 Prerequisites: [Rust via rustup](https://rustup.rs) (the pinned toolchain, 1.93.0, installs itself),
-cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`), Node.js ≥ 22 and pnpm 10.33.0
+cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`; these steps were checked with 0.22.0, so
+its notice `cargo-near has a new update available` can be ignored), Node.js ≥ 22 and pnpm 10.33.0
 (`npm install -g pnpm@10.33.0`). Avoid `corepack enable` with an old corepack: 0.30.0, the one in Node 23.4.0,
 lacks npm's current signing keys and fails with `Cannot find matching keyid`. Step 7 also needs Docker.
 Clone the repository and run every step from its root:
@@ -606,11 +608,12 @@ Clone the repository and run every step from its root:
 git clone https://github.com/Onasachi/Getleash.git && cd Getleash
 ```
 
-Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API, and steps 1–4 and 6 need no `.env`. The
-times below are from an Apple Silicon Mac (M1) on a fast connection. First runs also download the Rust crates
-in `contract/Cargo.lock` (75 MB in all), the NEAR node twice, once for step 1 and once for steps 3–5 (a 29 MB
-archive each time on an Apple Silicon Mac, 35 MB on Linux x86-64), and step 7's build image (0.5 GB), so they
-take longer on a slow connection. Steps 1 and 3 say what to do when the node's download times out.
+Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API, and no step needs a `.env`. The times
+below are from an Apple Silicon Mac (M1) on a fast connection. First runs also download the Rust crates in
+`contract/Cargo.lock` (75 MB in all), the NEAR node (a 29 MB archive on an Apple Silicon Mac, 35 MB on Linux
+x86-64) for step 1 and again for steps 3–5 unless you reuse step 1's copy (step 3), and step 7's build image
+(0.5 GB), so they take longer on a slow connection. Steps 1 and 3 say what to do when the node's download
+fails.
 
 1. **Contract tests.**
    ```bash
@@ -668,16 +671,23 @@ take longer on a slow connection. Steps 1 and 3 say what to do when the node's d
 
 3. **Integration tests on a local NEAR node.** They run the release wasm committed at
    `contract/release/getleash_policy.wasm`, the bytes deployed on mainnet, after checking its sha256 (step 7
-   rebuilds it from source). The first run builds the mock USDC token with cargo-near and downloads the NEAR
-   node again: the npm package `near-sandbox` 0.3.4 keeps its own copy of 2.13.4 under `node_modules`.
+   rebuilds it from source). The first run builds the mock USDC token with cargo-near. On its own, the npm
+   package `near-sandbox` 0.3.4 would also download the NEAR node again, into `node_modules`; the first line
+   below points it at the copy that step 1's real-node test downloaded, the same 2.13.4. If that test hasn't
+   run, the line finds nothing and the node is downloaded as usual. `pnpm demo:mock` and `pnpm devnet` (steps
+   4 and 5) read the same variable, so run them in this shell too.
    ```bash
+   export NEAR_SANDBOX_BIN_PATH=$(find "$PWD/contract/target/debug/build" -path '*/near-sandbox-2.13.4/near-sandbox' -type f 2>/dev/null | head -1)
    pnpm test:sandbox
    ```
    → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
-   accounts funded as on mainnet. On a slow connection the first file can fail with
-   `Hook timed out in 300000ms` while the node downloads. The download goes on while the other files run, so
-   running it again normally passes all 38; to skip the download, reuse the node fetched in step 1:
-   `NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox pnpm test:sandbox`.
+   accounts funded as on mainnet. When the node is downloaded here instead, a slow connection can make files
+   fail with `Hook timed out in 300000ms`, and a broken download adds `Failed to download binary` (for example
+   `read ECONNRESET`) or `Failed to acquire lock for downloading the binary`. If
+   `node_modules/.pnpm/near-sandbox@0.3.4/node_modules/near-sandbox/bin/near-sandbox-2.13.4/near-sandbox` exists
+   afterwards, the download finished and running it again passes all 38. If not, a rerun starts the download
+   over: fetch the node with step 1's `curl` command, then
+   `export NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox` and run it again.
    To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
    15 of the 24 installer, factory and hosted-setup tests then don't pass, by design, because the installer
    installs only the release: 10 fail and the hosted-setup file's 5 are skipped, so Vitest reports
@@ -771,7 +781,9 @@ take longer on a slow connection. Steps 1 and 3 say what to do when the node's d
    the build image (the first run also pulls it, 0.5 GB). The image is built for linux/amd64 only, so an Apple
    Silicon Mac runs it emulated; the 3 minutes include that. Every run starts a fresh container that downloads
    the crates in `contract/Cargo.lock` again (75 MB), so on a slow connection the download takes most of the
-   time: about 18 minutes in all at about 90 KB/s.
+   time: about 18 minutes in all at about 90 KB/s, and over 30 minutes at slower speeds. Nothing is printed
+   while the crates download: the `• done` that ends `• Collecting cargo project metadata...` can take most of
+   that time to appear (`docker stats` shows the container's network traffic meanwhile).
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on
