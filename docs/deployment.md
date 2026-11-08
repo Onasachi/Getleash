@@ -30,7 +30,9 @@ not through a tool without a terminal. Transaction ids and measured costs: [veri
 
 ## Before you start
 
-1. **Tools.** Node.js 22 or later and pnpm (`corepack enable`), then `pnpm install` in the repository.
+1. **Tools.** Node.js 22 or later and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`; `corepack enable` fails
+   with `Cannot find matching keyid` when corepack is old, such as 0.30.0 in Node 23.4.0), then
+   `pnpm install` in the repository.
    near-cli-rs: `npm install -g near-cli-rs` (with asdf-managed Node, run `asdf reshim nodejs` afterwards).
 2. **Owner account.** A named mainnet account (`you.near`), because setup creates accounts under it, with
    at least 1.6 NEAR.

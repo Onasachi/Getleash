@@ -489,9 +489,10 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 1. **3 Nov:** 0.50 USDC to its first supplier, held because the supplier was in its 2-day cooldown, and approved
    by the owner ([`propose`](https://nearblocks.io/txns/AkcfngL6HZCe7ReW8TAquWCsDbr6pzZAqMsbc1cJtwk8),
    [`decide`](https://nearblocks.io/txns/DxEyMM3QUomzVvNcet8waM5f5GYLVRpHWovuVtEPpPye)).
-2. **3 Nov:** 0.50 USDC to the same supplier, approved from Telegram. The bot's button opened the payment page
-   inside Telegram, and the owner signed in HOT Wallet
-   ([`decide`](https://nearblocks.io/txns/Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9)).
+2. **3 Nov:** 0.50 USDC to the same supplier, held because it was still in its cooldown, and approved from
+   Telegram. The bot's button opened the payment page inside Telegram, and the owner signed in HOT Wallet
+   ([`propose`](https://nearblocks.io/txns/5UQddBayhgRd7qQafDRvdEtGUmdkc6WCQ8WHwTfNegR1),
+   [`decide`](https://nearblocks.io/txns/Fbwfukbhjhe5DDbtwM3EVFSJSDG2KzQCwzrvYCJwLbr9)).
 3. **4 Nov:** 0.50 USDC to `onasachi.tg`, held because the supplier had just been added and was in its 2-day
    cooldown, and approved by the owner
    ([`propose`](https://nearblocks.io/txns/ijQNuBMqjjBBfTmpe5X2HNfhsGzw4mKcDTKYWrTMxKt),
@@ -562,8 +563,9 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | A changed address can't be paid in full | `pnpm demo:mock` | `SUPPLIER_COOLDOWN`, and `even the owner cannot approve more than 0.50` (`OVER_COOLDOWN_MAX`) |
 | The dashboard checks 1Click before a signature | `pnpm devnet`, then the `pnpm dashboard` line it prints ([step 5](#run-it-locally)) | `/intent/5`: "Confirm the transfer to …", and under "Safety checks", "NEAR Intents' quote matches what the contract will pay (13 checks)" |
 
-The `pnpm demo:mock` and `pnpm devnet` rows need the prerequisites of [Run it locally](#run-it-locally), not
-just `pnpm install`: their first run builds the mock USDC token with cargo-near and downloads `near-sandbox`.
+Every `pnpm` row needs Node.js ≥ 22 and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`). The `pnpm demo:mock`
+and `pnpm devnet` rows also need the other prerequisites of [Run it locally](#run-it-locally): their first run
+builds the mock USDC token with cargo-near and downloads `near-sandbox`.
 
 ## Try the live product
 
@@ -589,7 +591,9 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
 ## Run it locally
 
 Prerequisites: [Rust via rustup](https://rustup.rs) (the pinned toolchain, 1.93.0, installs itself),
-cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`), Node.js ≥ 22 and pnpm (`corepack enable`).
+cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`), Node.js ≥ 22 and pnpm 10.33.0
+(`npm install -g pnpm@10.33.0`). Avoid `corepack enable` with an old corepack: 0.30.0, the one in Node 23.4.0,
+lacks npm's current signing keys and fails with `Cannot find matching keyid`. Step 7 also needs Docker.
 Run every step from the repository's root. Nothing below touches mainnet, NEAR AI Cloud or the real 1Click API,
 and steps 1–4 and 6 need no `.env`.
 
@@ -601,9 +605,10 @@ and steps 1–4 and 6 need no `.env`.
    debug mode, not `--release` (see `AGENTS.md`). Single adversarial rows, from `contract/`: `cargo test executor_supplies_its_own_deposit_address_above_the_trust_budget`,
    `cargo test autonomous_budget_caps_a_fabricated_small_invoice_stream`; the full mapping is in
    `docs/audit-response.md`. Deeper random walks: `PROPTEST_CASES=200 cargo test contract_invariants_hold`
-   (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`, about
-   30 seconds after it compiles. Its first run downloads a NEAR node, `near-sandbox` 2.13.4. If that download
-   times out, fetch the node yourself and point the test at it:
+   (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`. The first
+   run takes about 1½ minutes: the test builds the contract and a mock USDC with cargo-near, then downloads a
+   NEAR node, `near-sandbox` 2.13.4. Later runs take about 30 seconds. If the download times out, fetch the
+   node yourself and point the test at it:
    ```bash
    mkdir -p /tmp/near-sandbox && curl -L https://s3-us-west-1.amazonaws.com/build.nearprotocol.com/nearcore/$(uname -s)-$(uname -m)/2.13.4/near-sandbox.tar.gz | tar xz -C /tmp/near-sandbox
    (cd contract && NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox cargo test --test sandbox -- --ignored)
@@ -731,8 +736,8 @@ and steps 1–4 and 6 need no `.env`.
    A local build's bytes differ from the release's, because a build records its commit and environment; step 7
    reproduces the release itself.
 
-7. **Reproduce the release wasm** (needs Docker, running). It checks out an older commit, so start from a clean
-   working tree.
+7. **Reproduce the release wasm** (needs Docker, running; on Linux without `shasum`, use `sha256sum`). It checks
+   out an older commit, so start from a clean working tree.
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on
@@ -755,8 +760,9 @@ and steps 1–4 and 6 need no `.env`.
 
 ## Deploy your own
 
-The full flow, with prerequisites, what each step prints and the measured costs, is in
-[docs/deployment.md](docs/deployment.md). In short, on the owner's machine:
+The full flow, with prerequisites (near-cli-rs holding the owner's key, a `.env` copied from `.env.example`),
+what each step prints and the measured costs, is in [docs/deployment.md](docs/deployment.md). In short, on
+the owner's machine:
 
 ```bash
 pnpm keygen --network mainnet --account agent-1.<you>.near        # on the machine that runs each service
@@ -795,8 +801,13 @@ devkit/            local NEAR node harness and the integration tests
 deploy/            the mainnet policy (one tenth of v1's default limits)
 fixtures/invoices/ demo invoices (clean, duplicates, injection, address swap, fabricated, NGN, …)
 docs/              PLAN.md (the spec), decisions.md, audit-response.md, verified-facts.md, deployment.md, design-brief.md
+brand/             the logo and the bot's Telegram pictures
+render.yaml        Render Blueprint for the hosted executor and bot (docs/deployment.md)
+vitest.config.ts   the TypeScript test projects: unit (pnpm test) and sandbox (pnpm test:sandbox)
 AGENTS.md          rules for coding agents (CLAUDE.md imports it)
 .agents/skills/    near/agent-skills, installed with `npx skills add near/agent-skills`
+skills-lock.json   the source and hash of each installed skill
+.claude/skills/    links to the same skills, for Claude Code
 ```
 
 ## Tech stack
