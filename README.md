@@ -525,7 +525,7 @@ contract's events), or GET `https://api.nearblocks.io/v1/txns/<hash>` (signer, m
   blocked (D-07), and `pnpm status` lists no open intents.
 
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
-https://www.getleash.xyz/payments?c=getleash.onanikes.near.
+https://www.getleash.xyz/payments?c=getleash.onanikes.near in a browser.
 
 Check a transaction without a browser, with `curl` and `jq`. This asks an archival node, because regular RPC
 nodes keep transactions for only a few days:
@@ -559,7 +559,7 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | Claim | Do | See |
 |---|---|---|
 | The live treasury has no keys and enforces its limits | `pnpm install && pnpm status --network mainnet --policy getleash.onanikes.near` | `✓ getleash.onanikes.near: 0 access keys (must be 0)`, `approval above 2.5`, `of 5 today`, `of 20`, and two role accounts with one function-call key each |
-| Real payments on mainnet | Open the transactions in [Live on NEAR mainnet](#live-on-near-mainnet) (or fetch one with the `curl` command there), or https://www.getleash.xyz/payments?c=getleash.onanikes.near | The payments, each with its own page |
+| Real payments on mainnet | Run the archival-node `curl` command in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the payments, each with its own page |
 | USDC and Tron payouts | `pnpm demo:mock` | `paid 18 USDC to acme.near inside the agent's call (no executor)`; `→ 2 USDT to the supplier on Tron (executor-trust budget)` |
 | A prompt injection is refused on-chain | `pnpm demo:mock` | `refused by the contract: UNKNOWN_SUPPLIER` |
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
@@ -573,6 +573,10 @@ The `pnpm` rows run in a clone of this repository
 of [Run it locally](#run-it-locally): their first run builds the mock USDC token with cargo-near and downloads
 the NEAR node (about 30 MB). On a slow connection, fetch the node first with step 1's `curl` command and set
 `NEAR_SANDBOX_BIN_PATH` to it, as step 3 of [Run it locally](#run-it-locally) shows.
+
+The dashboard's pages, on https://www.getleash.xyz and locally (last row), read the chain in the browser, so
+they need one: fetched without JavaScript, they hold only "Loading from the chain…". Without a browser, use the
+commands in the first two rows.
 
 ## Try the live product
 
@@ -597,12 +601,12 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
 
 ## Run it locally
 
-Prerequisites: [Rust via rustup](https://rustup.rs) (the pinned toolchain, 1.93.0, installs itself),
-cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`; these steps were checked with 0.22.0, so
-its notice `cargo-near has a new update available` can be ignored), Node.js ≥ 22 and pnpm 10.33.0
-(`npm install -g pnpm@10.33.0`). Avoid `corepack enable` with an old corepack: 0.30.0, the one in Node 23.4.0,
-lacks npm's current signing keys and fails with `Cannot find matching keyid`. Step 7 also needs Docker.
-Clone the repository and run every step from its root:
+Prerequisites: [Rust via rustup](https://rustup.rs) (the pinned toolchains install themselves: 1.93.0, and 1.94.1
+for step 7's bootstrap contracts), cargo-near 0.22 (`cargo install --locked cargo-near --version 0.22.0`; these
+steps were checked with 0.22.0, so its notice `cargo-near has a new update available` can be ignored),
+Node.js ≥ 22 and pnpm 10.33.0 (`npm install -g pnpm@10.33.0`). Avoid `corepack enable` with an old corepack:
+0.30.0, the one in Node 23.4.0, lacks npm's current signing keys and fails with `Cannot find matching keyid`.
+Step 7 also needs Docker. Clone the repository and run every step from its root:
 
 ```bash
 git clone https://github.com/Onasachi/Getleash.git && cd Getleash
@@ -671,29 +675,26 @@ fails.
 
 3. **Integration tests on a local NEAR node.** They run the release wasm committed at
    `contract/release/getleash_policy.wasm`, the bytes deployed on mainnet, after checking its sha256 (step 7
-   rebuilds it from source). The first run builds the mock USDC token with cargo-near. On its own, the npm
-   package `near-sandbox` 0.3.4 would also download the NEAR node again, into `node_modules`; the first two
-   lines below point it at the copy that step 1's real-node test downloaded, the same 2.13.4. If that copy
-   isn't there (the test hasn't run, or ran with a node fetched by hand), they leave the variable unset, since
-   an empty one would break step 1's real-node test in this shell, and the node is downloaded as usual.
-   `pnpm demo:mock` and `pnpm devnet` (steps 4 and 5) read the same variable, so run them in this shell too.
+   rebuilds it from source). The first run builds the mock USDC token with cargo-near. The first two lines below
+   reuse the NEAR node (2.13.4) that step 1's real-node test downloaded. Without that copy they leave
+   `NEAR_SANDBOX_BIN_PATH` unset (set but empty, it breaks that test), and the npm package `near-sandbox`
+   downloads its own copy into `node_modules`. Run steps 4 and 5 in the same shell: they read the variable too.
    ```bash
    sandbox_bin=$(find "$PWD/contract/target/debug/build" -path '*/near-sandbox-2.13.4/near-sandbox' -type f 2>/dev/null | head -1)
    if [ -n "$sandbox_bin" ]; then export NEAR_SANDBOX_BIN_PATH="$sandbox_bin"; fi
    pnpm test:sandbox
    ```
    → `Tests 38 passed` (5 files), in about 2 minutes the first time and about 1 minute after, with the role
-   accounts funded as on mainnet. When the node is downloaded here instead, a slow connection can make files
-   fail with `Hook timed out in 300000ms`, and a broken download adds `Failed to download binary` (for example
-   `read ECONNRESET`) or `Failed to acquire lock for downloading the binary`. If
-   `node_modules/.pnpm/near-sandbox@0.3.4/node_modules/near-sandbox/bin/near-sandbox-2.13.4/near-sandbox` exists
-   afterwards, the download finished and running it again passes all 38. If not, a rerun starts the download
-   over: fetch the node with step 1's `curl` command, then
+   accounts funded as on mainnet. When the node is downloaded here, a slow or broken download can make files
+   fail with `Hook timed out in 300000ms`, `Failed to download binary` (for example `read ECONNRESET`) or
+   `Failed to acquire lock for downloading the binary`. If
+   `node_modules/.pnpm/near-sandbox@0.3.4/node_modules/near-sandbox/bin/near-sandbox-2.13.4/near-sandbox` now
+   exists, the download finished: run it again → all 38 pass. If not, a rerun would start the download over, so
+   fetch the node with step 1's `curl` command,
    `export NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox` and run it again.
-   To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path;
-   15 of the 24 installer, factory and hosted-setup tests then don't pass, by design, because the installer
-   installs only the release: 10 fail and the hosted-setup file's 5 are skipped, so Vitest reports
-   `10 failed | 23 passed | 5 skipped`.
+   To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path: by design, 15 of the 24
+   installer, factory and hosted-setup tests then don't pass, because the installer installs only the release
+   (10 fail and the hosted-setup file's 5 are skipped: `10 failed | 23 passed | 5 skipped`).
 
    <details>
    <summary>What the 38 tests cover</summary>
@@ -779,13 +780,11 @@ fails.
    reproduces the release itself.
 
 7. **Reproduce the release wasm** (needs Docker, running; on Linux without `shasum`, use `sha256sum`). It checks
-   out an older commit, so start from a clean working tree. About 3 minutes on a fast connection once Docker has
-   the build image (the first run also pulls it, 0.5 GB). The image is built for linux/amd64 only, so an Apple
-   Silicon Mac runs it emulated; the 3 minutes include that. Every run starts a fresh container that downloads
-   the crates in `contract/Cargo.lock` again (75 MB), so on a slow connection the download takes most of the
-   time: about 18 minutes in all at about 90 KB/s, and over 30 minutes at slower speeds. Nothing is printed
-   while the crates download: the `• done` that ends `• Collecting cargo project metadata...` can take most of
-   that time to appear (`docker stats` shows the container's network traffic meanwhile).
+   out an older commit, so start from a clean working tree. The first run pulls the build image, 0.5 GB, built
+   for linux/amd64 only (an Apple Silicon Mac runs it emulated). Every run starts a fresh container that
+   downloads the crates in `contract/Cargo.lock` again (75 MB): a run takes about 3 minutes in all on a fast
+   connection, about 18 at 90 KB/s and over 30 at slower speeds. That download prints nothing:
+   `• Collecting cargo project metadata...` gets its `• done` only when it ends (`docker stats` shows the traffic).
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on
@@ -804,7 +803,10 @@ fails.
    `cfd051b8791ab61bf06dfba5abd41739b18b2efa019c831619895b814381f09c`; the factory 7,921 bytes, sha256
    `5de21f5bb8b9e0fbeb9a9650687abab82ae535082c0a29de69fc140197279228`; the release store's code 1,368 bytes,
    sha256 `60b5b24dc8b199e1b0a30e4e7e840d964384f6be83eb6b1dc2e1cc733f50eb61`. `pnpm build:installer --check`
-   rebuilds them with the pinned toolchain and compares.
+   rebuilds them with their own pinned toolchain, Rust 1.94.1 with the `wasm32v1-none` target
+   (`contract/bootstrap/rust-toolchain.toml`; rustup installs it on first use), and compares →
+   `✓ contract/bootstrap/factory/src/config.rs and shared/src/installer-wasm.ts match the build`, with these
+   sizes and hashes.
 
 ## Deploy your own
 
