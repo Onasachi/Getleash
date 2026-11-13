@@ -23,9 +23,10 @@
   as a PDF, and the first business to set up from the bot has its own contract. See [Live on NEAR mainnet](#live-on-near-mainnet).
 - **Built for the NEAR Hackathon** (1–14 Nov 2026), tracks `security`, `business`, `realworld`, `privacy`,
   `agents` and `open`. See [Hackathon tracks](#hackathon-tracks).
-- **For AI assistants:** an MCP server lets Claude Code, Cursor or any other MCP client read a GetLeash contract
-  and, with the agent's key, hand it invoices; the contract still decides. See [From an AI assistant (MCP)](#from-an-ai-assistant-mcp).
-- **Tested:** 47 Rust tests, 45 integration tests on a local NEAR node, 188 TypeScript tests, and an offline
+- **For AI assistants:** an MCP server lets Claude, Claude Code, Cursor or any other MCP client read a GetLeash
+  contract (hosted, read-only, at https://www.getleash.xyz/mcp) and, on the owner's machine with the agent's key,
+  hand it invoices; the contract still decides. See [From an AI assistant (MCP)](#from-an-ai-assistant-mcp).
+- **Tested:** 47 Rust tests, 46 integration tests on a local NEAR node, 197 TypeScript tests, and an offline
   demo of 14 steps over 13 invoices, attacks included. See [Quick verify](#quick-verify) and [Run it locally](#run-it-locally).
 
 ## Contents
@@ -238,7 +239,7 @@ flowchart LR
 | Agent | `agent/`, `ingestion/`: TypeScript | Reads invoices on NEAR AI Cloud, checks the TEE evidence, matches the supplier, computes the obligation id, calls `propose` | One function-call key: `propose` on its business's contract |
 | Executor | `executor/`: TypeScript, no LLM | Quotes cross-chain payouts on 1Click, records and funds deposits, tells the owner what was delivered or refunded | One function-call key: `create_attempt`, `fund` and `forget` |
 | Telegram bot | `channels/telegram/`: grammY | The owner's interface: invoices, approvals, suppliers, limits, setup and notices; it runs the agent | The agent's key; for businesses it hosts (D-30), their agent and executor keys |
-| MCP server | `channels/mcp/`: MCP TypeScript SDK, stdio (D-34) | Lets an AI assistant read a contract's limits, payments and suppliers, and with the agent's key hand invoices to the bot's pipeline | None for reading; to take invoices, the agent's key |
+| MCP server | `channels/mcp/`: MCP TypeScript SDK; stdio on the owner's machine, and read-only at https://www.getleash.xyz/mcp (`web/app/mcp`) (D-34) | Lets an AI assistant read a contract's limits, payments and suppliers, and on the owner's machine hand invoices to the bot's pipeline | The hosted one: none. The local one: none for reading; to take invoices, the agent's key |
 | Dashboard | `web/`: Next.js | The landing page and the dashboard. It reads the chain from the owner's browser, prepares every owner signature, and checks 1Click's record before a cross-chain one | None: the owner's wallet signs |
 | Shared library | `shared/` | Borsh types and strict decoders (golden vectors shared with Rust), role-scoped clients, the 1Click client, the setup flow, address checks | — |
 
@@ -434,9 +435,9 @@ freeze tokens. A business that GetLeash hosts also trusts the operator who runs 
 - **47 Rust tests:** unit tests named after the adversarial rows of `docs/PLAN.md` §9, property tests (the pure
   rules, the JSON parser against serde_json, random walks over the whole contract) and golden Borsh vectors.
   `docs/audit-response.md` maps every audit finding to its fix and its tests.
-- **45 integration tests on a local NEAR node,** with the release wasm: the keys test (role keys refused for
+- **46 integration tests on a local NEAR node,** with the release wasm: the keys test (role keys refused for
   transfers, deposits, other methods and other contracts), cross-chain payouts through mock 1Click, the hosted
-  setup, the installer, the factory, and invoices handed in through the MCP server.
+  setup, the installer, the factory, invoices handed in through the MCP server, and its hosted endpoint.
 - **An independent review** of the factory on a local node (4 Nov) found five issues, all fixed (D-32).
 
 ## Privacy
@@ -474,7 +475,7 @@ inference ran, not that the invoice is genuine or the extraction right. NEAR AI 
 | **Autonomous Business** (`business`) | An accounts-payable agent. It reads a business's supplier invoices and pays them from the business's own treasury contract, in USDC on NEAR or across chains through NEAR Intents 1Click (USDT on Tron), while the owner's wallet only sets the limits and approves what is above them. Every payment is a public NEAR transaction, and the dashboard lists them. | [@GetLeash_bot](https://t.me/GetLeash_bot); `executor/` |
 | **Real-World Money** (`realworld`) | Stablecoin payouts for a normal business, from the chat it already uses: forward an invoice, then see it paid or approve it with one tap. A business sets up in a few minutes for about 1.43 NEAR, once, with no developer. | [Try the live product](#try-the-live-product) |
 | **Privacy & Private AI** (`privacy`) | Invoices are read by a model on NEAR AI Cloud in a TEE, and a response is shown as "Model response verified" only after its Intel TDX quote and NVIDIA GPU attestation check out. Invoice files are encrypted at rest with one key per business; no model text reaches the chain (the agent sends a supplier id from the owner's list, the amount read, checked against the invoice's text, and at most one enum flag); an invoice's identity on-chain is a keyed HMAC; supplier names stay off-chain and are shown only after the owner signs (NEP-413). | `agent/src/verify.ts`; [Privacy](#privacy) |
-| **Agent Economy** (`agents`) | The agent has its own NEAR account and spends a business's money for it, directly in USDC or through NEAR Intents, inside a budget the contract enforces and only the owner's wallet can change. Other agents can use it too: through its MCP server, any MCP assistant can read a GetLeash contract and hand it invoices, and the contract still decides. | `contract/src/agent.rs`; the executor tests in `pnpm test:sandbox`; [From an AI assistant (MCP)](#from-an-ai-assistant-mcp) |
+| **Agent Economy** (`agents`) | The agent has its own NEAR account and spends a business's money for it, directly in USDC or through NEAR Intents, inside a budget the contract enforces and only the owner's wallet can change. Other agents can use it too: through its MCP server, any MCP assistant can read a GetLeash contract (https://www.getleash.xyz/mcp) and, on the owner's machine, hand it invoices, and the contract still decides. | `contract/src/agent.rs`; the executor tests in `pnpm test:sandbox`; [From an AI assistant (MCP)](#from-an-ai-assistant-mcp) |
 | **Open Innovation** (`open`) | A policy-bound wallet for AI that a business sets up from a chat: one call from its wallet to the keyless factory `getleash.near` creates its keyless contract, installed from an on-chain release store only if its SHA-256 is the release's. | `contract/bootstrap/`; `devkit/test/factory.sandbox.test.ts`; D-31, D-32 |
 
 ## Live on NEAR mainnet
@@ -604,23 +605,39 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
 
 ## From an AI assistant (MCP)
 
-GetLeash is also an MCP server (`channels/mcp/`, D-34): Claude Code, Cursor or any other MCP client can read a
-GetLeash contract and, with the agent's key, hand it invoices. It runs on your machine over stdio and serves
-one contract.
+GetLeash is also an MCP server (`channels/mcp/`, D-34): Claude, Claude Code, Cursor or any other MCP client
+can read a GetLeash contract and, on the owner's machine with the agent's key, hand it invoices. It comes in
+two forms:
+
+- **Hosted, read-only: https://www.getleash.xyz/mcp.** Add this URL to an MCP client as a remote server: in
+  Claude, as a custom connector; in Claude Code, `claude mcp add --transport http getleash https://www.getleash.xyz/mcp`.
+  It reads any GetLeash contract, named in each call or else the team's own. It holds no key and no secret, so it
+  can't pay, approve or change anything, and it shows no supplier names.
+- **Local, over stdio:** the same three tools for one contract, plus `submit_invoice` when it holds the agent's key.
 
 | Tool | What it does | Needs |
 |---|---|---|
 | `get_policy` | The limits, today's use of them, the treasury, whether payments are paused, and the owner, agent and executor | No key |
 | `list_intents` | The newest payments: amount, supplier, where each stands and why one waits for the owner | No key |
 | `list_suppliers` | The approved suppliers, where each is paid, and a recent change that still holds their payments | No key |
-| `submit_invoice` | Hands one invoice (its text, or a PDF or image by absolute path) to the bot's pipeline; the contract decides | The agent's key and `TENANT_SECRET`, with `NEAR_AI_API_KEY` or `--offline` |
+| `submit_invoice` | Local only. Hands one invoice (its text, or a PDF or image by absolute path) to the bot's pipeline; the contract decides | The agent's key and `TENANT_SECRET`, with `NEAR_AI_API_KEY` or `--offline` |
 
 An assistant can't name a supplier, an address or an amount: `submit_invoice` has no such field, and its schema
 refuses extra ones. It can't approve anything either, since approvals need the owner's wallet, and it can't
 get an invoice paid twice. Within the owner's limits a payment is made at once, as it is for an invoice sent
 to the bot. The tool's description tells the assistant to submit only invoices the user asked it to pay.
 
-In a clone, after `pnpm install` ([Run it locally](#run-it-locally), step 2):
+**The hosted server, with nothing installed:**
+```bash
+curl -s https://www.getleash.xyz/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}'
+```
+→ one JSON answer whose `text` starts `getleash.onanikes.near on mainnet: payments are on.`. Name another
+contract with `"arguments":{"contract":"<name>.getleash.near"}`. Opened in a browser, the URL answers
+`405` with how to add it, since it speaks MCP over POST only. It is stateless, runs on the dashboard's host
+(`web/app/mcp/route.ts`), and each of its instances takes up to 60 requests a minute from one address.
+
+**The local server,** in a clone, after `pnpm install` ([Run it locally](#run-it-locally), step 2):
 
 1. **Read the live contract, with no key:**
    ```bash
@@ -658,8 +675,8 @@ For your own GetLeash, run the server with the bot's variables:
 - **Supplier names:** it matches suppliers against the names on that machine (`.data/<network>/directory.json`
   or `GETLEASH_DIRECTORY`, and `GETLEASH_DIRECTORY_BASE64`); names added in Telegram stay on the bot's disk.
 
-Businesses the bot hosts can use the read-only tools for their contract, but not `submit_invoice`: their agent
-keys stay with the bot.
+Businesses the bot hosts can read their own contract through the hosted server (named as `contract`), but not
+use `submit_invoice`: their agent keys stay with the bot.
 
 ## Run it locally
 
@@ -707,10 +724,10 @@ fails.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 188 passed` (21 files).
+   → `Tests 197 passed` (22 files).
 
    <details>
-   <summary>What the 188 tests cover</summary>
+   <summary>What the 197 tests cover</summary>
 
    The Borsh layout against golden vectors written by the Rust types, outcome parsing, 1Click quote checks
    (against the shape of a live quote), obligation ids, input limits, the PDF reader (a real PDF's text, read in
@@ -733,7 +750,9 @@ fails.
    key files, the plain-language wording shared by the dashboard and Telegram, the TEE verification policy
    (stale, invalid or missing evidence never earns a "verified" badge), and the MCP server (`submit_invoice`
    only with the agent's key; a strict schema with no supplier, address or amount; invoice files refused by
-   path, size or first bytes before the pipeline sees them; replies in the bot's words).
+   path, size or first bytes before the pipeline sees them; replies in the bot's words), and its hosted endpoint
+   (the three views for any contract named, no supplier names, one tool call without a handshake, and the
+   `405`, `429` and `413` answers).
 
    </details>
 
@@ -748,20 +767,20 @@ fails.
    if [ -n "$sandbox_bin" ]; then export NEAR_SANDBOX_BIN_PATH="$sandbox_bin"; fi
    pnpm test:sandbox
    ```
-   → `Tests 45 passed` (6 files), in about 2 minutes the first time and about 1 minute after, with the role
+   → `Tests 46 passed` (6 files), in about 2 minutes the first time and about 1 minute after, with the role
    accounts funded as on mainnet. When the node is downloaded here, a slow or broken download can make files
    fail with `Hook timed out in 300000ms`, `Failed to download binary` (for example `read ECONNRESET`) or
    `Failed to acquire lock for downloading the binary`. If
    `node_modules/.pnpm/near-sandbox@0.3.4/node_modules/near-sandbox/bin/near-sandbox-2.13.4/near-sandbox` now
-   exists, the download finished: run it again → all 45 pass. If not, a rerun would start the download over, so
+   exists, the download finished: run it again → all 46 pass. If not, a rerun would start the download over, so
    fetch the node with step 1's `curl` command,
    `export NEAR_SANDBOX_BIN_PATH=/tmp/near-sandbox/$(uname -s)-$(uname -m)/near-sandbox` and run it again.
    To run another build of the contract, set `GETLEASH_POLICY_WASM` to its path: by design, 15 of the 24
    installer, factory and hosted-setup tests then don't pass, because the installer installs only the release
-   (10 fail and the hosted-setup file's 5 are skipped: `10 failed | 30 passed | 5 skipped`).
+   (10 fail and the hosted-setup file's 5 are skipped: `10 failed | 31 passed | 5 skipped`).
 
    <details>
-   <summary>What the 45 tests cover</summary>
+   <summary>What the 46 tests cover</summary>
 
    The setup test creates the policy account in one owner transaction and checks it has **no access keys**,
    that the role accounts hold exactly one function-call key, and that the protocol refuses those keys for
@@ -786,7 +805,8 @@ fails.
    sets up, only the recorded owner can retry an install, and a wallet holding the first live wallet's 1.498
    NEAR completes the setup. The MCP test (D-34) hands fixture invoices to `submit_invoice` from an MCP client:
    the clean one is paid, the reformatted duplicate and the unknown supplier are refused with the balance
-   unchanged, and a large one waits for the owner with its page; the three views read the same contract.
+   unchanged, and a large one waits for the owner with its page; the three views read the same contract, and so
+   does the hosted endpoint over HTTP, for a contract the call names.
 
    </details>
 
@@ -913,7 +933,7 @@ mock-1click/       local 1Click stand-in that settles real (mock) tokens on a lo
 ingestion/         obligation-id HMAC, update dedupe, input limits, PDF text layer (read in a child process)
 agent/             extraction (NEAR AI Cloud), deterministic checks, TEE verification, encrypted store
 channels/          channel interface, Telegram bot (grammY) and MCP server for AI assistants (stdio)
-web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, limits, pause, private view
+web/               landing page (/) and dashboard (Next.js): overview (/payments), intent page, setup, limits, pause, private view; the hosted MCP server (/mcp)
 devkit/            local NEAR node harness and the integration tests
 deploy/            the mainnet policy (one tenth of v1's default limits)
 fixtures/invoices/ demo invoices (clean, duplicates, injection, address swap, fabricated, NGN, …)

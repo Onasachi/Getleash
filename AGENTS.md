@@ -69,7 +69,7 @@ mock-1click/     the executor's local 1Click stand-in
 ingestion/       obligation HMAC, update dedupe, limits; PDF text in a plain-Node child process (pdf-worker.mjs, D-33)
 agent/           extraction (NEAR AI Cloud; an offline reader for tests), deterministic checks, TEE verification
 channels/        channel interface + Telegram (grammY) + MCP server (stdio, D-34)
-web/             landing page and Next.js dashboard
+web/             landing page and Next.js dashboard; the hosted read-only MCP server (/mcp, D-34)
 devkit/          local NEAR node harness ("world") and every TypeScript integration test
 deploy/          the mainnet policy
 fixtures/        demo invoices

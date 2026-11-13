@@ -206,12 +206,18 @@ importers:
       '@getleash/agent':
         specifier: workspace:*
         version: link:../agent
+      '@getleash/channel-mcp':
+        specifier: workspace:*
+        version: link:../channels/mcp
       '@getleash/shared':
         specifier: workspace:*
         version: link:../shared
       '@hot-labs/near-connect':
         specifier: 0.12.0
         version: 0.12.0
+      '@modelcontextprotocol/sdk':
+        specifier: 1.32.2
+        version: 1.32.2(zod@4.6.7)
       near-api-js:
         specifier: 7.4.0
         version: 7.4.0

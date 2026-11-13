@@ -240,7 +240,7 @@ describe("views", () => {
     expect(t).toContain("The agent pays on its own up to 2.50 USDC a payment and 5.00 USDC a day (used today: 1.00 USDC).");
     expect(t).toContain("Every cross-chain payment needs the owner's signature (the executor's trust budget is 0).");
     expect(t).toContain("For 2 days after a supplier is added or their payment details change, every payment to them waits for the owner, who can approve at most 0.50 USDC a payment.");
-    expect(t).toContain("Dashboard: https://dash.test/?c=getleash.test");
+    expect(t).toContain("Dashboard: https://dash.test/payments?c=getleash.test");
     expect(facts(r)).toMatchObject({ contract: "getleash.test", treasury: "2960000", paused: false });
   });
 

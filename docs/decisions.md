@@ -557,7 +557,7 @@ installer for contracts their owner created themselves).
 - Tests: `ingestion/test/pdf.test.ts`, the first to read a real PDF: the text layer, the page limit, a broken
   PDF, the time limit, several PDFs at once.
 
-**D-34 · An MCP server takes invoices into the same pipeline as the bot, on the owner's machine.**
+**D-34 · An MCP server: read-only at getleash.xyz/mcp, and on the owner's machine it takes invoices into the bot's pipeline.**
 - **Why.** PLAN §4.6 (a stretch) asked for `submit_invoice`, `list_intents` and `get_policy` "behind the same
   ingestion and contract rules", so that AI assistants other than the bot (Claude Code, Cursor, Codex) can
   hand GetLeash invoices. An assistant is one more untrusted caller. The design already assumes the agent can
@@ -580,13 +580,31 @@ installer for contracts their owner created themselves).
     channels. Supplier names come from the directory on that machine.
   - **Logs and tooling.** Logs go to stderr, since stdout carries the protocol. `pnpm --silent mcp` runs the
     server; `pnpm --silent mcp:ask <tool>` starts it as a client would and prints one answer.
-- **Not done.** A hosted (HTTP) server for the businesses the bot hosts. Their agent keys stay with the bot, and
-  serving them remotely needs MCP's OAuth flow, with a token bound to one business, which waits for after the
-  hackathon.
+- **Hosted, read-only.** https://www.getleash.xyz/mcp serves the three views to clients that take a URL
+  (Claude's custom connectors, `claude mcp add --transport http`).
+  - **Where it runs.** `channels/mcp/src/http.ts` is mounted by `web/app/mcp/route.ts` on the dashboard's host,
+    not on the bot's server. It holds no key and no secret.
+  - **Contracts.** Each tool takes an optional `contract` and reads the dashboard's own GetLeash without it, so
+    a business the bot hosts can read its own contract too.
+  - **Supplier names.** It shows none: they are private (Privacy), so a supplier shows as its id and address.
+  - **Per request.** Each request gets its own server and transport (stateless, JSON responses), which a
+    serverless function needs. A GET or DELETE answers 405 with how to add the URL.
+  - **Limits.** A client address may send 60 requests a minute to each running instance, and a body over
+    64 KB is refused (413).
+  - **Code.** The views live in `views.ts`, which imports only `@getleash/shared` and the SDK; the local
+    server registers the same tools for its one contract.
+- **Not done.** Taking invoices remotely, for the businesses the bot hosts. Their agent keys stay with the bot,
+  and serving them remotely needs MCP's OAuth flow, with a token bound to one business, which waits for after
+  the hackathon.
 - Tests:
   - `channels/mcp/test/server.test.ts`: which tools exist with and without the key; the strict schema; files
     refused by path, size and type before the pipeline; replies for paid, waiting, refused and not-proposed
     invoices; errors as tool errors.
+  - `channels/mcp/test/http.test.ts`: the hosted endpoint through the SDK's HTTP client. It offers only the three
+    views, each taking a contract, and reads the default or a named contract, with links to that site. It shows
+    no names. It refuses a malformed account and explains one that is not GetLeash. A single tool call works
+    without a handshake. GET answers 405, a busy client 429 and an oversized body 413.
   - `devkit/test/mcp.sandbox.test.ts`: an MCP client submits fixture invoices to the real contract. One is paid,
     the reformatted duplicate and the unknown supplier are refused with the balance unchanged, and a large one
-    waits for the owner with its page. The views read the same contract.
+    waits for the owner with its page. The views read the same contract, and so does the hosted endpoint over
+    HTTP, for a contract the call names.

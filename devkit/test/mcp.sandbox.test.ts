@@ -1,19 +1,22 @@
 /**
  * GetLeash's MCP server (PLAN §4.6, docs/decisions.md D-34) against the real contract on a local NEAR
  * node: an MCP client hands fixture invoices to submit_invoice, and the agent pipeline (offline reader)
- * and the contract decide exactly as they do for the Telegram bot. The views read the same contract.
+ * and the contract decide exactly as they do for the Telegram bot. The views read the same contract, and
+ * so does the hosted endpoint (https://www.getleash.xyz/mcp) over HTTP, for a contract the call names.
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { InvoiceAgent, OfflineExtractor } from "@getleash/agent";
 import { createServer } from "@getleash/channel-mcp";
-import type { Directory } from "@getleash/shared";
+import { hostedMcpHandler } from "@getleash/channel-mcp/http";
+import { type Directory, PolicyView } from "@getleash/shared";
 
 import { REPO_ROOT } from "../src/paths.ts";
 import { startWorld, TRON_RECIPIENT, TRON_USDT, USDC, type World } from "../src/world.ts";
@@ -107,5 +110,29 @@ describe("views on a real contract", () => {
     const r = (await client.callTool({ name: "list_suppliers", arguments: {} })) as Result;
     expect(text(r)).toContain("#1 Acme Packaging Ltd: USDC at acme.near.");
     expect(text(r)).toContain(`#2 Shenzhen Parts Co.: USDT on Tron at ${TRON_RECIPIENT}.`);
+  });
+});
+
+describe("the hosted endpoint on a real contract", () => {
+  it("reads the contract a call names, over HTTP, with no key and no names", async () => {
+    // As web/app/mcp/route.ts mounts it, with the local node's RPC and a default that is not this contract.
+    const handler = hostedMcpHandler({ network: "sandbox", contract: (id) => new PolicyView(world.net.rpc, id), fallback: "getleash.elsewhere.near" });
+    const hosted = new Client({ name: "sandbox-hosted", version: "1.0.0" });
+    await hosted.connect(new StreamableHTTPClientTransport(new URL("https://www.getleash.test/mcp"), { fetch: (input, init) => handler(new Request(input, init)) }));
+    try {
+      expect((await hosted.listTools()).tools.map((t) => t.name).sort()).toEqual(["get_policy", "list_intents", "list_suppliers"]);
+      const policy = (await hosted.callTool({ name: "get_policy", arguments: { contract: world.policyId } })) as Result;
+      expect(text(policy)).toContain(`${world.policyId} on sandbox: payments are on.`);
+      expect(text(policy)).toContain("Treasury: 482.00 USDC.");
+      const payments = (await hosted.callTool({ name: "list_intents", arguments: { contract: world.policyId } })) as Result;
+      const list = facts(payments).payments as Array<{ status: string; supplier_name: string | null; link: string }>;
+      expect(list.map((p) => [p.status, p.supplier_name])).toEqual([
+        ["PENDING", null],
+        ["PAID", null],
+      ]);
+      expect(list[0]!.link).toMatch(new RegExp(`^https://www\\.getleash\\.test/intent/\\d+\\?c=${world.policyId.replace(/\./g, "\\.")}$`));
+    } finally {
+      await hosted.close();
+    }
   });
 });

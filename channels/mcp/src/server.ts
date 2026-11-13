@@ -3,7 +3,7 @@
  * MCP (Claude Code, Cursor, Codex…) read one GetLeash contract and hand invoices to the same agent
  * pipeline as the Telegram bot. The server runs on the owner's machine, over stdio (`main.ts`).
  *
- * - `get_policy`, `list_intents` and `list_suppliers` read views anyone can read: they need no key.
+ * - `get_policy`, `list_intents` and `list_suppliers` (`views.ts`) read views anyone can read: no key.
  * - `submit_invoice` exists only when the server holds the agent's function-call key. The caller hands
  *   over an invoice, as text or as a PDF, PNG, JPEG or WebP file. It cannot name a supplier, an address or
  *   an amount: the input schema is strict and has no such field. The pipeline reads the invoice, matches
@@ -22,25 +22,9 @@ import { z } from "zod";
 
 import type { AgentOutcome, InvoiceAgent } from "@getleash/agent";
 import { checkFile, type InvoiceFile, type InvoiceInput, LIMITS, LimitError, Semaphore } from "@getleash/ingestion";
-import {
-  assetName,
-  dashboardLink,
-  type Directory,
-  FLAGS,
-  flagText,
-  type Intent,
-  isOpen,
-  money,
-  paidAt,
-  paymentState,
-  type PolicyView,
-  REFUSALS,
-  STATUSES,
-  type StateView,
-  type Supplier,
-  utcTime,
-  waitReason,
-} from "@getleash/shared";
+import { assetName, dashboardLink, type Directory, FLAGS, money, type PolicyView, REFUSALS, type StateView, waitReason } from "@getleash/shared";
+
+import { guarded, refused, registerViewTools, reply, sentence } from "./views.ts";
 
 export const SERVER_NAME = "getleash";
 export const SERVER_VERSION = "0.1.0";
@@ -77,180 +61,12 @@ const SubmitInvoice = z.strictObject({
     .describe("Absolute path of the invoice file on this machine: a PDF, PNG, JPEG or WebP, at most 10 MB."),
 });
 
-const ListIntents = z.strictObject({
-  status: z
-    .enum(["all", "open", ...STATUSES])
-    .default("all")
-    .describe("all, open (waiting for the owner, or being paid), or one status: PENDING, APPROVED, PAYING, PAID, FAILED, REJECTED."),
-  limit: z.number().int().min(1).max(50).default(20).describe("How many of the newest payments to return (1 to 50)."),
-});
-
-const NoInput = z.strictObject({});
-
-/** One summary for people, then the same facts as JSON for programs. */
-function reply(summary: readonly string[], details: unknown): CallToolResult {
-  return {
-    content: [
-      { type: "text", text: summary.join("\n") },
-      { type: "text", text: JSON.stringify(details, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v), 2) },
-    ],
-  };
-}
-
-function refused(message: string): CallToolResult {
-  return { isError: true, content: [{ type: "text", text: message }] };
-}
-
-/** Ends a sentence once: "Shenzhen Parts Co." keeps its period, "Acme" gets one. */
-function sentence(text: string): string {
-  return text.endsWith(".") ? text : `${text}.`;
-}
-
-/** "2 days", "36 hours", "90 minutes": a policy duration in nanoseconds, for reading. */
-function duration(ns: string): string {
-  const minutes = BigInt(ns) / 60_000_000_000n;
-  const plural = (n: bigint, unit: string) => `${n} ${unit}${n === 1n ? "" : "s"}`;
-  if (minutes > 0n && minutes % 1_440n === 0n) return plural(minutes / 1_440n, "day");
-  if (minutes > 0n && minutes % 60n === 0n) return plural(minutes / 60n, "hour");
-  return plural(minutes, "minute");
-}
-
 export function createServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
   const now = deps.now ?? (() => new Date());
-  const contract = deps.view.contractId;
-  const link = (path: string) => dashboardLink(deps.dashboardUrl, path, contract);
-  const nowNs = () => BigInt(now().getTime()) * 1_000_000n;
+  const link = (path: string) => dashboardLink(deps.dashboardUrl, path, deps.view.contractId);
 
-  /** Every tool's work, with failures (an RPC down, a contract that is not GetLeash) as tool errors. */
-  const guarded =
-    <A>(work: (args: A) => Promise<CallToolResult>) =>
-    async (args: A): Promise<CallToolResult> => {
-      try {
-        return await work(args);
-      } catch (error) {
-        const message = error instanceof LimitError ? `${error.code}: ${error.message}` : (error as Error).message;
-        deps.log?.(`[mcp] tool failed: ${message}`);
-        return refused(message);
-      }
-    };
-
-  /** Names on file, then "supplier #3 (acme.near)". */
-  function naming(suppliers: readonly Supplier[]) {
-    const names = new Map(deps.directory().suppliers.map((s) => [s.supplier_id, s.name]));
-    const byId = new Map(suppliers.map((s) => [s.id, s]));
-    return {
-      byId,
-      name: (id: number) => names.get(id) ?? null,
-      who: (id: number) => names.get(id) ?? (byId.get(id) ? `supplier #${id} (${byId.get(id)!.recipient})` : `supplier #${id}`),
-    };
-  }
-
-  server.registerTool(
-    "get_policy",
-    {
-      title: "GetLeash limits and today's budgets",
-      description:
-        "The contract's limits as the owner set them, what has been used today, the treasury's balance, whether payments are paused, and who the owner, agent and executor are.",
-      inputSchema: NoInput,
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guarded(async () => {
-      const state = await deps.view.state();
-      const balance = await deps.view.treasuryBalance(state.token_id);
-      const d = state.token_decimals;
-      const usdc = (units: string | bigint) => `${money(units, d)} USDC`;
-      const p = state.policy;
-      const b = state.budgets;
-      const lines = [
-        `${contract} on ${deps.network}: ${state.paused ? "payments are PAUSED by the owner" : "payments are on"}.`,
-        `Treasury: ${usdc(balance)}.`,
-        `The agent pays on its own up to ${usdc(p.approval_threshold)} a payment and ${usdc(p.autonomous_daily_budget)} a day (used today: ${usdc(b.autonomous)}). Anything else waits for the owner's approval in their wallet.`,
-        `Sent today: ${usdc(b.outflow)} of the ${usdc(p.daily_cap)} daily cap.`,
-        p.executor_trust_daily_budget === "0"
-          ? "Every cross-chain payment needs the owner's signature (the executor's trust budget is 0)."
-          : `Cross-chain payments the executor may fund without the owner's signature: ${usdc(b.trust)} of ${usdc(p.executor_trust_daily_budget)} today.`,
-        BigInt(p.cooldown_ns) > 0n
-          ? `For ${duration(p.cooldown_ns)} after a supplier is added or their payment details change, every payment to them waits for the owner, who can approve at most ${usdc(p.cooldown_max)} a payment.`
-          : "Suppliers have no cooldown after they are added or changed.",
-        `Proposals today: ${b.proposals} of ${p.max_proposals_per_day}. Payments stored: ${state.stored_intents} (${state.paying} being sent).`,
-        `Owner ${state.owner_id}, agent ${state.agent_id}, executor ${state.executor_id}.`,
-      ];
-      const page = link("/");
-      if (page) lines.push(`Dashboard: ${page}`);
-      return reply(lines, { contract, network: deps.network, treasury: balance.toString(), ...stateFacts(state) });
-    }),
-  );
-
-  server.registerTool(
-    "list_intents",
-    {
-      title: "GetLeash payments",
-      description:
-        "The newest payments the contract holds (it forgets closed ones after its retention period), newest first: amount, supplier, where each stands and why one waits for the owner.",
-      inputSchema: ListIntents,
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guarded(async ({ status, limit }: z.infer<typeof ListIntents>) => {
-      const [state, suppliers] = await Promise.all([deps.view.state(), deps.view.suppliers()]);
-      const named = naming(suppliers);
-      const wanted = (i: Intent) => status === "all" || (status === "open" ? isOpen(i) : i.status === status);
-      const intents = (await deps.view.recentIntents(50)).filter(wanted).sort((a, b) => b.id - a.id).slice(0, limit);
-      const lines = intents.length
-        ? []
-        : [
-            `No ${status === "all" ? "" : `${status} `}payments stored on ${contract}. It forgets a payment ${duration(state.policy.retention_ns)} after it closes; the chain's history keeps every transaction.`,
-          ];
-      const details = intents.map((i) => {
-        const supplier = named.byId.get(i.supplier_id) ?? null;
-        const amount = `${money(i.amount_out, supplier?.decimals ?? state.token_decimals)} ${supplier ? assetName(supplier, state.token_id) : ""}`.trim();
-        const where = paymentState(i, supplier?.chain === "NEAR").label;
-        const why = i.status === "PENDING" ? `, waiting because ${waitReason(i.route, state.policy, state.token_decimals)}` : "";
-        const flag = flagText(i.flag);
-        const page = link(`/intent/${i.id}`);
-        lines.push(`#${i.id} ${where}: ${sentence(`${amount} to ${named.who(i.supplier_id)}${why}`)} Since ${utcTime(i.since)}.${flag ? ` Flagged: ${flag}.` : ""}${page ? ` ${page}` : ""}`);
-        return {
-          id: i.id,
-          status: i.status,
-          state: where,
-          route: i.route,
-          supplier_id: i.supplier_id,
-          supplier_name: named.name(i.supplier_id),
-          amount_out: i.amount_out,
-          amount,
-          flag: flag ?? null,
-          since: i.since,
-          link: page,
-        };
-      });
-      return reply(lines, { contract, payments: details });
-    }),
-  );
-
-  server.registerTool(
-    "list_suppliers",
-    {
-      title: "GetLeash approved suppliers",
-      description:
-        "The suppliers the owner approved: the only ones the contract pays, each at the address on file. Shows whether each is active and whether a recent change still holds its payments for the owner.",
-      inputSchema: NoInput,
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guarded(async () => {
-      const [state, suppliers] = await Promise.all([deps.view.state(), deps.view.suppliers()]);
-      const named = naming(suppliers);
-      const lines = suppliers.length ? [] : [`${contract} has no approved suppliers yet.`];
-      const details = suppliers.map((s) => {
-        const coolingUntil = BigInt(s.changed_at) + BigInt(state.policy.cooldown_ns);
-        const cooling = nowNs() < coolingUntil;
-        lines.push(
-          `#${s.id} ${named.name(s.id) ?? "(no name on this machine)"}: ${paidAt(s)}${s.active ? "" : ", switched off"}${cooling ? `. Added or changed ${utcTime(s.changed_at)}: payments wait for the owner until ${utcTime(coolingUntil)}` : ""}.`,
-        );
-        return { id: s.id, name: named.name(s.id), chain: s.chain, asset: assetName(s, state.token_id), recipient: s.recipient, active: s.active, revision: s.revision, changed_at: s.changed_at, in_cooldown: cooling };
-      });
-      return reply(lines, { contract, suppliers: details });
-    }),
-  );
+  registerViewTools(server, { network: deps.network, contracts: { fixed: deps.view }, directory: deps.directory, dashboardUrl: deps.dashboardUrl, log: deps.log, now });
 
   const agent = deps.agent;
   if (agent) {
@@ -268,7 +84,7 @@ export function createServer(deps: McpDeps): McpServer {
         inputSchema: SubmitInvoice,
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       },
-      guarded(async ({ text, file_path }: z.infer<typeof SubmitInvoice>) => {
+      guarded(deps.log, async ({ text, file_path }: z.infer<typeof SubmitInvoice>) => {
         if (!text?.trim() && !file_path) return refused("Give the invoice's text or the absolute path of its file.");
         const files: InvoiceFile[] = file_path ? [await invoiceFile(file_path)] : [];
         const input: InvoiceInput = {
@@ -365,19 +181,4 @@ export async function invoiceFile(path: string): Promise<InvoiceFile> {
   const kind = checkFile(bytes);
   if (kind === "text") throw new LimitError("UNSUPPORTED_FILE", "text files are not accepted; give the text instead");
   return { kind, bytes, name: basename(path) };
-}
-
-function stateFacts(state: StateView) {
-  return {
-    paused: state.paused,
-    owner_id: state.owner_id,
-    agent_id: state.agent_id,
-    executor_id: state.executor_id,
-    token_id: state.token_id,
-    token_decimals: state.token_decimals,
-    policy: state.policy,
-    today: state.budgets,
-    stored_intents: state.stored_intents,
-    paying: state.paying,
-  };
 }

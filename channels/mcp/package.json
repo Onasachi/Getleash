@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/server.ts"
+    ".": "./src/server.ts",
+    "./http": "./src/http.ts",
+    "./views": "./src/views.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
