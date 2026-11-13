@@ -439,6 +439,10 @@ freeze tokens. A business that GetLeash hosts also trusts the operator who runs 
   transfers, deposits, other methods and other contracts), cross-chain payouts through mock 1Click, the hosted
   setup, the installer, the factory, invoices handed in through the MCP server, and its hosted endpoint.
 - **An independent review** of the factory on a local node (4 Nov) found five issues, all fixed (D-32).
+- **Fresh-clone rehearsals:** agents that had never seen the project cloned this repository and followed this
+  README, running every step that needs no key or wallet. In the eighth (13 Nov, 47 minutes), every step passed
+  except the hosted MCP endpoint, which was not deployed yet and answered 404; the four wording slips it found are
+  fixed.
 
 ## Privacy
 
@@ -529,7 +533,8 @@ contract's events), or GET `https://api.nearblocks.io/v1/txns/<hash>` (signer, m
   blocked (D-07), and `pnpm status` lists no open intents.
 
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
-https://www.getleash.xyz/payments?c=getleash.onanikes.near in a browser.
+https://www.getleash.xyz/payments?c=getleash.onanikes.near in a browser, which lists the payments the contract
+still holds (it forgets a payment 7 days after it closes; the transactions stay on-chain).
 
 Check a transaction without a browser, with `curl` and `jq`. This asks an archival node, because regular RPC
 nodes keep transactions for only a few days:
@@ -545,6 +550,27 @@ curl -s https://archival-rpc.mainnet.fastnear.com -H 'Content-Type: application/
 signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `decide`. The attack tests show
 `proposal_refused` with reason `UNKNOWN_SUPPLIER`, and `intent_created` with route `REVIEW_FLAG`; the owner's
 `decide` shows `intent_decided` with status `REJECTED`.
+
+### Screenshots (13 Nov 2026)
+
+Taken from the live site at 20:58 UTC with headless Chrome; the times in them are UTC.
+
+![The live dashboard of getleash.onanikes.near on 13 Nov 2026 at 20:58 UTC. Treasury 2.96 USDC. Sent today 0.00 of 20.00 USDC. Paid by the agent on its own 0.00 of 5.00 USDC. Above 2.50 USDC, a payment waits for you. Needs you: nothing. Recent payments: one, Rejected, chisolu.near, 0.40 USDC, Nov 7 03:13 PM.](docs/images/dashboard-2026-11-13.png)
+
+The team's GetLeash on its dashboard, https://www.getleash.xyz/payments?c=getleash.onanikes.near, read from
+mainnet in the browser. The dashboard lists the payments the contract still holds. By 13 Nov the contract had
+forgotten payments 1–5, since it forgets a payment 7 days after it closes, and intent 6, rejected on 7 Nov, was
+the only one left; every payment's transactions are listed above.
+
+![Intent 6's page on 13 Nov 2026: Rejected, 0.40 USDC to chisolu.near on NEAR, payment #6. Progress: invoice received, then rejected. "You rejected it. To pay it after all, send a corrected invoice with a new number."](docs/images/payment-6-2026-11-13.png)
+
+Intent 6's page: the invoice in Chisolu's name that asked to be paid at a new wallet, flagged `ADDRESS_MISMATCH`,
+held for the owner, and rejected in the owner's wallet (the attack tests above).
+
+![The first screen of https://www.getleash.xyz: "Pay your suppliers from Telegram, under limits only you can change", buttons to open @GetLeash_bot or the dashboard, and a phone showing an illustrated chat with the bot.](docs/images/website-2026-11-13.png)
+
+The website. The chat in the phone is an illustration of the bot's replies, not a record of payments; the
+recorded payments are the ones above.
 
 **Status (8 Nov 2026)**
 
@@ -563,7 +589,7 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | Claim | Do | See |
 |---|---|---|
 | The live treasury has no keys and enforces its limits | `pnpm install && pnpm status --network mainnet --policy getleash.onanikes.near` | `✓ getleash.onanikes.near: 0 access keys (must be 0)`, `approval above 2.5`, `of 5 today`, `of 20`, and two role accounts with one function-call key each |
-| Real payments on mainnet | Run the archival-node `curl` command (it needs `jq` too) in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the payments, each with its own page |
+| Real payments on mainnet | Run the archival-node `curl` command (it needs `jq` too) in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the transactions, and on the dashboard the payments the contract still holds (it forgets each 7 days after it closes; [screenshots](#screenshots-13-nov-2026)) |
 | USDC and Tron payouts | `pnpm demo:mock` | `paid 18 USDC to acme.near inside the agent's call (no executor)`; `→ 2 USDT to the supplier on Tron (executor-trust budget)` |
 | A prompt injection is refused on-chain | `pnpm demo:mock` | `refused by the contract: UNKNOWN_SUPPLIER` |
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
@@ -589,8 +615,9 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
 1. Open https://www.getleash.xyz → the landing page. **Dashboard** (top right) → connect a NEAR wallet → the
    dashboard of the GetLeash that wallet owns, or "No GetLeash for … yet" with a button to set one up.
 2. Open https://www.getleash.xyz/payments?c=getleash.onanikes.near → the team's own GetLeash, read from mainnet
-   in your browser: the treasury, how much of today's limits is used, and the recent payments, each with its
-   own page. No wallet is needed to look.
+   in your browser: the treasury, how much of today's limits is used, and the payments the contract still holds,
+   each with its own page (it forgets a payment 7 days after it closes, so the list can be short or empty; the
+   [screenshots](#screenshots-13-nov-2026) show it on 13 Nov). No wallet is needed to look.
 3. In Telegram, open [@GetLeash_bot](https://t.me/GetLeash_bot) and send `/start` → **Set up GetLeash** opens
    the setup page, which names the contract it will create (`<your account, dots made dashes>.getleash.near`)
    and its limits → **Create my GetLeash** is one call to the factory, signed in your wallet → back in the chat,
