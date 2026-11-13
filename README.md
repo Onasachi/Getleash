@@ -563,7 +563,7 @@ signer is `agent-1.onanikes.near` for a `propose` and `onanikes.near` for a `dec
 | Claim | Do | See |
 |---|---|---|
 | The live treasury has no keys and enforces its limits | `pnpm install && pnpm status --network mainnet --policy getleash.onanikes.near` | `✓ getleash.onanikes.near: 0 access keys (must be 0)`, `approval above 2.5`, `of 5 today`, `of 20`, and two role accounts with one function-call key each |
-| Real payments on mainnet | Run the archival-node `curl` command in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the payments, each with its own page |
+| Real payments on mainnet | Run the archival-node `curl` command (it needs `jq` too) in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the payments, each with its own page |
 | USDC and Tron payouts | `pnpm demo:mock` | `paid 18 USDC to acme.near inside the agent's call (no executor)`; `→ 2 USDT to the supplier on Tron (executor-trust budget)` |
 | A prompt injection is refused on-chain | `pnpm demo:mock` | `refused by the contract: UNKNOWN_SUPPLIER` |
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
@@ -610,9 +610,11 @@ can read a GetLeash contract and, on the owner's machine with the agent's key, h
 two forms:
 
 - **Hosted, read-only: https://www.getleash.xyz/mcp.** Add this URL to an MCP client as a remote server: in
-  Claude, as a custom connector; in Claude Code, `claude mcp add --transport http getleash https://www.getleash.xyz/mcp`.
-  It reads any GetLeash contract, named in each call or else the team's own. It holds no key and no secret, so it
-  can't pay, approve or change anything, and it shows no supplier names.
+  Claude, as a custom connector; in Claude Code,
+  `claude mcp add --transport http --scope user getleash https://www.getleash.xyz/mcp` (without
+  `--scope user`, it is added for the current folder only). It reads any GetLeash contract, named in each call
+  or else the team's own. It holds no key and no secret, so it can't pay, approve or change anything, and it
+  shows no supplier names.
 - **Local, over stdio:** the same three tools for one contract, plus `submit_invoice` when it holds the agent's key.
 
 | Tool | What it does | Needs |
@@ -652,14 +654,16 @@ contract with `"arguments":{"contract":"<name>.getleash.near"}`. Opened in a bro
    [Live on NEAR mainnet](#live-on-near-mainnet) has every payment's transactions.
 2. **Connect Claude Code:**
    ```bash
-   claude mcp add getleash -e POLICY_CONTRACT_ID=getleash.onanikes.near -- pnpm --silent --dir "$PWD" mcp
+   claude mcp add --scope user getleash-local -e POLICY_CONTRACT_ID=getleash.onanikes.near -- pnpm --silent --dir "$PWD" mcp
    ```
-   Then ask Claude "What are GetLeash's limits?". Other clients take the same command in their JSON config:
-   `"command": "pnpm"`, `"args": ["--silent", "--dir", "/path/to/Getleash", "mcp"]`,
+   Then ask Claude "What are GetLeash's limits?", in any folder (`--scope user`). Other clients take the same
+   command in their JSON config: `"command": "pnpm"`, `"args": ["--silent", "--dir", "/path/to/Getleash", "mcp"]`,
    `"env": {"POLICY_CONTRACT_ID": "getleash.onanikes.near"}`. Keep `--silent`: stdout carries the protocol.
 3. **Submit invoices on a local node:** `pnpm devnet` (step 5 of [Run it locally](#run-it-locally)) also prints a
-   line that runs the MCP server as the local deployment's agent, with that node's throwaway agent key. Run it as
-   printed, `… pnpm --silent mcp:ask submit_invoice --offline --text-file fixtures/invoices/01-acme-clean.txt` →
+   line that runs the MCP server as the local deployment's agent, with that node's throwaway agent key; it works
+   while that `pnpm devnet` runs, and its replies link to the dashboard at http://localhost:3000 (step 5's port,
+   unless it was taken). Run it as printed,
+   `… pnpm --silent mcp:ask submit_invoice --offline --text-file fixtures/invoices/01-acme-clean.txt` →
    `Not paid: this invoice was already paid, or is already waiting for you (OBLIGATION_OPEN_OR_PAID).` The
    devnet's agent paid it at startup, and both use the same `TENANT_SECRET`. With the same variables:
    - `05-poisoned-unknown-supplier.txt` → `Not paid: the supplier is not on your approved list (UNKNOWN_SUPPLIER).`
@@ -707,8 +711,9 @@ fails.
    to run. Run in debug mode, not `--release` (see `AGENTS.md`).
    Single adversarial rows, from `contract/`: `cargo test executor_supplies_its_own_deposit_address_above_the_trust_budget`,
    `cargo test autonomous_budget_caps_a_fabricated_small_invoice_stream`; the full mapping is in
-   `docs/audit-response.md`. Deeper random walks: `PROPTEST_CASES=200 cargo test contract_invariants_hold`
-   (about 10 minutes). Real node: `cargo test --test sandbox -- --ignored` → `test result: ok. 1 passed`. The first
+   `docs/audit-response.md`. Deeper random walks (about 10 minutes):
+   `(cd contract && PROPTEST_CASES=200 cargo test contract_invariants_hold)`. Real node:
+   `(cd contract && cargo test --test sandbox -- --ignored)` → `test result: ok. 1 passed`. The first
    run takes about 1½ minutes: the test builds the contract and a mock USDC with cargo-near, then downloads a
    NEAR node, `near-sandbox` 2.13.4 (the default of the `near-sandbox` crate 0.3.16 in `contract/Cargo.lock`;
    `docs/verified-facts.md`). Later runs take about 30 seconds. If the download times out
@@ -724,7 +729,8 @@ fails.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 197 passed` (22 files).
+   → `Tests 197 passed` (22 files). Node also prints a `DeprecationWarning` about the `punycode` module, from a
+   dependency; it is harmless.
 
    <details>
    <summary>What the 197 tests cover</summary>
@@ -866,11 +872,14 @@ fails.
    reproduces the release itself.
 
 7. **Reproduce the release wasm** (needs Docker, running; on Linux without `shasum`, use `sha256sum`). It checks
-   out an older commit, so start from a clean working tree. The first run pulls the build image, 0.5 GB, built
-   for linux/amd64 only (an Apple Silicon Mac runs it emulated). Every run starts a fresh container that
-   downloads the crates in `contract/Cargo.lock` again (75 MB): a run takes about 3 minutes in all on a fast
-   connection, about 18 at 90 KB/s and over 30 at slower speeds. That download prints nothing:
-   `• Collecting cargo project metadata...` gets its `• done` only when it ends (`docker stats` shows the traffic).
+   out an older commit, so start from a clean working tree. The first run pulls the build image (0.5 GB to
+   download, 2 GB on disk), built for linux/amd64 only: an Apple Silicon Mac runs it emulated, and Docker warns
+   that the image's platform does not match the host's. Every run starts a fresh container that downloads the
+   crates in `contract/Cargo.lock` again (75 MB of crates; `docker stats` shows about 105 MB received in all): a
+   run takes about 3 minutes in all on a fast connection, about 18 at 90 KB/s and over 30 at slower speeds. That
+   download shows no progress: after `• Collecting cargo project metadata...` and the `cargo metadata` command it
+   prints, `• done` comes only when it ends. Git's detached-HEAD advice and the container's own cargo-near update
+   notice are expected too.
    ```bash
    git checkout b11e68a && (cd contract && cargo near build reproducible-wasm && shasum -a 256 target/near/getleash_policy.wasm)
    git checkout -                 # back to the branch you were on

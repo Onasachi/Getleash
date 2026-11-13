@@ -80,7 +80,7 @@ export function hostedMcpHandler(opts: HostedOptions): (request: Request) => Pro
       // Stateless: no event stream to open (GET) and no session to end (DELETE). The spec's answer is 405.
       return plain(
         405,
-        `This is GetLeash's MCP server (read-only). Add ${url.origin}${url.pathname} to an MCP client as a remote server, for example Claude Code: claude mcp add --transport http getleash ${url.origin}${url.pathname}`,
+        `This is GetLeash's MCP server (read-only). Add ${url.origin}${url.pathname} to an MCP client as a remote server, for example Claude Code: claude mcp add --transport http --scope user getleash ${url.origin}${url.pathname}`,
         { allow: "POST" },
       );
     }
