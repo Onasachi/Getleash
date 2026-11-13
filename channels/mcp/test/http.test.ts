@@ -138,7 +138,7 @@ describe("hosted HTTP", () => {
     const res = await setup().handler(new Request(URL_));
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST");
-    expect(await res.text()).toContain("claude mcp add --transport http getleash https://www.getleash.test/mcp");
+    expect(await res.text()).toContain("claude mcp add --transport http --scope user getleash https://www.getleash.test/mcp");
   });
 
   it("limits how often one client may call, per instance", async () => {
