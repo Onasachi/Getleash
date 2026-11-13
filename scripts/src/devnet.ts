@@ -6,7 +6,8 @@
  *   pnpm devnet        (Ctrl-C to stop; everything is thrown away)
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { InvoiceAgent, OfflineExtractor } from "@getleash/agent";
@@ -23,11 +24,13 @@ const directory: Directory = {
     { supplier_id: shenzhen, name: "Shenzhen Parts Co.", aliases: [], payment_details: [TRON_RECIPIENT], typical_amount: "2", currency: "USDT" },
   ],
 };
+// Shared with the MCP server printed below, so an invoice is the same obligation whichever way it comes in.
+const tenantSecret = randomBytes(32);
 const agent = new InvoiceAgent({
   extractor: new OfflineExtractor(),
   view: world.view,
   agent: world.agent,
-  tenantSecret: randomBytes(32),
+  tenantSecret,
   directory: () => directory,
   dashboardUrl: "http://localhost:3000",
   log: (l) => console.log(l),
@@ -44,12 +47,33 @@ for (const file of ["01-acme-clean.txt", "02-shenzhen-clean.txt", "05-poisoned-u
 const big = await world.agent.propose({ obligationId: "ee".repeat(32), supplierId: shenzhen, amountOut: 8_000_000n, reviewFlag: null });
 console.log(`intent ${big.value.intent_id}: ${big.value.status}`);
 
+// The MCP server (channels/mcp) as the agent of this deployment: the throwaway agent key of this local
+// node, the same tenant secret and supplier names, and the offline reader.
+const directoryFile = join(tmpdir(), `getleash-devnet-${process.pid}-directory.json`);
+writeFileSync(directoryFile, JSON.stringify(directory));
+const mcpEnv = [
+  "NEAR_NETWORK=sandbox",
+  `NEAR_RPC_URL=${world.net.rpcUrl}`,
+  `POLICY_CONTRACT_ID=${world.policyId}`,
+  `AGENT_ACCOUNT_ID=${(await world.view.state()).agent_id}`,
+  `AGENT_PRIVATE_KEY=${world.agentPrivateKey}`,
+  `TENANT_SECRET=${tenantSecret.toString("hex")}`,
+  `GETLEASH_DIRECTORY=${directoryFile}`,
+  "DASHBOARD_URL=http://localhost:3000",
+].join(" ");
+
 console.log(`
 Local deployment is up. In another terminal:
 
   NEXT_PUBLIC_NEAR_NETWORK=testnet NEXT_PUBLIC_NEAR_RPC_URL=${world.net.rpcUrl} NEXT_PUBLIC_POLICY_CONTRACT_ID=${world.policyId} NEXT_PUBLIC_ONECLICK_URL=${world.mock.url} pnpm dashboard
 
 (The wallet button cannot sign on a local node; owner actions are exercised by the tests.)
+
+GetLeash's MCP server as this deployment's agent (a throwaway key on this local node), for example:
+
+  ${mcpEnv} pnpm --silent mcp:ask submit_invoice --offline --text-file fixtures/invoices/01-acme-clean.txt
+
+or as a server for an MCP client: the same variables, then \`pnpm --silent mcp --offline\`.
 Ctrl-C stops everything.`);
 
 let stopping = false;
@@ -57,6 +81,7 @@ const stop = async () => {
   if (stopping) return;
   stopping = true;
   executor.stop();
+  rmSync(directoryFile, { force: true });
   await world.stop();
   process.exit(0);
 };

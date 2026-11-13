@@ -84,6 +84,8 @@ export type World = {
   agent: AgentClient;
   executorCalls: ExecutorClient;
   agentAccount: Account;
+  /** The agent's throwaway key on this local node, for a second process signing as the agent (`pnpm devnet` → `pnpm mcp`). */
+  agentPrivateKey: string;
   executorAccount: Account;
   mock: MockOneClick;
   oneclick: OneClickClient;
@@ -175,6 +177,7 @@ export async function startWorld(opts: WorldOptions = {}): Promise<World> {
       agent: new AgentClient(agentAccount, plan.policyId),
       executorCalls,
       agentAccount,
+      agentPrivateKey: agentKey.toString(),
       executorAccount,
       mock,
       oneclick,

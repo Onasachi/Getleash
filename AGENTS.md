@@ -68,8 +68,8 @@ executor/        cross-chain payout loop over stored intents
 mock-1click/     the executor's local 1Click stand-in
 ingestion/       obligation HMAC, update dedupe, limits; PDF text in a plain-Node child process (pdf-worker.mjs, D-33)
 agent/           extraction (NEAR AI Cloud; an offline reader for tests), deterministic checks, TEE verification
-channels/        channel interface + Telegram (grammY)
-web/             landing page and Next.js dashboard
+channels/        channel interface + Telegram (grammY) + MCP server (stdio, D-34)
+web/             landing page and Next.js dashboard; the hosted read-only MCP server (/mcp, D-34)
 devkit/          local NEAR node harness ("world") and every TypeScript integration test
 deploy/          the mainnet policy
 fixtures/        demo invoices
@@ -94,6 +94,8 @@ pnpm test:sandbox       # TypeScript integration tests on a local node (devkit/t
 pnpm typecheck          # every package, including web/
 pnpm demo:mock          # all fixtures through the whole pipeline, offline; exits 1 on any failed check
 pnpm devnet             # long-running local deployment; then `pnpm dashboard` with the printed env
+pnpm --silent mcp        # MCP server for AI assistants (stdout is the protocol: keep --silent)
+pnpm --silent mcp:ask get_policy   # start it as a client would and print one tool's answer
 pnpm build:installer    # build contract/bootstrap and refresh shared/src/installer-wasm.ts (--check: compare only)
 pnpm publish:release    # the operator, once per release, on mainnet: the store the installer copies from
 pnpm publish:factory    # the operator, once per release, on mainnet: getleash.near, keyless, which hosted setups call
