@@ -4,7 +4,7 @@ export type InvoiceFile = { kind: "pdf" | "png" | "jpeg" | "webp"; bytes: Uint8A
 export type InvoiceInput = {
   /** Channel-scoped unique id, already claimed in the update log (e.g. "telegram-123456"). */
   key: string;
-  source: "telegram" | "cli" | "demo";
+  source: "telegram" | "mcp" | "cli" | "demo";
   receivedAt: string;
   chatId?: string | undefined;
   userId?: string | undefined;

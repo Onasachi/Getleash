@@ -556,3 +556,37 @@ installer for contracts their owner created themselves).
   process stays at 124 MB; the reader peaks at 93 MB for about 0.3 s.
 - Tests: `ingestion/test/pdf.test.ts`, the first to read a real PDF: the text layer, the page limit, a broken
   PDF, the time limit, several PDFs at once.
+
+**D-34 · An MCP server takes invoices into the same pipeline as the bot, on the owner's machine.**
+- **Why.** PLAN §4.6 (a stretch) asked for `submit_invoice`, `list_intents` and `get_policy` "behind the same
+  ingestion and contract rules", so that AI assistants other than the bot (Claude Code, Cursor, Codex) can
+  hand GetLeash invoices. An assistant is one more untrusted caller. The design already assumes the agent can
+  be fooled, so the server adds no new authority: it is a channel into the same pipeline as the bot.
+- **What.** `channels/mcp` is a stdio MCP server built with the MCP TypeScript SDK (`@modelcontextprotocol/sdk`
+  1.32.2) that serves one contract.
+  - **Read-only tools.** `get_policy`, `list_intents` and `list_suppliers` read views and need no key. A fourth
+    tool beyond the plan, `list_suppliers`, lets an assistant see who can be paid.
+  - **`submit_invoice`.** It exists only when the server holds the agent's function-call key, and builds an
+    `InvoiceInput` (source `mcp`) for `InvoiceAgent`, so the extraction, the deterministic match, the
+    obligation id and `propose` are the bot's.
+    - Its input schema is strict and has two fields, the invoice's `text` or an absolute `file_path`. There is
+      no supplier, address or amount field, and the schema refuses extra fields.
+    - A file is checked by path, size (10 MB) and first bytes (PDF, PNG, JPEG, WebP) before anything reads it
+      fully. A file that is not an invoice, a private key for instance, never reaches a model.
+  - **Replies.** They are deterministic text in the bot's words (`shared/src/words.ts`), plus the same facts as
+    JSON, and never model output.
+  - **Shared secret and names.** `TENANT_SECRET` must be the bot's, so that an invoice is the same obligation
+    whichever way it came in: `pnpm devnet` shares one with its MCP line, and the duplicate is refused across
+    channels. Supplier names come from the directory on that machine.
+  - **Logs and tooling.** Logs go to stderr, since stdout carries the protocol. `pnpm --silent mcp` runs the
+    server; `pnpm --silent mcp:ask <tool>` starts it as a client would and prints one answer.
+- **Not done.** A hosted (HTTP) server for the businesses the bot hosts. Their agent keys stay with the bot, and
+  serving them remotely needs MCP's OAuth flow, with a token bound to one business, which waits for after the
+  hackathon.
+- Tests:
+  - `channels/mcp/test/server.test.ts`: which tools exist with and without the key; the strict schema; files
+    refused by path, size and type before the pipeline; replies for paid, waiting, refused and not-proposed
+    invoices; errors as tool errors.
+  - `devkit/test/mcp.sandbox.test.ts`: an MCP client submits fixture invoices to the real contract. One is paid,
+    the reformatted duplicate and the unknown supplier are refused with the balance unchanged, and a large one
+    waits for the owner with its page. The views read the same contract.

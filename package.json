@@ -22,6 +22,8 @@
     "executor": "tsx executor/src/main.ts",
     "demo:mock": "tsx scripts/src/demo.ts",
     "bot": "tsx channels/telegram/src/main.ts",
+    "mcp": "tsx channels/mcp/src/main.ts",
+    "mcp:ask": "tsx channels/mcp/src/ask.ts",
     "services": "tsx scripts/src/services.ts",
     "devnet": "tsx scripts/src/devnet.ts",
     "mock:1click": "tsx scripts/src/mock-1click.ts",
