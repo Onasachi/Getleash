@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-<p align="center"><strong>An AI agent that pays a business's suppliers across chains, under on-chain rules it cannot break.</strong></p>
+<p align="center"><strong>An accounts-payable agent in Telegram: it reads a business's supplier invoices and proposes the payments; a NEAR contract that only the owner's wallet controls decides and pays.</strong></p>
 
 <p align="center">
   <a href="https://www.getleash.xyz">Website and dashboard</a> ·
@@ -14,20 +14,51 @@
   <a href="https://x.com/usegetleash/status/2118637512897831054">Demo post on X</a>
 </p>
 
-> GetLeash is self-custodial: each business's treasury is a contract controlled only by its own
-> wallet, and GetLeash holds no key that can withdraw or redirect funds. It limits autonomous
-> payments to authorized destinations and budgets, makes the owner's approvals name the exact
-> payment terms, and makes its remaining settlement trust dependencies explicit.
+- **[Live on NEAR mainnet](#live-on-near-mainnet) since 2 Nov 2026, so far tried by the team itself.** Its own
+  GetLeash, [`getleash.onanikes.near`](https://www.getleash.xyz/payments?c=getleash.onanikes.near), has paid five
+  invoices (1.95 USDC; one, sent as a PDF, inside the agent's own call), and on 7 Nov two attacks on it paid nothing.
+  A business sets up its own from the bot with one wallet call to the keyless factory `getleash.near`, about 1.43 NEAR
+  once; the team's test wallet did, creating `onasachi-tg.getleash.near`.
+- **Cross-chain payouts** (USDT on Tron through NEAR Intents 1Click) are built and tested on a local node and on
+  testnet with mock 1Click; none has been made on mainnet yet.
+- **Built at the NEAR Hackathon** (1–14 Nov 2026), all code in that window ([history](#tools-and-ai-assistance)),
+  for the tracks `security`, `business`, `realworld`, `privacy`, `agents` and `open` ([how each fits](#hackathon-tracks)).
 
-- **Live on NEAR mainnet** since 2 Nov 2026. The team's own GetLeash has paid five supplier invoices, one sent
-  as a PDF, and the first business to set up from the bot has its own contract. See [Live on NEAR mainnet](#live-on-near-mainnet).
-- **Built for the NEAR Hackathon** (1–14 Nov 2026), tracks `security`, `business`, `realworld`, `privacy`,
-  `agents` and `open`. See [Hackathon tracks](#hackathon-tracks).
-- **For AI assistants:** an MCP server lets Claude, Claude Code, Cursor or any other MCP client read a GetLeash
-  contract (hosted, read-only, at https://www.getleash.xyz/mcp) and, on the owner's machine with the agent's key,
-  hand it invoices; the contract still decides. See [From an AI assistant (MCP)](#from-an-ai-assistant-mcp).
-- **Tested:** 47 Rust tests, 46 integration tests on a local NEAR node, 197 TypeScript tests, and an offline
-  demo of 14 steps over 13 invoices, attacks included. See [Quick verify](#quick-verify) and [Run it locally](#run-it-locally).
+| What it does beyond caps and an allowlist | Where to see it |
+|---|---|
+| **The agent never supplies an address.** It names a supplier from the owner's list, paid at the address on file, never one an invoice gives. No model text reaches the chain. | Mainnet, 7 Nov, nothing paid: an invoice from a supplier not on file, whose note told the AI the owner had pre-approved it, refused on-chain (`UNKNOWN_SUPPLIER`); one in a listed supplier's name asking to be paid at a new wallet, held (`ADDRESS_MISMATCH`) and rejected by the owner |
+| **Changed payment details wait, even for the owner.** For 2 days after a supplier is added or its details change, every payment to it waits for the owner, whose own approval is capped at 0.50 USDC a payment (`OVER_COOLDOWN_MAX`) unless they first change the limits. | Mainnet, 3–5 Nov: four payments held in the cooldown, then approved by the owner; `pnpm demo:mock`: `even the owner cannot approve more than 0.50` |
+| **One payment per invoice.** Its id is a keyed HMAC-SHA256 of the supplier and the normalised invoice number, so the same invoice in another format gets the same id. | Mainnet, 6 Nov: a PDF invoice paid inside the agent's own call, refused when sent again (`OBLIGATION_OPEN_OR_PAID`); `pnpm demo:mock` refuses a reformatted copy |
+| **The owner signs exact terms.** `decide` repeats the amount and the supplier; `authorize` names the exact 1Click deposit address and amount. Anything else is refused (`TERMS_MISMATCH`). | Before a cross-chain signature, the dashboard checks 1Click's record of the deposit against 12 fields: the contract's terms and the required quote settings (`pnpm devnet`) |
+| **Keyless, hash-pinned contracts.** The treasury, the factory and the release store have no access keys; the installer deploys only the release whose SHA-256 is built into it, and the release rebuilds reproducibly. No key GetLeash holds can withdraw, add a supplier or change a limit. | The second command below; `onasachi-tg.getleash.near`, made by the factory, has 0 access keys and the release's code hash; [step 7](#run-it-locally) rebuilds the release |
+| **Private reading that gates autonomy.** A model in a TEE on NEAR AI Cloud reads invoices. A reply counts as verified only after its signature, Intel TDX quote and NVIDIA GPU attestation check out; one whose checks fail loses the agent's autonomy, so its payment waits for the owner (D-35). This proves where the inference ran, not that the invoice is genuine. | 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each "Model response verified" (`agent/src/verify.ts`, `agent/src/rules.ts`) |
+| **Other AI agents can use it.** Over MCP an assistant can read a GetLeash contract and, on the owner's machine with the agent's key, hand it invoices. It can't name a supplier, an address or an amount, and the contract still decides. | The third command below, on https://www.getleash.xyz/mcp (read-only); [From an AI assistant (MCP)](#from-an-ai-assistant-mcp) |
+| **What it does not stop.** A fabricated small invoice from a listed supplier is paid if it fits the limits. | The agent's daily budget bounds it: in `pnpm demo:mock` the first is paid, the next waits (`AUTONOMOUS_BUDGET_USED`) |
+
+**Check it in a minute, with no clone, wallet or key** (NearBlocks answers HTTP 403 to scripts and AI fetchers, and
+the dashboard needs a browser):
+
+```bash
+# 1. Payment 5 on an archival node: intent_created (AUTONOMOUS), paying to chisolu.near, ft_transfer 250000, payout PAID
+curl -s https://archival-rpc.mainnet.fastnear.com -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"tx","params":{"tx_hash":"6pBLAr4zhk6m4bCE6uPEdjAJDQcUgWcbM2WLbX5Bco2X","sender_account_id":"agent-1.onanikes.near"}}' \
+  | jq '.result | {status, logs: [.receipts_outcome[].outcome.logs[]]}'
+# 2. The treasury's access keys → []  (for agent-1.onanikes.near: one key, method_names ["propose"])
+curl -s https://rpc.mainnet.fastnear.com -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"query","params":{"request_type":"view_access_key_list","finality":"final","account_id":"getleash.onanikes.near"}}' \
+  | jq '.result.keys'
+# 3. The hosted MCP server → text starting "getleash.onanikes.near on mainnet: payments are on."
+curl -s https://www.getleash.xyz/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}'
+```
+
+With `"tx_hash":"GUpgQAMnrjbyf95TNzexxtWLk5SSz7WCEfwaBwDnrB5X"` (7 Nov), the first command shows `proposal_refused`
+with reason `UNKNOWN_SUPPLIER`.
+
+**Tested:** 47 Rust tests, including random walks over the whole contract that check, day by day, that outflow stays
+within the daily cap, the agent's own approvals within its budget and unsigned executor funding within its trust
+budget, and that nothing is paid twice without an owner's retry; 46 tests on a local NEAR node; 198 TypeScript tests;
+and an offline demo of 14 steps over 13 invoices, attacks included. See [Quick verify](#quick-verify).
 
 ## Contents
 
@@ -67,7 +98,7 @@ owner's wallet controls decides and pays.
 | Any business can start from a chat | `/start` in Telegram, then one wallet call to the keyless factory `getleash.near` creates the business's own keyless contract, for about 1.43 NEAR once. |
 
 **For the owner, it all happens in Telegram.** Forward an invoice (a PDF, a photo or pasted text) and the bot
-answers that it was paid, or that it needs your OK, with a button. The bot's menu:
+answers that it was paid, or that it needs your OK, with a button. The bot's commands:
 
 | Command | What it does |
 |---|---|
@@ -177,7 +208,8 @@ stateDiagram-v2
     APPROVED --> PAYING: transfer sent
     PAYING --> PAID: transfer accepted
     PAYING --> FAILED: transfer refused
-    FAILED --> APPROVED: owner retries
+    FAILED --> APPROVED: owner retries (cross-chain)
+    FAILED --> PAYING: owner retries (NEAR)
     PAID --> APPROVED: owner retries a refunded swap
 ```
 
@@ -266,7 +298,7 @@ flowchart LR
 | Owner | `decide` | JSON: intent_id, action, amount_out, supplier_id | `APPROVE`, `REJECT`, `RETRY`, `MARK_PAID`, `MARK_FAILED`; the terms must match the payment's (`TERMS_MISMATCH`) |
 | Owner | `authorize` | JSON: intent_id, deposit, amount_in | Signs one exact 1Click deposit and amount |
 | Owner | `add_supplier`, `update_supplier`, `set_supplier_active` | JSON | Adding or changing a supplier starts its cooldown; a change bumps its revision, so open payments to the old details can't pay |
-| Owner | `set_policy`, `set_paused`, `set_roles` | JSON | `set_policy` checks the limits; `set_roles` voids the executor's unsigned attempts (D-19) |
+| Owner | `set_policy`, `set_paused`, `set_roles` | JSON | `set_policy` checks the limits; a new executor (`set_roles`) voids the old one's unsigned attempts (D-19) |
 | Owner | `withdraw`, `withdraw_near`, `upgrade` | JSON; code for `upgrade` | `upgrade` is refused while a payout is in flight |
 | The contract itself | `on_paid(intent_id, since)` | private callback | Never panics; its arguments never change across upgrades |
 | Anyone | `get_state`, `get_suppliers`, `get_intents` | Borsh views | The dashboard decodes them with the strict decoders in `shared/src/types.ts` |
@@ -304,7 +336,7 @@ the fee bound and the quote's deadline, and sends the deposit only if the owner 
 amount, or if it fits the executor's daily trust budget, the attempt belongs to the current executor and the
 supplier is not in its cooldown (`COOLDOWN_NEEDS_OWNER`).
 Before the owner signs, the dashboard fetches 1Click's own record of the deposit address and checks it against
-the 12 terms the contract committed, and that no other payment uses the address. The payout is one receipt to
+12 fields (the contract's terms and the required quote settings), and that no other payment uses the address. The payout is one receipt to
 USDC that registers the deposit account and transfers to it, so a failed transfer also undoes the
 registration. A refund lands back in the treasury as USDC, and the owner can retry the payment.
 
@@ -360,8 +392,8 @@ to type CONFIRM for (D-32).
   Machine callers and views use Borsh, with layouts pinned by golden vectors shared with TypeScript.
 - **Pure rules.** `contract/src/rules.rs` and `contract/src/budget.rs` make no `env::` calls, so they are
   property-tested on their own, and random walks over the whole contract check its invariants.
-- **A factory, not a deployment in the wallet** (D-31, D-32). No wallet request can carry the 84 KB release,
-  and HOT Wallet flags any deployment as a dangerous request.
+- **A factory, not a deployment in the wallet** (D-31, D-32). HOT Wallet's connector could not carry the 84 KB
+  release (D-31), and HOT Wallet flags any deployment as a dangerous request.
 - **Only NEAR-hosted models, and a precise badge** (D-24). "Model response verified" says where the inference
   ran, nothing more.
 - **Private data stays where the services run** (D-26).
@@ -401,7 +433,7 @@ to type CONFIRM for (D-32).
 | Executor key, trust budget 0 (the default) | Fund cross-chain attempts the owner already signed. It cannot choose a destination. |
 | Executor key, trust budget above 0 (opt-in) | Send cross-chain payments to deposit addresses it chose, up to the daily trust budget. Rotating the executor voids its unsigned attempts. |
 | A dashboard host serving false data | Show false terms. The wallet still shows the JSON being signed, and the daily cap bounds what any approval can send. |
-| GetLeash the company | For a business that runs its own copy: nothing, it holds no key on that business's accounts. For a business it hosts (D-30): it holds that business's agent and executor keys, so at most the agent row and the trust-budget-0 executor row above, and it reads that business's invoices. No key it holds can withdraw, add a supplier or change a limit. |
+| GetLeash the company | For a business that runs its own copy: nothing, it holds no key on that business's accounts. For a business it hosts (D-30): it holds that business's agent and executor keys, so at most the agent row above, plus the executor row within that business's trust budget (0 unless its owner raises it), and it reads that business's invoices. No key it holds can withdraw, add a supplier or change a limit. |
 
 ### Attacks, as the offline demo runs them
 
@@ -434,15 +466,16 @@ freeze tokens. A business that GetLeash hosts also trusts the operator who runs 
 
 - **47 Rust tests:** unit tests named after the adversarial rows of `docs/PLAN.md` §9, property tests (the pure
   rules, the JSON parser against serde_json, random walks over the whole contract) and golden Borsh vectors.
-  `docs/audit-response.md` maps every audit finding to its fix and its tests.
+  `docs/audit-response.md` maps every finding of the design audit of the plan (`docs/PLAN.md`) to its fix and
+  its tests.
 - **46 integration tests on a local NEAR node,** with the release wasm: the keys test (role keys refused for
   transfers, deposits, other methods and other contracts), cross-chain payouts through mock 1Click, the hosted
   setup, the installer, the factory, invoices handed in through the MCP server, and its hosted endpoint.
-- **An independent review** of the factory on a local node (4 Nov) found five issues, all fixed (D-32).
+- **A separate review** of the factory, by an AI reviewer agent (a Claude Code subagent) on a local node (4 Nov),
+  found five issues, all fixed (D-32).
 - **Fresh-clone rehearsals:** agents that had never seen the project cloned this repository and followed this
-  README, running every step that needs no key or wallet. In the eighth (13 Nov, 47 minutes), every step passed
-  except the hosted MCP endpoint, which was not deployed yet and answered 404; the four wording slips it found are
-  fixed.
+  README, running every step that needs no key or wallet. In the eighth (13 Nov), every step passed except the
+  hosted MCP endpoint, deployed after it and checked live on 14 Nov; the slips it found are fixed.
 
 ## Privacy
 
@@ -454,7 +487,8 @@ freeze tokens. A business that GetLeash hosts also trusts the operator who runs 
 | Amounts, destination addresses, timing | On-chain | **Public** | Anyone; stated plainly |
 | Refusal reasons | Event logs (enum codes) | Enum codes only: no model text reaches the chain | — |
 
-**How a model response is verified** (`agent/src/verify.ts`, following NEAR AI Cloud's documented flow):
+**How a model response is verified** (`agent/src/verify.ts`, following NEAR AI Cloud's documented flow, except
+the two checks named at the end):
 
 1. **A signature over the exact bytes.** NEAR AI Cloud signs `<model>:<sha256(request)>:<sha256(response)>`.
    The agent recomputes both hashes from the bytes it sent and received, and recovers the signer.
@@ -470,27 +504,31 @@ the response was signed by NEAR AI's gateway rather than the model's TEE and ste
 failed" when any check fails, including when Intel's or NVIDIA's service can't be reached; and "Verification
 unavailable" when there is no evidence to check, as with the demo's offline reader. It proves where the
 inference ran, not that the invoice is genuine or the extraction right. NEAR AI publishes no measurement allow-list, so none is pinned.
+Not checked yet: each GPU's own claims in the NRAS result (its overall pass is checked), and the event log
+against the compose manifest (`mr_config`). The badge also gates autonomy (D-35): a reply whose checks fail is
+flagged `AMBIGUOUS_EXTRACTION`, so its payment waits for the owner. "Verification unavailable" (no evidence, as
+with the offline reader) leaves the agent's limits as they are.
 
 ## Hackathon tracks
 
 | Track | What GetLeash does | Check it |
 |---|---|---|
 | **AI Security & Defense** (`security`) | An AI agent gets money, not keys. The treasury contract has no access keys. The agent's account holds one function-call key that can only call `propose` on its business's contract, and the executor's only `create_attempt`, `fund` and `forget`; the protocol refuses them for transfers, deposits, other methods and other contracts. The contract enforces the approval threshold, the agent's daily budget, a daily cap and a wait after a supplier's address changes. An invoice never names who gets paid, so a prompt injection has no address to send money to, and a NEAR AI Cloud response is called verified only after its TEE attestation checks out. | `pnpm demo:mock` ([the attacks](#attacks-as-the-offline-demo-runs-them)); `pnpm test:sandbox` (the setup test); `contract/src/rules.rs` and `budget.rs`, property-tested |
-| **Autonomous Business** (`business`) | An accounts-payable agent. It reads a business's supplier invoices and pays them from the business's own treasury contract, in USDC on NEAR or across chains through NEAR Intents 1Click (USDT on Tron), while the owner's wallet only sets the limits and approves what is above them. Every payment is a public NEAR transaction, and the dashboard lists them. | [@GetLeash_bot](https://t.me/GetLeash_bot); `executor/` |
+| **Autonomous Business** (`business`) | An accounts-payable agent. It reads a business's supplier invoices and pays them from the business's own treasury contract, in USDC on NEAR or across chains through NEAR Intents 1Click (USDT on Tron), while the owner's wallet only sets the limits and approves what is above them. Every payment is a public NEAR transaction; the dashboard lists those the contract still holds. | [@GetLeash_bot](https://t.me/GetLeash_bot); `executor/` |
 | **Real-World Money** (`realworld`) | Stablecoin payouts for a normal business, from the chat it already uses: forward an invoice, then see it paid or approve it with one tap. A business sets up in a few minutes for about 1.43 NEAR, once, with no developer. | [Try the live product](#try-the-live-product) |
-| **Privacy & Private AI** (`privacy`) | Invoices are read by a model on NEAR AI Cloud in a TEE, and a response is shown as "Model response verified" only after its Intel TDX quote and NVIDIA GPU attestation check out. Invoice files are encrypted at rest with one key per business; no model text reaches the chain (the agent sends a supplier id from the owner's list, the amount read, checked against the invoice's text, and at most one enum flag); an invoice's identity on-chain is a keyed HMAC; supplier names stay off-chain and are shown only after the owner signs (NEP-413). | `agent/src/verify.ts`; [Privacy](#privacy) |
+| **Privacy & Private AI** (`privacy`) | Invoices are read by a model on NEAR AI Cloud in a TEE, and a response is shown as "Model response verified" only after its Intel TDX quote and NVIDIA GPU attestation check out, and one whose checks fail holds its payment for the owner (D-35). Invoice files are encrypted at rest with one key per business; no model text reaches the chain (the agent sends a supplier id from the owner's list, the amount read, checked against the invoice's text, and at most one enum flag); an invoice's identity on-chain is a keyed HMAC; supplier names stay off-chain and are shown only after the owner signs (NEP-413). | `agent/src/verify.ts`; [Privacy](#privacy) |
 | **Agent Economy** (`agents`) | The agent has its own NEAR account and spends a business's money for it, directly in USDC or through NEAR Intents, inside a budget the contract enforces and only the owner's wallet can change. Other agents can use it too: through its MCP server, any MCP assistant can read a GetLeash contract (https://www.getleash.xyz/mcp) and, on the owner's machine, hand it invoices, and the contract still decides. | `contract/src/agent.rs`; the executor tests in `pnpm test:sandbox`; [From an AI assistant (MCP)](#from-an-ai-assistant-mcp) |
 | **Open Innovation** (`open`) | A policy-bound wallet for AI that a business sets up from a chat: one call from its wallet to the keyless factory `getleash.near` creates its keyless contract, installed from an on-chain release store only if its SHA-256 is the release's. | `contract/bootstrap/`; `devkit/test/factory.sandbox.test.ts`; D-31, D-32 |
 
 ## Live on NEAR mainnet
 
-| Account | What it is | State on 8 Nov 2026 |
+| Account | What it is | State on 14 Nov 2026 |
 |---|---|---|
 | [`getleash.onanikes.near`](https://nearblocks.io/address/getleash.onanikes.near) | The team's own GetLeash, deployed on 2 Nov with the CLI (the setup cost the owner 1.424 NEAR) | 0 access keys; code hash `AbwiVLX5f7regsZkTKWvHkYbN1ae8yj9Gsygrq7bTvV2` (the release); the limits of `deploy/mainnet-policy.json`; five payments made; intent 6, an attack test (below), rejected by the owner; 2.96 USDC in the treasury |
 | `agent-1.onanikes.near`, `executor-1.onanikes.near` | Its agent and executor | One function-call key each |
 | [`getleash.near`](https://nearblocks.io/address/getleash.near) | The factory that setups from the bot call | 0 access keys |
 | [`release-8eaccbf1.onanikes.near`](https://nearblocks.io/address/release-8eaccbf1.onanikes.near) | The release store the installer copies from | 0 access keys |
-| [`onasachi-tg.getleash.near`](https://nearblocks.io/address/onasachi-tg.getleash.near) | The first business set up from the bot, created by the factory for `onasachi.tg` | 0 access keys and the release's code hash; `onasachi-tg-agent.getleash.near` and `onasachi-tg-executor.getleash.near` hold one function-call key each |
+| [`onasachi-tg.getleash.near`](https://nearblocks.io/address/onasachi-tg.getleash.near) | A setup from the bot by the team's test wallet `onasachi.tg`, created by the factory on 4 Nov ([`H7sG42Qg…`](https://nearblocks.io/txns/H7sG42QgLxptBFeg5FydZCi2Ywaad3uTEwLmtyy3Qbhf)) | 0 access keys and the release's code hash; `onasachi-tg-agent.getleash.near` and `onasachi-tg-executor.getleash.near` hold one function-call key each; no USDC, suppliers or payments yet |
 
 The transaction links open NearBlocks, whose pages answer HTTP 403 to scripts and AI fetchers. To check a
 transaction without a browser, use the archival-node `curl` command after the attack tests (it prints the
@@ -531,10 +569,14 @@ contract's events), or GET `https://api.nearblocks.io/v1/txns/<hash>` (signer, m
   have paid only `chisolu.near`, the address on file. The owner rejected it the same day
   ([`decide`](https://nearblocks.io/txns/FJjBQq6WFWGfQpMb4cJWBQ2h3e67Nz4hrYoRGJgnxsQa)); a rejected invoice stays
   blocked (D-07), and `pnpm status` lists no open intents.
+- Earlier tests left two more refusals on-chain, `UNKNOWN_SUPPLIER` on 4 and 5 Nov
+  ([`HLHiTir3…`](https://nearblocks.io/txns/HLHiTir37H9gJoUrHFAbUKeHYYVXG6BrBkmpSEseFP4E),
+  [`7eNpK4AH…`](https://nearblocks.io/txns/7eNpK4AHjbFQUpb3URs9X3hNxTdVpbnC34p6oH1Rn86Y)); nothing was paid.
 
 Check the state yourself: `pnpm status --network mainnet --policy getleash.onanikes.near` (read-only), or open
 https://www.getleash.xyz/payments?c=getleash.onanikes.near in a browser, which lists the payments the contract
-still holds (it forgets a payment 7 days after it closes; the transactions stay on-chain).
+still holds (the executor removes each payment from the contract with `forget` 7 days after it closes; the
+transactions stay on-chain).
 
 Check a transaction without a browser, with `curl` and `jq`. This asks an archival node, because regular RPC
 nodes keep transactions for only a few days:
@@ -558,8 +600,8 @@ Taken from the live site at 20:58 UTC with headless Chrome; the times in them ar
 ![The live dashboard of getleash.onanikes.near on 13 Nov 2026 at 20:58 UTC. Treasury 2.96 USDC. Sent today 0.00 of 20.00 USDC. Paid by the agent on its own 0.00 of 5.00 USDC. Above 2.50 USDC, a payment waits for you. Needs you: nothing. Recent payments: one, Rejected, chisolu.near, 0.40 USDC, Nov 7 03:13 PM.](docs/images/dashboard-2026-11-13.png)
 
 The team's GetLeash on its dashboard, https://www.getleash.xyz/payments?c=getleash.onanikes.near, read from
-mainnet in the browser. The dashboard lists the payments the contract still holds. By 13 Nov the contract had
-forgotten payments 1–5, since it forgets a payment 7 days after it closes, and intent 6, rejected on 7 Nov, was
+mainnet in the browser. The dashboard lists the payments the contract still holds. By 13 Nov the executor had
+removed payments 1–5 from the contract (`forget`, 7 days after each closed), and intent 6, rejected on 7 Nov, was
 the only one left; every payment's transactions are listed above.
 
 ![Intent 6's page on 13 Nov 2026: Rejected, 0.40 USDC to chisolu.near on NEAR, payment #6. Progress: invoice received, then rejected. "You rejected it. To pay it after all, send a corrected invoice with a new number."](docs/images/payment-6-2026-11-13.png)
@@ -572,12 +614,12 @@ held for the owner, and rejected in the owner's wallet (the attack tests above).
 The website. The chat in the phone is an illustration of the bot's replies, not a record of payments; the
 recorded payments are the ones above.
 
-**Status (8 Nov 2026)**
+**Status (14 Nov 2026)**
 
 | Part | State |
 |---|---|
 | Policy contract v2 (`contract/`) | **Live.** Rewritten lean for a ~1.5 NEAR mainnet deployment (D-28): the release wasm is 83,900 bytes instead of v1's 370,399. 47 Rust tests plus a real-node test. v1, with full on-chain accounting, is tagged `v1-full-contract`. |
-| Factory, installer, release store (`contract/bootstrap/`) | **Live.** `getleash.near` and `release-8eaccbf1.onanikes.near`, both keyless. The first business set up through them is `onasachi-tg.getleash.near`. |
+| Factory, installer, release store (`contract/bootstrap/`) | **Live.** `getleash.near` and `release-8eaccbf1.onanikes.near`, both keyless. One setup through them so far, by the team's test wallet: `onasachi-tg.getleash.near`. |
 | Agent, ingestion, Telegram bot (`agent/`, `ingestion/`, `channels/`) | **Live** as [@GetLeash_bot](https://t.me/GetLeash_bot). Checked against NEAR AI Cloud on 2 Nov: all 13 fixture invoices read by `Qwen/Qwen3.8-27B`, each with "Model response verified" (Intel PCS and NVIDIA NRAS). Adding suppliers from Telegram (`/addsupplier`, `/invite`) is covered by unit tests and has not yet been run live. A PDF invoice was read and paid on 6 Nov (payment 5), after the bot began reading PDFs in a process of its own (D-33). |
 | Executor and mock 1Click (`executor/`, `mock-1click/`) | **Implemented and running.** Cross-chain payouts within the trust budget and owner-signed above it, change, refunds and retry, outages, restart recovery, re-quotes; tested on a local node and on testnet with mock 1Click. No cross-chain payment has been made on mainnet yet. |
 | Dashboard and landing page (`web/`) | **Live** at https://www.getleash.xyz: the landing page, whose "Dashboard" finds the visitor's own GetLeash from their wallet; "Needs you" with one button per payment; payment pages (approve, reject, retry, confirm a cross-chain transfer after a browser-side check of 1Click's record); pause; limits; adding a supplier; setup; the NEP-413 private view; any hosted business's pages (`?c=`). Signed with near-connect's NEAR CLI wallet on testnet, and with HOT Wallet inside Telegram on mainnet. |
@@ -589,7 +631,7 @@ recorded payments are the ones above.
 | Claim | Do | See |
 |---|---|---|
 | The live treasury has no keys and enforces its limits | `pnpm install && pnpm status --network mainnet --policy getleash.onanikes.near` | `✓ getleash.onanikes.near: 0 access keys (must be 0)`, `approval above 2.5`, `of 5 today`, `of 20`, and two role accounts with one function-call key each |
-| Real payments on mainnet | Run the archival-node `curl` command (it needs `jq` too) in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the transactions, and on the dashboard the payments the contract still holds (it forgets each 7 days after it closes; [screenshots](#screenshots-13-nov-2026)) |
+| Real payments on mainnet | Run the archival-node `curl` command (it needs `jq` too) in [Live on NEAR mainnet](#live-on-near-mainnet); in a browser, open its transaction links or https://www.getleash.xyz/payments?c=getleash.onanikes.near | Payment 5's events, ending in `payout` with status `PAID`; in the browser, the transactions, and on the dashboard the payments the contract still holds (the executor removes each from the contract 7 days after it closes; [screenshots](#screenshots-13-nov-2026)) |
 | USDC and Tron payouts | `pnpm demo:mock` | `paid 18 USDC to acme.near inside the agent's call (no executor)`; `→ 2 USDT to the supplier on Tron (executor-trust budget)` |
 | A prompt injection is refused on-chain | `pnpm demo:mock` | `refused by the contract: UNKNOWN_SUPPLIER` |
 | A swapped wallet waits for the owner | `pnpm demo:mock` | `waits for the owner (REVIEW_FLAG); flags ADDRESS_MISMATCH` |
@@ -616,7 +658,7 @@ On NEAR mainnet, with real wallets. Looking costs nothing; setting up costs abou
    dashboard of the GetLeash that wallet owns, or "No GetLeash for … yet" with a button to set one up.
 2. Open https://www.getleash.xyz/payments?c=getleash.onanikes.near → the team's own GetLeash, read from mainnet
    in your browser: the treasury, how much of today's limits is used, and the payments the contract still holds,
-   each with its own page (it forgets a payment 7 days after it closes, so the list can be short or empty; the
+   each with its own page (the executor removes each payment 7 days after it closes, so the list can be short or empty; the
    [screenshots](#screenshots-13-nov-2026) show it on 13 Nov). No wallet is needed to look.
 3. In Telegram, open [@GetLeash_bot](https://t.me/GetLeash_bot) and send `/start` → **Set up GetLeash** opens
    the setup page, which names the contract it will create (`<your account, dots made dashes>.getleash.near`)
@@ -677,7 +719,7 @@ contract with `"arguments":{"contract":"<name>.getleash.near"}`. Opened in a bro
    onanikes.near, agent agent-1.onanikes.near, executor executor-1.onanikes.near.` `mcp:ask` starts the server
    over stdio, as an MCP client does, and prints one tool's answer. `list_suppliers` → `#1 (no name on this
    machine): USDC at chisolu.near.` and the second supplier. `list_intents` → the payments the contract still
-   holds, each with its page on getleash.xyz: it forgets a payment 7 days after it closes, and
+   holds, each with its page on getleash.xyz: the executor removes each payment 7 days after it closes, and
    [Live on NEAR mainnet](#live-on-near-mainnet) has every payment's transactions.
 2. **Connect Claude Code:**
    ```bash
@@ -756,11 +798,11 @@ fails.
    ```bash
    pnpm install && pnpm test
    ```
-   → `Tests 197 passed` (22 files). Node also prints a `DeprecationWarning` about the `punycode` module, from a
+   → `Tests 198 passed` (22 files). Node also prints a `DeprecationWarning` about the `punycode` module, from a
    dependency; it is harmless.
 
    <details>
-   <summary>What the 197 tests cover</summary>
+   <summary>What the 198 tests cover</summary>
 
    The Borsh layout against golden vectors written by the Rust types, outcome parsing, 1Click quote checks
    (against the shape of a live quote), obligation ids, input limits, the PDF reader (a real PDF's text, read in
@@ -781,7 +823,8 @@ fails.
    dangerous, where deploying the release took 960,000; the wallet is asked for the gas NEAR holds while it
    signs), supplier matching by address, owner notices sent once between the bot and the executor, near-cli-rs
    key files, the plain-language wording shared by the dashboard and Telegram, the TEE verification policy
-   (stale, invalid or missing evidence never earns a "verified" badge), and the MCP server (`submit_invoice`
+   (stale, invalid or missing evidence never earns a "verified" badge, and a failed check holds the payment for
+   the owner, D-35), and the MCP server (`submit_invoice`
    only with the agent's key; a strict schema with no supplier, address or amount; invoice files refused by
    path, size or first bytes before the pipeline sees them; replies in the bot's words), and its hosted endpoint
    (the three views for any contract named, no supplier names, one tool call without a handshake, and the
@@ -1021,7 +1064,7 @@ and reconciliation are off-chain in v2), a second cross-chain route (Base is a s
 | Document | What is in it |
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | The implementation plan (v3, post-audit): architecture, component specs, privacy, the required adversarial tests (§9) |
-| [docs/decisions.md](docs/decisions.md) | Where the code deliberately departs from or tightens the plan, D-01 to D-34 |
+| [docs/decisions.md](docs/decisions.md) | Where the code deliberately departs from or tightens the plan, D-01 to D-35 |
 | [docs/audit-response.md](docs/audit-response.md) | Each finding of the design audit, what the code does about it, and the tests that show it |
 | [docs/verified-facts.md](docs/verified-facts.md) | Endpoints, field names, asset ids and fees checked against live docs, with dates; gas and NEAR measured per step |
 | [docs/deployment.md](docs/deployment.md) | Deploying on mainnet: every step, what it prints and what it costs; hosting the services |
@@ -1033,6 +1076,10 @@ and reconciliation are off-chain in v2), a second cross-chain route (Base is a s
 
 - Code in this repository is written with AI coding assistance (Claude Code), reviewed and directed by the
   team. The hackathon rules allow this and ask for disclosure.
+- **All code was written during the hackathon's development window.** The repository's first commit (1 Nov 2026,
+  20:11 UTC) holds only a README and `.gitignore`; the work began that evening from the plan in `docs/PLAN.md`.
+  The first 218 commits after it all carry 2 Nov 09:21–09:22 UTC: they are the work of those first hours,
+  committed one file per commit when this branch was created. Every later commit was made as the work happened.
 - The logo, the dashboard's design system, its payment and setup pages and the landing page were designed with
   Claude Design (Anthropic) from `docs/design-brief.md` and built into the site with Claude Code. The font is
   Instrument Sans (SIL Open Font License 1.1), served by Next.js from the site; the wordmark is outlined to

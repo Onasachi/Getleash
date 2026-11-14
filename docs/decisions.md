@@ -530,7 +530,7 @@ through the owner-signed `upgrade`", and once, at creation, through the installe
 - **Rejected.** Explaining the warning on the page and keeping the wallet's deploy (users would still type
   CONFIRM under "A malicious contract can take over the account"). `UseGlobalContract` (rated "danger" too,
   and about 8.4 NEAR to publish). The role accounts in the wallet's own request (a yellow warning per key).
-- **Reviewed (4 Nov).** An independent review on a local node found the role-name overlap, a page that a
+- **Reviewed (4 Nov).** A separate review by an AI reviewer agent (a Claude Code subagent) on a local node found the role-name overlap, a page that a
   stranger could keep at "being created" by registering a name on USDC first, too little headroom in the
   wallet check, `retry_install` capped at 35 Tgas, and a publish script that could leave a key added by a
   wallet; all fixed as above, and it confirmed the rest (keys added only to new accounts, nothing
@@ -608,3 +608,19 @@ installer for contracts their owner created themselves).
     the reformatted duplicate and the unknown supplier are refused with the balance unchanged, and a large one
     waits for the owner with its page. The views read the same contract, and so does the hosted endpoint over
     HTTP, for a contract the call names.
+
+**D-35 · A reply whose TEE evidence fails its checks waits for the owner.**
+- **Why.** The verification badge (D-24) was shown to the owner but gated nothing. An invoice read by a reply
+  whose evidence failed its checks was proposed like any other, and within the limits it was paid. A screen of
+  this repository (14 Nov) named this as the weakest point of the private-AI claims.
+- **What.** `decide` (`agent/src/rules.ts`) adds the review flag `AMBIGUOUS_EXTRACTION` when the badge is
+  "Verification failed", with a note saying why, so the contract holds the payment for the owner (route
+  `REVIEW_FLAG`). The other badges are unchanged:
+  - "Model response verified" and "Gateway evidence verified" keep the agent's limits.
+  - "Verification unavailable" (no evidence to check, as with the offline reader of the demo and the tests) keeps
+    them too.
+
+  A failed check includes Intel's or NVIDIA's service being unreachable, so during such an outage every invoice
+  waits for the owner: the safe side. No contract change: the flag is one of the existing four.
+- Tests: `agent/test/rules.test.ts`, "private inference (D-35)": each of the three other badges leaves the
+  decision unflagged, and a failed one flags it with its note. The offline demo is unchanged.
