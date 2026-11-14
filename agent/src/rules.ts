@@ -156,6 +156,12 @@ export function decide(result: ExtractResult, ctx: RuleContext): Decision {
     notes.push(`total ${x.total_amount} does not appear in the document text`);
   }
   if (result.sourceIsModelTranscript) notes.push("photo: checks ran against the model's transcription");
+  // A reply whose TEE evidence failed its checks (D-35) gets no autonomy: the flag makes the payment wait for
+  // the owner. "Unavailable" (no evidence at all, as with the offline reader) and both verified badges don't.
+  if (result.verification.badge === "VERIFICATION_FAILED") {
+    flags.add("AMBIGUOUS_EXTRACTION");
+    notes.push("the private inference's evidence failed its checks, so the owner decides");
+  }
 
   const match = matchSupplier(x, ctx.directory);
   if (match.kind === "ambiguous") {

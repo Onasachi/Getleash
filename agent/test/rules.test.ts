@@ -70,3 +70,25 @@ describe("supplier match", () => {
     expect(named).toMatchObject({ action: "propose", supplierId: 1, supplierName: "Chisolu" });
   });
 });
+
+describe("private inference (D-35)", () => {
+  const directory = [{ supplier_id: 1, name: "Chisolu", aliases: [], payment_details: ["chisolu.near"], currency: "USDC" as const }];
+  const reading = (badge: ExtractResult["verification"]["badge"]): ExtractResult => ({
+    ...read(INVOICE, { payment_details: [{ kind: "near_account", value: "chisolu.near" }] }),
+    verification: { badge, checks: [], evidence: null },
+  });
+
+  it("a reply whose TEE evidence failed its checks waits for the owner; the other badges keep the agent's autonomy", () => {
+    for (const badge of ["MODEL_RESPONSE_VERIFIED", "GATEWAY_EVIDENCE_VERIFIED", "VERIFICATION_UNAVAILABLE"] as const) {
+      expect(decide(reading(badge), { directory, suppliers: [supplier(1, "chisolu.near")] })).toMatchObject({
+        action: "propose",
+        supplierId: 1,
+        reviewFlag: null,
+        flags: [],
+      });
+    }
+    const failed = decide(reading("VERIFICATION_FAILED"), { directory, suppliers: [supplier(1, "chisolu.near")] });
+    expect(failed).toMatchObject({ action: "propose", supplierId: 1, amountOut: 500_000n, reviewFlag: "AMBIGUOUS_EXTRACTION" });
+    expect(failed.notes).toContain("the private inference's evidence failed its checks, so the owner decides");
+  });
+});
